@@ -1,0 +1,14 @@
+{
+  "id": "dankRssWidget",
+  "name": "Dank RSS Widget",
+  "description": "Desktop widget that displays RSS/Atom feeds with auto-refresh",
+  "version": "1.0.0",
+  "author": "BrendonJL",
+  "type": "desktop",
+  "capabilities": ["desktop-widget"],
+  "component": "./DankRssWidget.qml",
+  "settings": "./DankRssWidgetSettings.qml",
+  "icon": "rss_feed",
+  "requires_dms": ">=1.2.0",
+  "permissions": ["settings_read", "settings_write"]
+}
