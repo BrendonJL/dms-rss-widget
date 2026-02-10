@@ -64,10 +64,59 @@ PluginSettings {
         unit: ""
     }
 
+    SelectionSetting {
+        id: sortModeSetting
+        settingKey: "sortMode"
+        label: "Sort Order"
+        description: "How feed items are ordered in the widget"
+        options: [
+            { label: "Newest First", value: "newest" },
+            { label: "Oldest First", value: "oldest" },
+            { label: "Group by Feed", value: "byFeed" }
+        ]
+        defaultValue: "newest"
+    }
+
+    SliderSetting {
+        visible: sortModeSetting.value === "byFeed"
+        settingKey: "maxPerFeed"
+        label: "Items per Feed"
+        description: "Maximum items shown from each feed when grouping"
+        defaultValue: 5
+        minimum: 1
+        maximum: 20
+        unit: ""
+    }
+
+    SelectionSetting {
+        settingKey: "viewMode"
+        label: "View Mode"
+        description: "Compact shows title-only rows; Expanded shows descriptions and thumbnails"
+        options: [
+            { label: "Expanded", value: "expanded" },
+            { label: "Compact", value: "compact" }
+        ]
+        defaultValue: "expanded"
+    }
+
+    ToggleSetting {
+        settingKey: "notifyNewItems"
+        label: "New Item Notifications"
+        description: "Show a toast notification when new items appear after a refresh"
+        defaultValue: true
+    }
+
     ToggleSetting {
         settingKey: "showFeedName"
         label: "Show Feed Source"
         description: "Display the feed name next to each item title"
+        defaultValue: true
+    }
+
+    ToggleSetting {
+        settingKey: "showImages"
+        label: "Show Thumbnails"
+        description: "Display thumbnail images when available in feed items"
         defaultValue: true
     }
 
@@ -355,6 +404,97 @@ PluginSettings {
         }
     }
 
+    // OPML Import
+    StyledRect {
+        width: parent.width
+        height: opmlColumn.implicitHeight + Theme.spacingL * 2
+        radius: Theme.cornerRadius
+        color: Theme.surfaceContainerHigh
+
+        Column {
+            id: opmlColumn
+            anchors.fill: parent
+            anchors.margins: Theme.spacingL
+            spacing: Theme.spacingM
+
+            StyledText {
+                text: "Import from OPML"
+                font.pixelSize: Theme.fontSizeMedium
+                font.weight: Font.Medium
+                color: Theme.surfaceText
+            }
+
+            StyledText {
+                width: parent.width
+                text: "Paste OPML/XML content to import feeds from other RSS readers"
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceVariantText
+                wrapMode: Text.WordWrap
+            }
+
+            DankTextField {
+                id: opmlField
+                width: parent.width
+                placeholderText: "Paste OPML XML here..."
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus) root.ensureItemVisible(opmlField);
+                }
+            }
+
+            DankButton {
+                text: "Import Feeds"
+                iconName: "download"
+                onClicked: {
+                    var xml = opmlField.text.trim();
+                    if (!xml) {
+                        if (typeof ToastService !== "undefined")
+                            ToastService.showError("Paste OPML content first");
+                        return;
+                    }
+                    var imported = parseOpml(xml);
+                    if (imported.length === 0) {
+                        if (typeof ToastService !== "undefined")
+                            ToastService.showError("No feeds found in OPML");
+                        return;
+                    }
+                    var currentFeeds = root.loadValue("feeds", []);
+                    var existingUrls = {};
+                    for (var i = 0; i < currentFeeds.length; i++) {
+                        existingUrls[currentFeeds[i].url] = true;
+                    }
+                    var added = 0;
+                    for (var j = 0; j < imported.length; j++) {
+                        if (!existingUrls[imported[j].url]) {
+                            currentFeeds.push(imported[j]);
+                            added++;
+                        }
+                    }
+                    root.saveValue("feeds", currentFeeds);
+                    opmlField.text = "";
+                    if (typeof ToastService !== "undefined")
+                        ToastService.showInfo("Imported " + added + " feed" + (added !== 1 ? "s" : "") + " (" + (imported.length - added) + " duplicates skipped)");
+                }
+            }
+        }
+    }
+
+    function parseOpml(xml) {
+        var feeds = [];
+        var outlineRegex = /<outline[^>]*xmlUrl=["']([^"']+)["'][^>]*>/gi;
+        var match;
+        while ((match = outlineRegex.exec(xml)) !== null) {
+            var fullTag = match[0];
+            var url = match[1].replace(/&amp;/g, "&");
+
+            // Extract title or text attribute
+            var titleMatch = fullTag.match(/(?:title|text)=["']([^"']+)["']/i);
+            var name = titleMatch ? titleMatch[1].replace(/&amp;/g, "&") : url;
+
+            feeds.push({ name: name, url: url });
+        }
+        return feeds;
+    }
+
     StyledRect {
         width: parent.width
         height: 1
@@ -378,6 +518,79 @@ PluginSettings {
         color: Theme.surfaceVariantText
     }
 
+    // News — US
+    StyledText {
+        width: parent.width
+        text: "News — US"
+        font.pixelSize: Theme.fontSizeSmall
+        font.weight: Font.Medium
+        color: Theme.primary
+    }
+
+    Flow {
+        width: parent.width
+        spacing: Theme.spacingS
+
+        DankButton {
+            text: "AP News"
+            iconName: "add"
+            onClicked: addPresetFeed("AP News", "https://rsshub.app/apnews/topics/apf-topnews")
+        }
+
+        DankButton {
+            text: "NPR"
+            iconName: "add"
+            onClicked: addPresetFeed("NPR", "https://feeds.npr.org/1001/rss.xml")
+        }
+
+        DankButton {
+            text: "Reuters"
+            iconName: "add"
+            onClicked: addPresetFeed("Reuters", "https://rsshub.app/reuters/world")
+        }
+    }
+
+    // News — Global
+    StyledText {
+        width: parent.width
+        text: "News — Global"
+        font.pixelSize: Theme.fontSizeSmall
+        font.weight: Font.Medium
+        color: Theme.primary
+    }
+
+    Flow {
+        width: parent.width
+        spacing: Theme.spacingS
+
+        DankButton {
+            text: "BBC World"
+            iconName: "add"
+            onClicked: addPresetFeed("BBC World", "https://feeds.bbci.co.uk/news/world/rss.xml")
+        }
+
+        DankButton {
+            text: "Al Jazeera"
+            iconName: "add"
+            onClicked: addPresetFeed("Al Jazeera", "https://www.aljazeera.com/xml/rss/all.xml")
+        }
+
+        DankButton {
+            text: "The Guardian"
+            iconName: "add"
+            onClicked: addPresetFeed("The Guardian", "https://www.theguardian.com/world/rss")
+        }
+    }
+
+    // Tech
+    StyledText {
+        width: parent.width
+        text: "Tech"
+        font.pixelSize: Theme.fontSizeSmall
+        font.weight: Font.Medium
+        color: Theme.primary
+    }
+
     Flow {
         width: parent.width
         spacing: Theme.spacingS
@@ -386,12 +599,6 @@ PluginSettings {
             text: "Hacker News"
             iconName: "add"
             onClicked: addPresetFeed("Hacker News", "https://hnrss.org/newest")
-        }
-
-        DankButton {
-            text: "Reddit r/linux"
-            iconName: "add"
-            onClicked: addPresetFeed("r/linux", "https://www.reddit.com/r/linux/.rss")
         }
 
         DankButton {
@@ -404,6 +611,62 @@ PluginSettings {
             text: "The Verge"
             iconName: "add"
             onClicked: addPresetFeed("The Verge", "https://www.theverge.com/rss/index.xml")
+        }
+    }
+
+    // Reddit
+    StyledText {
+        width: parent.width
+        text: "Reddit"
+        font.pixelSize: Theme.fontSizeSmall
+        font.weight: Font.Medium
+        color: Theme.primary
+    }
+
+    Flow {
+        width: parent.width
+        spacing: Theme.spacingS
+
+        DankButton {
+            text: "r/linux"
+            iconName: "add"
+            onClicked: addPresetFeed("r/linux", "https://www.reddit.com/r/linux/.rss")
+        }
+
+        DankButton {
+            text: "r/niri"
+            iconName: "add"
+            onClicked: addPresetFeed("r/niri", "https://www.reddit.com/r/niri/.rss")
+        }
+
+        DankButton {
+            text: "r/hyprland"
+            iconName: "add"
+            onClicked: addPresetFeed("r/hyprland", "https://www.reddit.com/r/hyprland/.rss")
+        }
+
+        DankButton {
+            text: "r/fedora"
+            iconName: "add"
+            onClicked: addPresetFeed("r/fedora", "https://www.reddit.com/r/fedora/.rss")
+        }
+
+        DankButton {
+            text: "r/archlinux"
+            iconName: "add"
+            onClicked: addPresetFeed("r/archlinux", "https://www.reddit.com/r/archlinux/.rss")
+        }
+
+        DankButton {
+            text: "r/NixOS"
+            iconName: "add"
+            onClicked: addPresetFeed("r/NixOS", "https://www.reddit.com/r/NixOS/.rss")
+        }
+
+        DankButton {
+            text: "r/Ubuntu"
+            iconName: "add"
+            onClicked: addPresetFeed("r/Ubuntu", "https://www.reddit.com/r/Ubuntu/.rss")
         }
     }
 
@@ -439,6 +702,16 @@ PluginSettings {
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
         color: Theme.surfaceText
+    }
+
+    SliderSetting {
+        settingKey: "fontSize"
+        label: "Font Size"
+        description: "Text size for feed items"
+        defaultValue: Theme.fontSizeSmall
+        minimum: 8
+        maximum: 24
+        unit: "px"
     }
 
     SliderSetting {

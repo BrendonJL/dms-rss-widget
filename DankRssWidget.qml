@@ -4,6 +4,8 @@ import QtQml
 import Quickshell
 import Quickshell.Io
 import qs.Common
+import qs.Services
+import qs.Widgets
 import qs.Modules.Plugins
 
 DesktopPluginComponent {
@@ -20,12 +22,20 @@ DesktopPluginComponent {
     property string borderColor: pluginData.borderColor ?? "primary"
     property bool showFeedName: pluginData.showFeedName ?? true
     property bool openInBrowser: pluginData.openInBrowser ?? true
+    property bool showImages: pluginData.showImages ?? true
+    property string sortMode: pluginData.sortMode ?? "newest"  // "newest", "oldest", "byFeed"
+    property int maxPerFeed: pluginData.maxPerFeed ?? 5  // per-feed cap when grouping by feed
+    property string viewMode: pluginData.viewMode ?? "expanded"  // "compact" or "expanded"
+    property int fontSize: pluginData.fontSize ?? Theme.fontSizeSmall
+    property bool notifyNewItems: pluginData.notifyNewItems ?? true
 
     // --- Internal state ---
     property var feedItems: []
     property bool isLoading: false
     property int pendingFetches: 0
     property var windowRef: null
+    property int previousItemCount: 0
+    property var readLinks: ({})  // track clicked links
 
     property color resolvedBorderColor: {
         switch (borderColor) {
@@ -53,6 +63,13 @@ DesktopPluginComponent {
         const win = root.windowRef;
         const winVisible = win === null ? true : !!win.visible;
         return root.visible && winVisible && root.widgetWidth > 0 && root.widgetHeight > 0;
+    }
+
+    onFeedsChanged: {
+        if (root.isRunnable()) {
+            fetchAllFeeds();
+            timer.restart();
+        }
     }
 
     function handleVisibilityChange() {
@@ -112,7 +129,7 @@ DesktopPluginComponent {
             return;
         }
 
-        Proc.runCommand("rssFetch:" + index, ["curl", "-sS", "--connect-timeout", "5", "--max-time", "10", "-L", url], function(output, exitCode) {
+        Proc.runCommand("rssFetch:" + index, ["curl", "-sS", "--connect-timeout", "5", "--max-time", "10", "-L", "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0", url], function(output, exitCode) {
             if (exitCode === 0 && output.trim().length > 0) {
                 var items = parseFeed(output, name);
                 for (var j = 0; j < items.length; j++) {
@@ -128,15 +145,42 @@ DesktopPluginComponent {
     }
 
     function finalizeFetch(items) {
-        // Sort by date descending
-        items.sort(function(a, b) {
-            return b.timestamp - a.timestamp;
-        });
+        // Sort based on sortMode
+        if (root.sortMode === "oldest") {
+            items.sort(function(a, b) { return a.timestamp - b.timestamp; });
+        } else if (root.sortMode === "byFeed") {
+            // Sort newest within each feed first, then apply per-feed cap
+            items.sort(function(a, b) { return b.timestamp - a.timestamp; });
+            var feedCounts = {};
+            items = items.filter(function(item) {
+                var src = item.source || "";
+                feedCounts[src] = (feedCounts[src] || 0) + 1;
+                return feedCounts[src] <= root.maxPerFeed;
+            });
+            // Then group by source name
+            items.sort(function(a, b) {
+                if (a.source < b.source) return -1;
+                if (a.source > b.source) return 1;
+                return b.timestamp - a.timestamp;
+            });
+        } else {
+            // "newest" — default
+            items.sort(function(a, b) { return b.timestamp - a.timestamp; });
+        }
 
-        // Limit items
+        // Limit total items
         if (items.length > root.maxItems) {
             items = items.slice(0, root.maxItems);
         }
+
+        // Notify on new items
+        if (root.notifyNewItems && root.previousItemCount > 0 && items.length > root.previousItemCount) {
+            var newCount = items.length - root.previousItemCount;
+            if (typeof ToastService !== "undefined") {
+                ToastService.showInfo(newCount + " new item" + (newCount > 1 ? "s" : "") + " in RSS Feeds");
+            }
+        }
+        root.previousItemCount = items.length;
 
         root.feedItems = items;
         feedModel.clear();
@@ -176,7 +220,8 @@ DesktopPluginComponent {
                 dateStr: pubDate || "",
                 timestamp: pubDate ? new Date(pubDate).getTime() || 0 : 0,
                 source: sourceName,
-                relativeTime: pubDate ? getRelativeTime(new Date(pubDate)) : ""
+                relativeTime: pubDate ? getRelativeTime(new Date(pubDate)) : "",
+                imageUrl: extractImageUrl(block, description || "")
             });
         }
         return items;
@@ -208,10 +253,55 @@ DesktopPluginComponent {
                 dateStr: updated || "",
                 timestamp: updated ? new Date(updated).getTime() || 0 : 0,
                 source: sourceName,
-                relativeTime: updated ? getRelativeTime(new Date(updated)) : ""
+                relativeTime: updated ? getRelativeTime(new Date(updated)) : "",
+                imageUrl: extractImageUrl(block, summary || "")
             });
         }
         return items;
+    }
+
+    function extractImageUrl(block, content) {
+        var url = "";
+
+        // Try media:thumbnail (Reddit, many feeds)
+        var m = block.match(/<media:thumbnail[^>]*url=["']([^"']+)["']/i);
+        if (m) { url = m[1]; }
+
+        // Try media:content with image type
+        if (!url) {
+            m = block.match(/<media:content[^>]*url=["']([^"']+)["'][^>]*type=["']image\//i);
+            if (m) url = m[1];
+        }
+
+        // Try media:content (any, often images)
+        if (!url) {
+            m = block.match(/<media:content[^>]*url=["']([^"']+)["']/i);
+            if (m) url = m[1];
+        }
+
+        // Try enclosure with image type
+        if (!url) {
+            m = block.match(/<enclosure[^>]*type=["']image\/[^"']*["'][^>]*url=["']([^"']+)["']/i);
+            if (m) url = m[1];
+        }
+        if (!url) {
+            m = block.match(/<enclosure[^>]*url=["']([^"']+)["'][^>]*type=["']image\//i);
+            if (m) url = m[1];
+        }
+
+        // Try <img> tag in content/description
+        if (!url) {
+            var decoded = content.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+            m = decoded.match(/<img[^>]*src=["']([^"']+)["']/i);
+            if (m) url = m[1];
+        }
+
+        // Decode HTML entities in the URL itself
+        if (url) {
+            url = url.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"');
+        }
+
+        return url;
     }
 
     function extractTag(xml, tagName) {
@@ -281,28 +371,38 @@ DesktopPluginComponent {
             spacing: Theme.spacingS
 
             // --- Header ---
-            RowLayout {
+            ColumnLayout {
                 Layout.fillWidth: true
-                spacing: Theme.spacingS
+                spacing: 2
 
-                DankIcon {
-                    name: "rss_feed"
-                    size: Theme.iconSize
-                    color: Theme.primary
-                }
-
-                StyledText {
-                    text: "RSS Feeds"
-                    font.pixelSize: Theme.fontSizeMedium
-                    font.weight: Font.Bold
-                    color: Theme.surfaceText
+                RowLayout {
                     Layout.fillWidth: true
+                    spacing: Theme.spacingS
+
+                    Item { Layout.fillWidth: true }
+
+                    DankIcon {
+                        name: "rss_feed"
+                        size: Theme.iconSize
+                        color: Theme.primary
+                    }
+
+                    StyledText {
+                        text: "RSS Feeds"
+                        font.pixelSize: Theme.fontSizeMedium
+                        font.weight: Font.Bold
+                        color: Theme.surfaceText
+                    }
+
+                    Item { Layout.fillWidth: true }
                 }
 
                 StyledText {
                     text: root.isLoading ? "Updating..." : feedModel.count + " items"
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
                 }
             }
 
@@ -313,21 +413,85 @@ DesktopPluginComponent {
                 color: Theme.outlineVariant
             }
 
+            // --- Actions bar ---
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingXS
+                visible: feedModel.count > 0
+
+                Item { Layout.fillWidth: true }
+
+                // Mark all read / unread toggle
+                Rectangle {
+                    property bool allRead: {
+                        if (feedModel.count === 0) return false;
+                        for (var i = 0; i < feedModel.count; i++) {
+                            if (!root.readLinks[feedModel.get(i).link]) return false;
+                        }
+                        return true;
+                    }
+
+                    width: allReadRow.implicitWidth + Theme.spacingM * 2
+                    height: 24; radius: Theme.cornerRadius
+                    color: markAllArea.containsMouse ? Theme.withAlpha(Theme.primary, 0.15) : "transparent"
+
+                    RowLayout {
+                        id: allReadRow
+                        anchors.centerIn: parent
+                        spacing: Theme.spacingXS
+
+                        DankIcon {
+                            name: parent.parent.allRead ? "remove_done" : "done_all"
+                            size: 14
+                            color: markAllArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                        }
+
+                        StyledText {
+                            text: parent.parent.allRead ? "Mark all unread" : "Mark all read"
+                            font.pixelSize: root.fontSize - 2
+                            color: markAllArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                        }
+                    }
+
+                    MouseArea {
+                        id: markAllArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (parent.allRead) {
+                                root.readLinks = ({});
+                            } else {
+                                var newRead = Object.assign({}, root.readLinks);
+                                for (var i = 0; i < feedModel.count; i++) {
+                                    var link = feedModel.get(i).link;
+                                    if (link) newRead[link] = true;
+                                }
+                                root.readLinks = newRead;
+                            }
+                        }
+                    }
+                }
+            }
+
             // --- Feed list ---
             ListView {
                 id: feedListView
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 clip: true
-                spacing: Theme.spacingXS
+                spacing: root.viewMode === "compact" ? 1 : Theme.spacingXS
                 model: feedModel
                 visible: feedModel.count > 0
 
                 delegate: Rectangle {
                     id: itemDelegate
+                    property bool isRead: root.readLinks[model.link] === true
+
                     width: feedListView.width
                     height: itemColumn.implicitHeight + Theme.spacingS * 2
-                    radius: Theme.cornerRadius
+                    radius: root.viewMode === "compact" ? 0 : Theme.cornerRadius
+                    opacity: isRead ? 0.5 : 1.0
                     color: itemMouseArea.containsMouse
                         ? Theme.withAlpha(Theme.primary, 0.08)
                         : "transparent"
@@ -335,65 +499,103 @@ DesktopPluginComponent {
                     Behavior on color {
                         ColorAnimation { duration: Theme.shortDuration }
                     }
+                    Behavior on opacity {
+                        NumberAnimation { duration: Theme.shortDuration }
+                    }
 
-                    ColumnLayout {
+                    RowLayout {
                         id: itemColumn
                         anchors.fill: parent
-                        anchors.margins: Theme.spacingS
-                        spacing: 2
+                        anchors.margins: root.viewMode === "compact" ? Theme.spacingXS : Theme.spacingS
+                        spacing: Theme.spacingS
 
-                        // Source + Title row
-                        RowLayout {
+                        // Text content
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            spacing: Theme.spacingXS
+                            spacing: root.viewMode === "compact" ? 0 : 2
 
-                            StyledText {
-                                visible: root.showFeedName
-                                text: model.source || ""
-                                font.pixelSize: Theme.fontSizeSmall
-                                font.weight: Font.Medium
-                                color: Theme.primary
-                                Layout.maximumWidth: 120
-                                elide: Text.ElideRight
+                            // Source + Title row
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Theme.spacingXS
+
+                                StyledText {
+                                    visible: root.showFeedName
+                                    text: model.source || ""
+                                    font.pixelSize: root.fontSize
+                                    font.weight: Font.Medium
+                                    color: isRead ? Theme.surfaceVariantText : Theme.primary
+                                    Layout.maximumWidth: 120
+                                    elide: Text.ElideRight
+                                }
+
+                                StyledText {
+                                    visible: root.showFeedName
+                                    text: "\u00b7"
+                                    font.pixelSize: root.fontSize
+                                    color: Theme.surfaceVariantText
+                                }
+
+                                StyledText {
+                                    text: model.title || ""
+                                    font.pixelSize: root.fontSize
+                                    font.weight: Font.Medium
+                                    color: isRead ? Theme.surfaceVariantText : Theme.surfaceText
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideRight
+                                    maximumLineCount: 1
+                                    wrapMode: Text.NoWrap
+                                }
+
+                                // Compact mode: inline date
+                                StyledText {
+                                    visible: root.viewMode === "compact" && (model.relativeTime || "") !== ""
+                                    text: model.relativeTime || ""
+                                    font.pixelSize: root.fontSize - 2
+                                    color: Theme.withAlpha(Theme.surfaceVariantText, 0.7)
+                                }
                             }
 
+                            // Description (hidden in compact mode)
                             StyledText {
-                                visible: root.showFeedName
-                                text: "·"
-                                font.pixelSize: Theme.fontSizeSmall
+                                visible: root.viewMode !== "compact" && (model.description || "") !== ""
+                                text: model.description || ""
+                                font.pixelSize: root.fontSize
                                 color: Theme.surfaceVariantText
-                            }
-
-                            StyledText {
-                                text: model.title || ""
-                                font.pixelSize: Theme.fontSizeSmall
-                                font.weight: Font.Medium
-                                color: Theme.surfaceText
                                 Layout.fillWidth: true
                                 elide: Text.ElideRight
-                                maximumLineCount: 1
-                                wrapMode: Text.NoWrap
+                                maximumLineCount: 2
+                                wrapMode: Text.WordWrap
+                            }
+
+                            // Date (hidden in compact mode — shown inline instead)
+                            StyledText {
+                                visible: root.viewMode !== "compact" && (model.relativeTime || "") !== ""
+                                text: model.relativeTime || ""
+                                font.pixelSize: root.fontSize - 2
+                                color: Theme.withAlpha(Theme.surfaceVariantText, 0.7)
                             }
                         }
 
-                        // Description
-                        StyledText {
-                            visible: (model.description || "") !== ""
-                            text: model.description || ""
-                            font.pixelSize: Theme.fontSizeSmall
-                            color: Theme.surfaceVariantText
-                            Layout.fillWidth: true
-                            elide: Text.ElideRight
-                            maximumLineCount: 2
-                            wrapMode: Text.WordWrap
-                        }
+                        // Thumbnail (hidden in compact mode)
+                        Rectangle {
+                            id: thumbRect
+                            visible: root.viewMode !== "compact" && root.showImages && (model.imageUrl || "") !== "" && thumbImage.status !== Image.Error
+                            Layout.preferredWidth: 48
+                            Layout.preferredHeight: 48
+                            Layout.alignment: Qt.AlignVCenter
+                            radius: Theme.cornerRadius
+                            color: Theme.surfaceContainerHigh
+                            clip: true
 
-                        // Date
-                        StyledText {
-                            visible: (model.relativeTime || "") !== ""
-                            text: model.relativeTime || ""
-                            font.pixelSize: Theme.fontSizeSmall - 2
-                            color: Theme.withAlpha(Theme.surfaceVariantText, 0.7)
+                            Image {
+                                id: thumbImage
+                                anchors.fill: parent
+                                source: (root.showImages && (model.imageUrl || "") !== "") ? model.imageUrl : ""
+                                fillMode: Image.PreserveAspectCrop
+                                asynchronous: true
+                                cache: true
+                            }
                         }
                     }
 
@@ -401,10 +603,23 @@ DesktopPluginComponent {
                         id: itemMouseArea
                         anchors.fill: parent
                         hoverEnabled: true
-                        cursorShape: root.openInBrowser ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            if (root.openInBrowser && model.link) {
-                                Quickshell.execDetached(["xdg-open", model.link]);
+                            if (!model.link) return;
+                            var newRead = Object.assign({}, root.readLinks);
+
+                            if (newRead[model.link]) {
+                                // Already read: toggle back to unread
+                                delete newRead[model.link];
+                                root.readLinks = newRead;
+                            } else {
+                                // Unread: mark read + open link
+                                newRead[model.link] = true;
+                                root.readLinks = newRead;
+
+                                if (root.openInBrowser) {
+                                    Quickshell.execDetached(["xdg-open", model.link]);
+                                }
                             }
                         }
                     }
@@ -431,7 +646,8 @@ DesktopPluginComponent {
                     text: root.feeds.length === 0 ? "No feeds configured" : "No items loaded"
                     font.pixelSize: Theme.fontSizeMedium
                     color: Theme.surfaceVariantText
-                    Layout.alignment: Qt.AlignHCenter
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
                 }
 
                 StyledText {
@@ -439,7 +655,8 @@ DesktopPluginComponent {
                     text: "Add feeds in the widget settings"
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.withAlpha(Theme.surfaceVariantText, 0.6)
-                    Layout.alignment: Qt.AlignHCenter
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
                 }
 
                 Item { Layout.fillHeight: true }
@@ -458,6 +675,8 @@ DesktopPluginComponent {
                     text: "Loading feeds..."
                     font.pixelSize: Theme.fontSizeMedium
                     color: Theme.surfaceVariantText
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
                     Layout.alignment: Qt.AlignHCenter
                 }
 
