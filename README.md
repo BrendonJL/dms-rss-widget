@@ -81,7 +81,7 @@ Requires Node.js 18+ (uses the built-in `node:test` runner).
 
 ## Screenshots
 
-<!-- TODO: Add screenshots -->
+![RSS Widget on desktop](screenshot.png)
 
 ## License
 
