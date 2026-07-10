@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import Quickshell.Io
 import qs.Common
 import qs.Widgets
 import qs.Modules.Plugins
@@ -9,6 +10,31 @@ PluginSettings {
     pluginId: "dankRssWidget"
 
     property int editingIndex: -1
+    property var minifluxFeedsList: []
+
+    Component.onCompleted: {
+        if (root.loadValue("sourceMode", "standard") === 'miniflux') {
+            fetchMinifluxFeeds();
+        }
+    }
+
+    function fetchMinifluxFeeds() {
+        var url = root.loadValue("minifluxUrl", "").replace(/\/$/, "");
+        var token = root.loadValue("minifluxToken", "");
+        if (!url || !token) return;
+        Proc.runCommand("minifluxSettingsFeeds",
+            ["curl", "-sS", "--fail", "--connect-timeout", "5", "--max-time", "25",
+             "-H", "X-Auth-Token: " + token,
+             url + "/v1/feeds"],
+            function(output, exitCode) {
+                if (exitCode !== 0) return;
+                try {
+                    var data = JSON.parse(output);
+                    root.minifluxFeedsList = Array.isArray(data) ? data : [];
+                } catch(e) {}
+            }, undefined, 30000
+        );
+    }
 
     // --- Header ---
     StyledText {
@@ -21,7 +47,7 @@ PluginSettings {
 
     StyledText {
         width: parent.width
-        text: "Display RSS and Atom feeds on your desktop. Add feeds below and configure refresh intervals and appearance."
+        text: "Display RSS/Atom feeds or sync with a Miniflux server."
         font.pixelSize: Theme.fontSizeMedium
         color: Theme.surfaceVariantText
         wrapMode: Text.WordWrap
@@ -33,7 +59,239 @@ PluginSettings {
         color: Theme.outlineVariant
     }
 
-    // ─── Refresh Settings ───
+    // ─── Source Mode ───
+
+    StyledText {
+        width: parent.width
+        text: "Source Mode"
+        font.pixelSize: Theme.fontSizeMedium
+        font.weight: Font.Medium
+        color: Theme.surfaceText
+    }
+
+    SelectionSetting {
+        id: sourceModeSetting
+        settingKey: "sourceMode"
+        label: "Source Mode"
+        description: "Standard fetches RSS/Atom feeds directly. Miniflux syncs with your Miniflux server."
+        options: [
+            { label: "Standard", value: "standard" },
+            { label: "Miniflux", value: "miniflux" }
+        ]
+        defaultValue: "standard"
+    }
+
+    // ─── Miniflux Configuration (visible only in miniflux mode) ───
+
+    StyledRect {
+        width: parent.width
+        height: 1
+        color: Theme.outlineVariant
+        visible: sourceModeSetting.value === 'miniflux'
+    }
+
+    StyledText {
+        width: parent.width
+        text: "Miniflux Connection"
+        font.pixelSize: Theme.fontSizeMedium
+        font.weight: Font.Medium
+        color: Theme.surfaceText
+        visible: sourceModeSetting.value === 'miniflux'
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+        visible: sourceModeSetting.value === 'miniflux'
+
+        StyledText {
+            text: "Server URL"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        DankTextField {
+            id: minifluxUrlField
+            width: parent.width
+            placeholderText: "https://miniflux.example.com"
+            text: root.loadValue("minifluxUrl", "")
+            onTextChanged: root.saveValue("minifluxUrl", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(minifluxUrlField);
+            }
+        }
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+        visible: sourceModeSetting.value === 'miniflux'
+
+        StyledText {
+            text: "API Token"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        DankTextField {
+            id: minifluxTokenField
+            width: parent.width
+            placeholderText: "Your Miniflux API token"
+            text: root.loadValue("minifluxToken", "")
+            onTextChanged: root.saveValue("minifluxToken", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(minifluxTokenField);
+            }
+        }
+    }
+
+    ToggleSetting {
+        visible: sourceModeSetting.value === 'miniflux'
+        settingKey: "syncReadOnOpen"
+        label: "Mark as read on open"
+        description: "Mark entries as read on the server when you open them"
+        defaultValue: true
+    }
+
+    ToggleSetting {
+        visible: sourceModeSetting.value === 'miniflux'
+        settingKey: "showStarred"
+        label: "Show starred entries"
+        description: "Show only starred/bookmarked entries instead of unread entries"
+        defaultValue: false
+    }
+
+    Row {
+        visible: sourceModeSetting.value === 'miniflux'
+        spacing: Theme.spacingM
+
+    DankButton {
+        text: "Test Connection"
+        iconName: "wifi_tethering"
+        onClicked: {
+            var url = minifluxUrlField.text.trim().replace(/\/$/, "");
+            var token = minifluxTokenField.text.trim();
+            if (!url || !token) {
+                if (typeof ToastService !== "undefined")
+                    ToastService.showError("Enter URL and token first");
+                return;
+            }
+            Proc.runCommand("minifluxTestConn",
+                ["curl", "-sS", "--fail", "--connect-timeout", "5", "--max-time", "25",
+                 "-H", "X-Auth-Token: " + token,
+                 url + "/v1/me"],
+                function(output, exitCode) {
+                    if (exitCode === 0 && output.indexOf('"id"') !== -1) {
+                        if (typeof ToastService !== "undefined")
+                            ToastService.showInfo("Miniflux connection successful!");
+                        root.fetchMinifluxFeeds();
+                    } else {
+                        if (typeof ToastService !== "undefined")
+                            ToastService.showError("Connection failed: check URL and token");
+                    }
+                }, undefined, 30000
+            );
+        }
+    }
+
+    DankButton {
+        text: "Force Refresh"
+        iconName: "refresh"
+        onClicked: {
+            root.saveValue("lastRefreshRequest", Date.now());
+        }
+    }
+
+    } // end Row
+
+    // ─── Miniflux Feeds (read-only list, visible only in miniflux mode) ───
+
+    StyledRect {
+        width: parent.width
+        height: 1
+        color: Theme.outlineVariant
+        visible: sourceModeSetting.value === 'miniflux'
+    }
+
+    StyledText {
+        width: parent.width
+        text: "Miniflux Feeds"
+        font.pixelSize: Theme.fontSizeMedium
+        font.weight: Font.Medium
+        color: Theme.surfaceText
+        visible: sourceModeSetting.value === 'miniflux'
+    }
+
+    StyledRect {
+        width: parent.width
+        height: Math.max(80, minifluxFeedsColumn.implicitHeight + Theme.spacingL * 2)
+        radius: Theme.cornerRadius
+        color: Theme.surfaceContainerHigh
+        visible: sourceModeSetting.value === 'miniflux'
+
+        Column {
+            id: minifluxFeedsColumn
+            anchors.fill: parent
+            anchors.margins: Theme.spacingL
+            spacing: Theme.spacingS
+
+            Repeater {
+                model: root.minifluxFeedsList
+
+                delegate: RowLayout {
+                    required property var modelData
+                    width: minifluxFeedsColumn.width
+                    spacing: Theme.spacingS
+
+                    DankIcon {
+                        name: "rss_feed"
+                        size: 14
+                        color: Theme.primary
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 1
+
+                        StyledText {
+                            text: modelData.title || ""
+                            font.pixelSize: Theme.fontSizeSmall
+                            font.weight: Font.Medium
+                            color: Theme.surfaceText
+                            Layout.fillWidth: true
+                            elide: Text.ElideRight
+                        }
+
+                        StyledText {
+                            text: modelData.feed_url || modelData.site_url || ""
+                            font.pixelSize: Theme.fontSizeSmall - 2
+                            color: Theme.surfaceVariantText
+                            Layout.fillWidth: true
+                            elide: Text.ElideMiddle
+                        }
+                    }
+                }
+            }
+
+            StyledText {
+                text: root.minifluxFeedsList.length === 0
+                    ? "No feeds loaded — test connection first"
+                    : ""
+                visible: root.minifluxFeedsList.length === 0
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceVariantText
+                width: parent.width
+            }
+        }
+    }
+
+    // ─── Refresh Settings (always visible) ───
+
+    StyledRect {
+        width: parent.width
+        height: 1
+        color: Theme.outlineVariant
+    }
 
     StyledText {
         width: parent.width
@@ -51,7 +309,6 @@ PluginSettings {
         minimum: 5
         maximum: 1440
         unit: "min"
-        // Note: stored as minutes in settings, converted to seconds in widget
     }
 
     SliderSetting {
@@ -127,13 +384,14 @@ PluginSettings {
         defaultValue: true
     }
 
+    // ─── Feed Management (standard mode only) ───
+
     StyledRect {
         width: parent.width
         height: 1
         color: Theme.outlineVariant
+        visible: sourceModeSetting.value === 'standard'
     }
-
-    // ─── Feed Management ───
 
     StyledText {
         width: parent.width
@@ -141,6 +399,7 @@ PluginSettings {
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
         color: Theme.surfaceText
+        visible: sourceModeSetting.value === 'standard'
     }
 
     // Add/Edit form
@@ -149,6 +408,7 @@ PluginSettings {
         height: addFeedColumn.implicitHeight + Theme.spacingL * 2
         radius: Theme.cornerRadius
         color: Theme.surfaceContainerHigh
+        visible: sourceModeSetting.value === 'standard'
 
         Column {
             id: addFeedColumn
@@ -256,6 +516,7 @@ PluginSettings {
         height: Math.max(120, feedsListColumn.implicitHeight + Theme.spacingL * 2)
         radius: Theme.cornerRadius
         color: Theme.surfaceContainerHigh
+        visible: sourceModeSetting.value === 'standard'
 
         Column {
             id: feedsListColumn
@@ -321,7 +582,6 @@ PluginSettings {
                             }
                         }
 
-                        // Edit button
                         Rectangle {
                             width: 32; height: 32; radius: 16
                             color: editArea.containsMouse ? Theme.primary : "transparent"
@@ -348,7 +608,6 @@ PluginSettings {
                             }
                         }
 
-                        // Delete button
                         Rectangle {
                             width: 32; height: 32; radius: 16
                             color: deleteArea.containsMouse ? Theme.error : "transparent"
@@ -392,7 +651,6 @@ PluginSettings {
                     }
                 }
 
-                // Empty state
                 StyledText {
                     anchors.centerIn: parent
                     text: "No feeds configured yet"
@@ -410,6 +668,7 @@ PluginSettings {
         height: opmlColumn.implicitHeight + Theme.spacingL * 2
         radius: Theme.cornerRadius
         color: Theme.surfaceContainerHigh
+        visible: sourceModeSetting.value === 'standard'
 
         Column {
             id: opmlColumn
@@ -485,23 +744,21 @@ PluginSettings {
         while ((match = outlineRegex.exec(xml)) !== null) {
             var fullTag = match[0];
             var url = match[1].replace(/&amp;/g, "&");
-
-            // Extract title or text attribute
             var titleMatch = fullTag.match(/(?:title|text)=["']([^"']+)["']/i);
             var name = titleMatch ? titleMatch[1].replace(/&amp;/g, "&") : url;
-
             feeds.push({ name: name, url: url });
         }
         return feeds;
     }
 
+    // ─── Quick Add (standard mode only) ───
+
     StyledRect {
         width: parent.width
         height: 1
         color: Theme.outlineVariant
+        visible: sourceModeSetting.value === 'standard'
     }
-
-    // ─── Preset Feeds ───
 
     StyledText {
         width: parent.width
@@ -509,6 +766,7 @@ PluginSettings {
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
         color: Theme.surfaceText
+        visible: sourceModeSetting.value === 'standard'
     }
 
     StyledText {
@@ -516,20 +774,22 @@ PluginSettings {
         text: "Quickly add popular feeds"
         font.pixelSize: Theme.fontSizeSmall
         color: Theme.surfaceVariantText
+        visible: sourceModeSetting.value === 'standard'
     }
 
-    // News — US
     StyledText {
         width: parent.width
         text: "News — US"
         font.pixelSize: Theme.fontSizeSmall
         font.weight: Font.Medium
         color: Theme.primary
+        visible: sourceModeSetting.value === 'standard'
     }
 
     Flow {
         width: parent.width
         spacing: Theme.spacingS
+        visible: sourceModeSetting.value === 'standard'
 
         DankButton {
             text: "AP News"
@@ -550,18 +810,19 @@ PluginSettings {
         }
     }
 
-    // News — Global
     StyledText {
         width: parent.width
         text: "News — Global"
         font.pixelSize: Theme.fontSizeSmall
         font.weight: Font.Medium
         color: Theme.primary
+        visible: sourceModeSetting.value === 'standard'
     }
 
     Flow {
         width: parent.width
         spacing: Theme.spacingS
+        visible: sourceModeSetting.value === 'standard'
 
         DankButton {
             text: "BBC World"
@@ -582,18 +843,19 @@ PluginSettings {
         }
     }
 
-    // Tech
     StyledText {
         width: parent.width
         text: "Tech"
         font.pixelSize: Theme.fontSizeSmall
         font.weight: Font.Medium
         color: Theme.primary
+        visible: sourceModeSetting.value === 'standard'
     }
 
     Flow {
         width: parent.width
         spacing: Theme.spacingS
+        visible: sourceModeSetting.value === 'standard'
 
         DankButton {
             text: "Hacker News"
@@ -614,18 +876,19 @@ PluginSettings {
         }
     }
 
-    // Reddit
     StyledText {
         width: parent.width
         text: "Reddit"
         font.pixelSize: Theme.fontSizeSmall
         font.weight: Font.Medium
         color: Theme.primary
+        visible: sourceModeSetting.value === 'standard'
     }
 
     Flow {
         width: parent.width
         spacing: Theme.spacingS
+        visible: sourceModeSetting.value === 'standard'
 
         DankButton {
             text: "r/linux"
@@ -672,7 +935,6 @@ PluginSettings {
 
     function addPresetFeed(name, url) {
         var currentFeeds = root.loadValue("feeds", []);
-        // Check for duplicate URL
         for (var i = 0; i < currentFeeds.length; i++) {
             if (currentFeeds[i].url === url) {
                 if (typeof ToastService !== "undefined") {
