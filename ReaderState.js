@@ -1,0 +1,460 @@
+// Pure reader-state helpers for the Dank RSS Widget.
+//
+// Shared, like FeedParser.js, between QML and the Node test suite:
+//   QML  : import "ReaderState.js" as ReaderState
+//   Node : require("./ReaderState.js")
+//
+// IMPORTANT: no `.pragma library` line here — it is invalid JavaScript and
+// would break `require()` in the tests. See docs/plans/v2-contract.md.
+//
+// Everything in this file must stay PURE: no Qt APIs, no I/O, no Date.now(),
+// no randomness. That is what makes the read/seen/notification rules testable
+// without a running shell.
+
+var DEFAULT_CAP = 1000;
+
+// Dedupe preserving first-seen (newest-first) order, then bound the length.
+// Non-string and empty entries are dropped so a corrupted state file cannot
+// poison the list.
+function boundIdList(ids, cap) {
+    var limit = (typeof cap === "number" && cap > 0) ? cap : DEFAULT_CAP;
+    var out = [];
+    if (!ids || ids.length === undefined) {
+        return out;
+    }
+    var seen = {};
+    for (var i = 0; i < ids.length && out.length < limit; i++) {
+        var v = ids[i];
+        if (typeof v === "string" && v.length > 0 && !seen[v]) {
+            seen[v] = true;
+            out.push(v);
+        }
+    }
+    return out;
+}
+
+// Build an O(1) lookup map from an id list.
+function buildIdMap(ids) {
+    var map = {};
+    if (!ids || ids.length === undefined) {
+        return map;
+    }
+    for (var i = 0; i < ids.length; i++) {
+        if (typeof ids[i] === "string" && ids[i].length > 0) {
+            map[ids[i]] = true;
+        }
+    }
+    return map;
+}
+
+// Ids present in `currentIds` that are absent from `seenIds`.
+function computeNewIds(currentIds, seenIds) {
+    var seenMap = buildIdMap(seenIds);
+    var out = [];
+    var emitted = {};
+    if (!currentIds || currentIds.length === undefined) {
+        return out;
+    }
+    for (var i = 0; i < currentIds.length; i++) {
+        var id = currentIds[i];
+        if (typeof id !== "string" || id.length === 0) {
+            continue;
+        }
+        if (!seenMap[id] && !emitted[id]) {
+            emitted[id] = true;
+            out.push(id);
+        }
+    }
+    return out;
+}
+
+// The notification decision, in one pure function.
+//
+// Anti-spam rule: when the seen history is empty this is the first run ever,
+// so the entire backlog is recorded silently and nothing is announced.
+// Returns { firstRun, newIds, newCount, mergedSeen }.
+function evaluateSeen(currentIds, seenIds, cap) {
+    var firstRun = !seenIds || seenIds.length === 0;
+    var newIds = firstRun ? [] : computeNewIds(currentIds, seenIds);
+    var merged = boundIdList((currentIds || []).concat(seenIds || []), cap);
+    return {
+        firstRun: firstRun,
+        newIds: newIds,
+        newCount: newIds.length,
+        mergedSeen: merged
+    };
+}
+
+// Mark one id read: newest-first, no duplicates, bounded.
+function addRead(readOrder, id, cap) {
+    if (typeof id !== "string" || id.length === 0) {
+        return boundIdList(readOrder, cap);
+    }
+    return boundIdList([id].concat(readOrder || []), cap);
+}
+
+// Unmark one id.
+function removeRead(readOrder, id) {
+    var out = [];
+    if (!readOrder || readOrder.length === undefined) {
+        return out;
+    }
+    for (var i = 0; i < readOrder.length; i++) {
+        if (readOrder[i] !== id) {
+            out.push(readOrder[i]);
+        }
+    }
+    return out;
+}
+
+// Mark every supplied id read (used by "Mark all read").
+function addAllRead(readOrder, ids, cap) {
+    var incoming = [];
+    if (ids && ids.length !== undefined) {
+        for (var i = 0; i < ids.length; i++) {
+            if (typeof ids[i] === "string" && ids[i].length > 0) {
+                incoming.push(ids[i]);
+            }
+        }
+    }
+    return boundIdList(incoming.concat(readOrder || []), cap);
+}
+
+// Unmark every supplied id (used by "Mark all unread"). Ids read earlier that
+// are not part of the current view are preserved.
+function removeAllRead(readOrder, ids) {
+    var drop = buildIdMap(ids);
+    var out = [];
+    if (!readOrder || readOrder.length === undefined) {
+        return out;
+    }
+    for (var i = 0; i < readOrder.length; i++) {
+        if (!drop[readOrder[i]]) {
+            out.push(readOrder[i]);
+        }
+    }
+    return out;
+}
+
+// Count items whose id is not in the read map.
+function countUnread(items, readMap) {
+    var n = 0;
+    if (!items || items.length === undefined) {
+        return 0;
+    }
+    for (var i = 0; i < items.length; i++) {
+        var id = items[i] ? items[i].id : "";
+        if (!id || !readMap || !readMap[id]) {
+            n++;
+        }
+    }
+    return n;
+}
+
+// --- Persistence capability detection ---------------------------------------
+//
+// DMS does NOT hand every plugin the same service object. A desktop-widget
+// INSTANCE receives `instanceScopedPluginService` from DesktopPluginWrapper.qml,
+// a reduced shim exposing only loadPluginData/savePluginData/getPluginVariants/
+// isPluginLoaded. It has no loadPluginState/savePluginState, so calling those
+// on an instance throws — which previously aborted startup and stopped the
+// widget from fetching at all. Always feature-detect before use.
+
+function hasStateApi(service) {
+    return !!service
+        && typeof service === "object"
+        && typeof service.loadPluginState === "function"
+        && typeof service.savePluginState === "function";
+}
+
+// Pick the first service that can actually persist state, else null.
+function resolveStateService(preferred, fallback) {
+    if (hasStateApi(preferred)) {
+        return preferred;
+    }
+    if (hasStateApi(fallback)) {
+        return fallback;
+    }
+    return null;
+}
+
+// --- Bookmarks -------------------------------------------------------------
+//
+// Bookmarks are stored as a newest-first id list, same shape as read/seen
+// history, so they persist through the same state-tier mechanism. They are
+// bounded too, but a user's explicit bookmark is more valuable than a read
+// flag, so the cap exists only as a runaway guard — newest entries survive.
+
+function isBookmarked(bookmarkMap, id) {
+    return !!(id && bookmarkMap && bookmarkMap[id]);
+}
+
+function toggleBookmark(bookmarkOrder, id, cap) {
+    if (typeof id !== "string" || id.length === 0) {
+        return boundIdList(bookmarkOrder, cap);
+    }
+    var map = buildIdMap(bookmarkOrder);
+    if (map[id]) {
+        return removeRead(bookmarkOrder, id);
+    }
+    return boundIdList([id].concat(bookmarkOrder || []), cap);
+}
+
+function countBookmarked(items, bookmarkMap) {
+    var n = 0;
+    if (!items || items.length === undefined) {
+        return 0;
+    }
+    for (var i = 0; i < items.length; i++) {
+        var id = items[i] ? items[i].id : "";
+        if (isBookmarked(bookmarkMap, id)) {
+            n++;
+        }
+    }
+    return n;
+}
+
+// --- Search + filtering ----------------------------------------------------
+
+// Split a raw query into lowercase terms. Multiple terms are ANDed, so
+// "linux kernel" matches an item containing both words in any order and in
+// any of the searched fields.
+function tokenizeQuery(query) {
+    if (typeof query !== "string") {
+        return [];
+    }
+    var trimmed = query.trim().toLowerCase();
+    if (trimmed.length === 0) {
+        return [];
+    }
+    var raw = trimmed.split(/\s+/);
+    var out = [];
+    for (var i = 0; i < raw.length; i++) {
+        if (raw[i].length > 0) {
+            out.push(raw[i]);
+        }
+    }
+    return out;
+}
+
+// The text a search query is matched against: title, description, source.
+function itemHaystack(item) {
+    if (!item) {
+        return "";
+    }
+    var title = item.title || "";
+    var description = item.description || "";
+    var source = item.source || "";
+    return (title + " " + description + " " + source).toLowerCase();
+}
+
+function matchesTokens(item, tokens) {
+    if (!tokens || tokens.length === 0) {
+        return true;
+    }
+    var hay = itemHaystack(item);
+    for (var i = 0; i < tokens.length; i++) {
+        if (hay.indexOf(tokens[i]) === -1) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function matchesQuery(item, query) {
+    return matchesTokens(item, tokenizeQuery(query));
+}
+
+// Apply the view filter AND the search query together. `options` is
+// { mode, query, readMap, bookmarkMap } where mode is "all" | "unread" |
+// "bookmarked". An item with no id is treated as unread and un-bookmarked
+// rather than being dropped.
+function filterItems(items, options) {
+    var opts = options || {};
+    var mode = opts.mode || "all";
+    var readMap = opts.readMap || {};
+    var bookmarkMap = opts.bookmarkMap || {};
+    var tokens = tokenizeQuery(opts.query);
+
+    var out = [];
+    if (!items || items.length === undefined) {
+        return out;
+    }
+
+    for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        if (!item) {
+            continue;
+        }
+        var id = item.id || "";
+
+        if (mode === "unread" && id && readMap[id]) {
+            continue;
+        }
+        if (mode === "bookmarked" && !isBookmarked(bookmarkMap, id)) {
+            continue;
+        }
+        if (!matchesTokens(item, tokens)) {
+            continue;
+        }
+        out.push(item);
+    }
+    return out;
+}
+
+// Classify one finished curl attempt into a CONTRACT 6 state.
+// `exitCode` 124 is what Proc.runCommand synthesizes on its own timeout.
+function classifyFetch(exitCode, output, parsedCount) {
+    if (exitCode === 124) {
+        return { state: "timeout", lastError: "Timed out" };
+    }
+    if (exitCode !== 0) {
+        return { state: "error", lastError: "curl exit " + exitCode };
+    }
+    if (!output || output.trim().length === 0) {
+        return { state: "error", lastError: "Empty response" };
+    }
+    if (!parsedCount) {
+        return { state: "error", lastError: "No items found" };
+    }
+    return { state: "ok", lastError: "" };
+}
+
+// A feed with no `enabled` key is enabled. This is the migration rule for
+// configs written before per-feed enable/disable existed.
+function isFeedEnabled(feed) {
+    return !!feed && feed.enabled !== false;
+}
+
+// Position of each configured feed, keyed by URL. Used so that "group by feed"
+// sorting honors the order the user arranged in settings instead of sorting
+// source names alphabetically. Keyed by URL, not display name, because names
+// can repeat or be blank while the URL uniquely identifies a configured feed.
+function feedOrderMap(feeds) {
+    var map = {};
+    if (!feeds || feeds.length === undefined) {
+        return map;
+    }
+    for (var i = 0; i < feeds.length; i++) {
+        var f = feeds[i];
+        if (f && f.url && map[f.url] === undefined) {
+            map[f.url] = i;
+        }
+    }
+    return map;
+}
+
+// Sort comparator for "group by feed": configured feed order first, then
+// newest-first within each feed. Items from an unknown feed sort last.
+var UNRANKED = 999999;
+
+function compareByFeedOrder(a, b, orderMap) {
+    var ai = (orderMap && orderMap[a ? a.sourceUrl : ""] !== undefined)
+        ? orderMap[a.sourceUrl] : UNRANKED;
+    var bi = (orderMap && orderMap[b ? b.sourceUrl : ""] !== undefined)
+        ? orderMap[b.sourceUrl] : UNRANKED;
+    if (ai !== bi) {
+        return ai - bi;
+    }
+    return ((b ? b.timestamp : 0) || 0) - ((a ? a.timestamp : 0) || 0);
+}
+
+// --- Selection (transient, in-memory only — see S9 in v2.3 plan) ----------
+//
+// Selection is a plain { id: true } map, NOT a boundIdList array: it is
+// never persisted, has no cap, and order is irrelevant — only membership
+// matters. Mirrors the readMap/bookmarkMap shape the QML layer already
+// consumes directly.
+
+function toggleSelected(selectedMap, id) {
+    if (typeof id !== "string" || id.length === 0) {
+        return selectedMap || {};
+    }
+    var map = Object.assign({}, selectedMap || {});
+    if (map[id]) {
+        delete map[id];
+    } else {
+        map[id] = true;
+    }
+    return map;
+}
+
+function clearSelection() {
+    return {};
+}
+
+function countSelected(selectedMap) {
+    if (!selectedMap) return 0;
+    return Object.keys(selectedMap).filter(function (k) { return selectedMap[k]; }).length;
+}
+
+// Drop any selected id whose item is no longer in `items` (S10) — keeps
+// selectedCount from ever exceeding what's currently visible.
+function pruneSelected(selectedMap, items) {
+    if (!selectedMap) return {};
+    var present = buildIdMap((items || []).map(function (i) { return i ? i.id : ""; }));
+    var out = {};
+    for (var k in selectedMap) {
+        if (selectedMap[k] && present[k]) {
+            out[k] = true;
+        }
+    }
+    return out;
+}
+
+// Bulk-bookmark, additive only (S7) — mirrors addAllRead exactly (same
+// generic "prepend + dedupe + cap" list operation), given a distinct name
+// at the bookmark call sites so the code reads correctly there. Delegates
+// to addAllRead rather than duplicating its body.
+function addAllBookmarked(bookmarkOrder, ids, cap) {
+    return addAllRead(bookmarkOrder, ids, cap);
+}
+
+// The feeds that a fetch cycle should actually request.
+function activeFeeds(feeds) {
+    var out = [];
+    if (!feeds || feeds.length === undefined) {
+        return out;
+    }
+    for (var i = 0; i < feeds.length; i++) {
+        var f = feeds[i];
+        if (f && f.url && isFeedEnabled(f)) {
+            out.push(f);
+        }
+    }
+    return out;
+}
+
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+        DEFAULT_CAP: DEFAULT_CAP,
+        hasStateApi: hasStateApi,
+        resolveStateService: resolveStateService,
+        boundIdList: boundIdList,
+        buildIdMap: buildIdMap,
+        computeNewIds: computeNewIds,
+        evaluateSeen: evaluateSeen,
+        addRead: addRead,
+        removeRead: removeRead,
+        addAllRead: addAllRead,
+        removeAllRead: removeAllRead,
+        countUnread: countUnread,
+        isBookmarked: isBookmarked,
+        toggleBookmark: toggleBookmark,
+        countBookmarked: countBookmarked,
+        tokenizeQuery: tokenizeQuery,
+        itemHaystack: itemHaystack,
+        matchesQuery: matchesQuery,
+        filterItems: filterItems,
+        classifyFetch: classifyFetch,
+        isFeedEnabled: isFeedEnabled,
+        activeFeeds: activeFeeds,
+        feedOrderMap: feedOrderMap,
+        compareByFeedOrder: compareByFeedOrder,
+        toggleSelected: toggleSelected,
+        clearSelection: clearSelection,
+        countSelected: countSelected,
+        pruneSelected: pruneSelected,
+        addAllBookmarked: addAllBookmarked
+    };
+}
