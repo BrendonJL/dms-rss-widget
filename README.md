@@ -36,14 +36,33 @@ Instead of fetching RSS/Atom URLs directly, the widget can act as a front-end fo
 [Miniflux](https://miniflux.app/) server. Switch **Source** to *Miniflux* in settings, enter your
 server URL and an API token, and hit **Test Connection**.
 
+Switching **Source** to *Miniflux* replaces the RSS Feed Management, OPML Import, and
+Quick Add sections in settings with a Miniflux Connection section (they're RSS-only
+concepts and don't apply once feeds are coming from your Miniflux server). That section
+has:
+
+- **Server URL** and **API Token** fields
+- **Mark as read on open** — sync read state to the server as soon as you open/read an item, not just on the next refresh
+- **Show starred entries** — switches the fetched set to your Miniflux bookmarks instead of unread entries
+- **Test Connection** and **Force Refresh** buttons
+- A read-only list of your Miniflux feed subscriptions
+
 In Miniflux mode:
 
-- Unread (or starred) entries are pulled from the server
-- Opening an item marks it read on the server (toggleable via *Mark as read on open*)
-- The star button bookmarks the entry in Miniflux
-- *Show starred entries* switches the view to your bookmarks
+- Unread (or starred) entries are pulled from the server and flow through the same row UI as RSS items — the same selection checkbox, mark-read control, and bookmark icon described above
+- Opening an item marks it read locally immediately and, if *Mark as read on open* is on, pushes that read state to the server
+- The row's mark-read control also pushes the read/unread change to the server
+- The row's bookmark icon toggles the item's **starred** state in Miniflux (there is no separate star button — Miniflux mode reuses the existing bookmark control instead of adding a second one)
+- Bulk **Save** / **Mark read** on a selection push to the server too (batched into one API call per action, not one call per item)
+- Every successful fetch reconciles server-side read/starred status back into the local read/bookmark state, so the server is the source of truth after each refresh even though local clicks are instant
+- Switching back to Standard/RSS mode leaves your RSS feeds' read/bookmark state exactly as you left it — mode switching never clears read or bookmark history in either direction
 
 Create an API token in Miniflux under **Settings → API Keys**.
+
+**A note on the token:** the API token is stored in plaintext in the plugin's settings,
+the same way every other setting (feed URLs, refresh interval, etc.) is stored — there is
+no separate encryption or keyring for it. Keep that in mind if your DMS settings file is
+backed up, synced, or otherwise readable by other tools.
 
 ### Planned (not in this milestone)
 
@@ -58,6 +77,7 @@ Create an API token in Miniflux under **Settings → API Keys**.
 - At very narrow widget widths (approaching the 100px floor) the filter chips can still crowd each other. Fully solving it would need chip wrapping or eliding, which is not implemented. At normal sizes (the default and above) this is not visible.
 - Compact view rows reserve slightly more vertical padding than their margins strictly need. This is a pre-existing cosmetic issue, not introduced or fixed in this release.
 - The widget now declares `acceptsKeyboardFocus` (gated to when search is open) so the search field can receive typed input. No other widget in the installed DMS build uses this property, so while it is wired correctly per the documented mechanism, its behavior is unproven across DMS versions and may interact with compositor-specific layer-shell focus policy.
+- The Miniflux settings layout (Connection section, read-only feed list, mode-gated visibility of the RSS-only sections) has not been visually verified in a live DMS session.
 
 ## Installation
 
@@ -168,7 +188,7 @@ Requires Node.js 18+ (uses the built-in `node:test` runner).
 
 ### Test Coverage
 
-180 tests across 27 suites — covering (among other things):
+240 tests across 32 suites — covering (among other things):
 
 | Area | What it covers |
 |------|-----------------|
@@ -198,6 +218,8 @@ Requires Node.js 18+ (uses the built-in `node:test` runner).
 | `tokenizeQuery` | Lowercasing, whitespace splitting, empty/non-string input |
 | search matching | Matches on title, description, and source name; multiple terms ANDed, including across different fields; empty query matches everything; items with missing fields don't throw |
 | `filterItems` | All/Unread/Saved modes combined with a search query; search narrows within Unread and within Saved; items with no ID treated as unread and un-bookmarked; unknown mode falls back to showing everything |
+| `parseMinifluxEntries` | Mapping Miniflux JSON entries to the standard Item shape with `"m:"`-prefixed stable ids, id-collision safety against RSS's `makeItemId`, content-over-summary description preference, image extraction (enclosure over inline `<img>`, `isSafeUrl`-gated), and malformed/empty-input handling |
+| `reconcileServerStatus` | Server-wins reconciliation of Miniflux read/starred status into local `readOrder`/`bookmarkOrder`: adding/removing entries, no-op when already in sync, mixed batches, cap enforcement, and null/undefined input safety |
 
 ## Migration / upgrading from 1.x
 
@@ -210,6 +232,22 @@ Requires Node.js 18+ (uses the built-in `node:test` runner).
 ![RSS Widget on desktop](screenshot.png)
 
 ## Changelog
+
+**1.0.0 is the only version previously published to the DMS registry.** The 2.0.0
+through 2.2.0 entries below were developed but never released — this is the first
+published update since 1.0.0, so if you're upgrading from 1.0.0, every entry from
+2.0.0 through 2.3.0 applies to you.
+
+### 2.3.0
+
+- **Community contributions merged, not reimplemented.** Five community PRs, previously merged into git history but absent from the working tree pending this rewrite, are now ported onto the current architecture (stable item IDs, `ReaderState.js`, persisted read/bookmark state, selection model):
+  - **#1 and #5 (Xn4m3d): security hardening and the overlapping-fetch fix.** curl's protocol/redirect/response-size limits and a `null` Proc id plus stale-run token so an overlapping fetch can no longer deliver one feed's output to another feed's callback and produce duplicate items.
+  - **#2 (Xn4m3d): loading state.** Shows a loading state instead of a blank flash when the widget is recreated on resize.
+  - **#3 (Xn4m3d): niri overview click guard.** Clicks on the widget are ignored while the niri overview is open, and for a short release window after it closes, so clicking a workspace thumbnail positioned over the widget can no longer land on it and silently open a link or mark an item read.
+  - **#6 (alexanderi96): Miniflux source mode.** See below and the new "Miniflux mode" section.
+- **Row interaction model**: each row now has a selection checkbox, a separate mark-read control, and a separate save (bookmark) control — all always clickable, independent of hover state. A selection bar lets you bulk **Save** or **Mark read** across everything currently selected.
+- **Security hardening** (from #1, carried through the port and applied to Miniflux calls too): link opening and thumbnail loading are gated behind a positive http/https allowlist (`isSafeUrl` in `FeedParser.js`) that fails closed on `javascript:`, `data:`, control characters, and embedded whitespace. Every curl invocation (RSS fetch and Miniflux) is restricted to http/https on both the initial request and any redirect (`--proto`/`--proto-redir`), capped at 5 redirects, and capped at a 5MB download; the response is re-checked for size before being handed to the parser as a belt-and-suspenders measure.
+- **Miniflux source mode** (ported from #6): sync with a self-hosted Miniflux server instead of fetching feeds directly. The port moves it onto the stable item ID scheme and the existing persisted read/bookmark store instead of #6's original separate entry-status map — see "Miniflux mode" below for what changed in the UI as a result.
 
 ### 2.2.0
 
