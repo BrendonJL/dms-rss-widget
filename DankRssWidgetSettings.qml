@@ -1,14 +1,72 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Common
+import qs.Services
 import qs.Widgets
 import qs.Modules.Plugins
+import "FeedParser.js" as FeedParser
+import "ReaderState.js" as ReaderState
 
 PluginSettings {
     id: root
     pluginId: "dankRssWidget"
 
     property int editingIndex: -1
+    property string urlError: ""
+    property var feedStatuses: []
+
+    // The injected pluginService is NOT always the real PluginService: a
+    // desktop-widget instance gets a reduced shim with no load/savePluginState.
+    // Feature-detect and fall back rather than throwing (which would abort this
+    // handler and leave the settings page half-initialised).
+    readonly property var stateService: ReaderState.resolveStateService(
+        typeof PluginService !== "undefined" ? PluginService : null,
+        root.pluginService)
+
+    function refreshFeedStatuses() {
+        if (!root.stateService || !root.pluginId) {
+            feedStatuses = [];
+            return;
+        }
+        try {
+            feedStatuses = root.stateService.loadPluginState(root.pluginId, "feedStatus", []) || [];
+        } catch (e) {
+            console.warn("DankRssWidget settings: could not read feed status", e);
+            feedStatuses = [];
+        }
+    }
+
+    function statusForUrl(url) {
+        var list = root.feedStatuses || [];
+        for (var i = 0; i < list.length; i++) {
+            if (list[i] && list[i].url === url) {
+                return list[i];
+            }
+        }
+        return null;
+    }
+
+    function validateFeedUrl(rawUrl) {
+        var url = (rawUrl || "").trim();
+        if (!url) {
+            return { ok: false, error: "Feed URL is required", url: "" };
+        }
+        if (!/^https?:\/\//i.test(url)) {
+            url = "https://" + url;
+        }
+        var looksValid = /^https?:\/\/[^\s]+\.[^\s]+/i.test(url) || /^https?:\/\/localhost(:\d+)?/i.test(url);
+        if (!looksValid) {
+            return { ok: false, error: "Enter a valid URL (starting with http:// or https://)", url: "" };
+        }
+        return { ok: true, error: "", url: url };
+    }
+
+    Component.onCompleted: root.refreshFeedStatuses()
+    onVisibleChanged: {
+        if (root.visible) {
+            root.refreshFeedStatuses();
+        }
+    }
 
     // --- Header ---
     StyledText {
@@ -200,6 +258,16 @@ PluginSettings {
                     onFocusStateChanged: hasFocus => {
                         if (hasFocus) root.ensureItemVisible(urlField);
                     }
+                    onTextChanged: root.urlError = ""
+                }
+
+                StyledText {
+                    visible: root.urlError !== ""
+                    width: parent.width
+                    text: root.urlError
+                    font.pixelSize: Theme.fontSizeSmall - 2
+                    color: Theme.error
+                    wrapMode: Text.WordWrap
                 }
             }
 
@@ -211,22 +279,27 @@ PluginSettings {
                     iconName: root.editingIndex === -1 ? "add" : "save"
 
                     onClicked: {
-                        var url = urlField.text.trim();
-                        if (!url) {
-                            if (typeof ToastService !== "undefined") {
-                                ToastService.showError("Please enter a feed URL");
-                            }
+                        var validated = root.validateFeedUrl(urlField.text);
+                        if (!validated.ok) {
+                            root.urlError = validated.error;
                             return;
                         }
+                        root.urlError = "";
 
+                        var url = validated.url;
                         var name = nameField.text.trim() || url;
-                        var feed = { name: name, url: url };
 
                         var currentFeeds = root.loadValue("feeds", []);
                         if (root.editingIndex === -1) {
-                            currentFeeds = currentFeeds.concat([feed]);
+                            currentFeeds = currentFeeds.concat([{ name: name, url: url, enabled: true, addedAt: Date.now() }]);
                         } else {
-                            currentFeeds[root.editingIndex] = feed;
+                            var existing = currentFeeds[root.editingIndex] || {};
+                            currentFeeds[root.editingIndex] = {
+                                name: name,
+                                url: url,
+                                enabled: existing.enabled !== false,
+                                addedAt: existing.addedAt
+                            };
                             root.editingIndex = -1;
                         }
                         root.saveValue("feeds", currentFeeds);
@@ -242,6 +315,7 @@ PluginSettings {
                     visible: root.editingIndex !== -1
                     onClicked: {
                         root.editingIndex = -1;
+                        root.urlError = "";
                         nameField.text = "";
                         urlField.text = "";
                     }
@@ -286,6 +360,7 @@ PluginSettings {
                     height: feedInfoRow.implicitHeight + Theme.spacingM * 2
                     radius: Theme.cornerRadius
                     color: feedItemMouse.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainer
+                    opacity: modelData.enabled === false ? 0.55 : 1.0
 
                     RowLayout {
                         id: feedInfoRow
@@ -307,7 +382,7 @@ PluginSettings {
                                 text: modelData.name || ""
                                 font.pixelSize: Theme.fontSizeSmall
                                 font.weight: Font.Medium
-                                color: Theme.surfaceText
+                                color: modelData.enabled === false ? Theme.surfaceVariantText : Theme.surfaceText
                                 Layout.fillWidth: true
                                 elide: Text.ElideRight
                             }
@@ -318,6 +393,132 @@ PluginSettings {
                                 color: Theme.surfaceVariantText
                                 Layout.fillWidth: true
                                 elide: Text.ElideMiddle
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Theme.spacingXS
+
+                                property var feedStatus: root.statusForUrl(modelData.url)
+
+                                DankIcon {
+                                    visible: parent.feedStatus !== null && parent.feedStatus.state === "ok"
+                                    name: "check_circle"
+                                    size: 12
+                                    color: Theme.success
+                                }
+
+                                DankIcon {
+                                    visible: parent.feedStatus !== null && (parent.feedStatus.state === "error" || parent.feedStatus.state === "timeout")
+                                    name: "error"
+                                    size: 12
+                                    color: Theme.error
+                                }
+
+                                StyledText {
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideRight
+                                    font.pixelSize: Theme.fontSizeSmall - 2
+                                    text: {
+                                        var st = root.statusForUrl(modelData.url);
+                                        if (modelData.enabled === false) return "Disabled";
+                                        if (!st) return "Not fetched yet";
+                                        if (st.state === "ok") return (st.itemCount || 0) + " items";
+                                        if (st.state === "error" || st.state === "timeout") return st.lastError || "Fetch failed";
+                                        if (st.state === "disabled") return "Disabled";
+                                        return "Not fetched yet";
+                                    }
+                                    color: {
+                                        var st = root.statusForUrl(modelData.url);
+                                        if (modelData.enabled === false) return Theme.surfaceVariantText;
+                                        if (st && (st.state === "error" || st.state === "timeout")) return Theme.error;
+                                        if (st && st.state === "ok") return Theme.success;
+                                        return Theme.surfaceVariantText;
+                                    }
+                                }
+                            }
+                        }
+
+                        DankToggle {
+                            checked: modelData.enabled !== false
+                            onToggled: isChecked => {
+                                var currentFeeds = root.loadValue("feeds", []);
+                                if (index >= 0 && index < currentFeeds.length) {
+                                    currentFeeds[index].enabled = isChecked;
+                                    root.saveValue("feeds", currentFeeds);
+                                }
+                            }
+                        }
+
+                        // Move up button
+                        Rectangle {
+                            id: moveUpButton
+                            width: 32; height: 32; radius: 16
+                            enabled: index > 0
+                            opacity: enabled ? 1.0 : 0.35
+                            color: enabled && moveUpArea.containsMouse ? Theme.primary : "transparent"
+
+                            DankIcon {
+                                anchors.centerIn: parent
+                                name: "arrow_upward"
+                                size: 16
+                                color: moveUpButton.enabled && moveUpArea.containsMouse ? Theme.onPrimary : Theme.surfaceVariantText
+                            }
+
+                            MouseArea {
+                                id: moveUpArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    var currentFeeds = root.loadValue("feeds", []);
+                                    if (index > 0 && index < currentFeeds.length) {
+                                        var t = currentFeeds[index - 1];
+                                        currentFeeds[index - 1] = currentFeeds[index];
+                                        currentFeeds[index] = t;
+                                        root.editingIndex = -1;
+                                        root.urlError = "";
+                                        nameField.text = "";
+                                        urlField.text = "";
+                                        root.saveValue("feeds", currentFeeds);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Move down button
+                        Rectangle {
+                            id: moveDownButton
+                            width: 32; height: 32; radius: 16
+                            enabled: index < feedsListView.count - 1
+                            opacity: enabled ? 1.0 : 0.35
+                            color: enabled && moveDownArea.containsMouse ? Theme.primary : "transparent"
+
+                            DankIcon {
+                                anchors.centerIn: parent
+                                name: "arrow_downward"
+                                size: 16
+                                color: moveDownButton.enabled && moveDownArea.containsMouse ? Theme.onPrimary : Theme.surfaceVariantText
+                            }
+
+                            MouseArea {
+                                id: moveDownArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    var currentFeeds = root.loadValue("feeds", []);
+                                    if (index >= 0 && index < currentFeeds.length - 1) {
+                                        var t = currentFeeds[index + 1];
+                                        currentFeeds[index + 1] = currentFeeds[index];
+                                        currentFeeds[index] = t;
+                                        root.editingIndex = -1;
+                                        root.urlError = "";
+                                        nameField.text = "";
+                                        urlField.text = "";
+                                        root.saveValue("feeds", currentFeeds);
+                                    }
+                                }
                             }
                         }
 
@@ -340,6 +541,7 @@ PluginSettings {
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: {
                                     root.editingIndex = index;
+                                    root.urlError = "";
                                     var feed = root.loadValue("feeds", [])[index];
                                     nameField.text = feed.name || "";
                                     urlField.text = feed.url || "";
@@ -451,7 +653,7 @@ PluginSettings {
                             ToastService.showError("Paste OPML content first");
                         return;
                     }
-                    var imported = parseOpml(xml);
+                    var imported = FeedParser.parseOpml(xml);
                     if (imported.length === 0) {
                         if (typeof ToastService !== "undefined")
                             ToastService.showError("No feeds found in OPML");
@@ -476,23 +678,6 @@ PluginSettings {
                 }
             }
         }
-    }
-
-    function parseOpml(xml) {
-        var feeds = [];
-        var outlineRegex = /<outline[^>]*xmlUrl=["']([^"']+)["'][^>]*>/gi;
-        var match;
-        while ((match = outlineRegex.exec(xml)) !== null) {
-            var fullTag = match[0];
-            var url = match[1].replace(/&amp;/g, "&");
-
-            // Extract title or text attribute
-            var titleMatch = fullTag.match(/(?:title|text)=["']([^"']+)["']/i);
-            var name = titleMatch ? titleMatch[1].replace(/&amp;/g, "&") : url;
-
-            feeds.push({ name: name, url: url });
-        }
-        return feeds;
     }
 
     StyledRect {
@@ -681,7 +866,7 @@ PluginSettings {
                 return;
             }
         }
-        currentFeeds = currentFeeds.concat([{ name: name, url: url }]);
+        currentFeeds = currentFeeds.concat([{ name: name, url: url, enabled: true, addedAt: Date.now() }]);
         root.saveValue("feeds", currentFeeds);
         if (typeof ToastService !== "undefined") {
             ToastService.showInfo("Added " + name);
