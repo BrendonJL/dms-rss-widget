@@ -6,11 +6,14 @@ const {
     stripHtml,
     getRelativeTime,
     extractImageUrl,
+    isSafeUrl,
+    makeItemId,
     parseRssFeed,
     parseAtomFeed,
     parseFeed,
-    parseOpml
-} = require("./feed-parser");
+    parseOpml,
+    dedupeItems
+} = require("../FeedParser.js");
 
 // ─── extractTag ───
 
@@ -201,6 +204,105 @@ describe("extractImageUrl", () => {
     test("returns empty string when no image found", () => {
         assert.equal(extractImageUrl("<title>No image here</title>", "Just text"), "");
     });
+
+    test("drops a file: URL found via media:thumbnail (SECURITY)", () => {
+        const block = '<media:thumbnail url="file:///etc/passwd"/>';
+        assert.equal(extractImageUrl(block, ""), "");
+    });
+
+    test("drops a javascript: URL found via inline <img> src (SECURITY)", () => {
+        const content = '&lt;img src=&quot;javascript:alert(1)&quot; /&gt;';
+        assert.equal(extractImageUrl("", content), "");
+    });
+});
+
+// ─── isSafeUrl ───
+
+describe("isSafeUrl", () => {
+    test("accepts plain https URL", () => {
+        assert.equal(isSafeUrl("https://ok.example/x"), true);
+    });
+
+    test("accepts plain http URL", () => {
+        assert.equal(isSafeUrl("http://ok.example/x"), true);
+    });
+
+    test("accepts uppercase scheme", () => {
+        assert.equal(isSafeUrl("HTTPS://ok.example/x"), true);
+        assert.equal(isSafeUrl("HTTP://ok.example/x"), true);
+    });
+
+    test("accepts URL with surrounding whitespace after trimming", () => {
+        assert.equal(isSafeUrl("  https://ok.example/x  \n"), true);
+    });
+
+    test("rejects file: scheme", () => {
+        assert.equal(isSafeUrl("file:///etc/passwd"), false);
+    });
+
+    test("rejects javascript: scheme", () => {
+        assert.equal(isSafeUrl("javascript:alert(1)"), false);
+    });
+
+    test("rejects mixed-case javascript: scheme", () => {
+        assert.equal(isSafeUrl("JaVaScRiPt:alert(1)"), false);
+    });
+
+    test("rejects javascript: with leading whitespace/newline", () => {
+        assert.equal(isSafeUrl("  javascript:alert(1)"), false);
+        assert.equal(isSafeUrl("\njavascript:alert(1)"), false);
+    });
+
+    test("rejects data: scheme", () => {
+        assert.equal(isSafeUrl("data:text/html,x"), false);
+    });
+
+    test("rejects qrc: scheme", () => {
+        assert.equal(isSafeUrl("qrc:/some/resource"), false);
+    });
+
+    test("rejects scheme-relative //host form", () => {
+        assert.equal(isSafeUrl("//evil.example/x"), false);
+    });
+
+    test("rejects empty string", () => {
+        assert.equal(isSafeUrl(""), false);
+    });
+
+    test("rejects whitespace-only string", () => {
+        assert.equal(isSafeUrl("   "), false);
+    });
+
+    test("rejects null and undefined", () => {
+        assert.equal(isSafeUrl(null), false);
+        assert.equal(isSafeUrl(undefined), false);
+    });
+
+    test("rejects non-string input", () => {
+        assert.equal(isSafeUrl(123), false);
+        assert.equal(isSafeUrl({}), false);
+        assert.equal(isSafeUrl([]), false);
+    });
+
+    test("rejects a URL containing an embedded tab", () => {
+        assert.equal(isSafeUrl("https://ok.example/\tx"), false);
+    });
+
+    test("rejects a URL containing an embedded newline", () => {
+        assert.equal(isSafeUrl("https://ok.example/\nx"), false);
+    });
+
+    test("rejects a URL containing an embedded NUL byte", () => {
+        assert.equal(isSafeUrl("https://ok.example/ x"), false);
+    });
+
+    test("rejects javascript: hidden via embedded control char split (still fails allowlist)", () => {
+        assert.equal(isSafeUrl("java script:alert(1)"), false);
+    });
+
+    test("rejects an http URL with a control character even if scheme matches", () => {
+        assert.equal(isSafeUrl("https://ok.example/x"), false);
+    });
 });
 
 // ─── parseRssFeed ───
@@ -248,6 +350,24 @@ describe("parseRssFeed", () => {
         assert.equal(items[0].link, "https://example.com/1");
     });
 
+    test("decodes &amp; in link", () => {
+        const xml = `<rss><channel><item>
+            <title>T</title>
+            <link>https://www.bbc.co.uk/news/x?at_medium=RSS&amp;at_campaign=rss</link>
+        </item></channel></rss>`;
+        const items = parseRssFeed(xml, "BBC", "");
+        assert.equal(items[0].link, "https://www.bbc.co.uk/news/x?at_medium=RSS&at_campaign=rss");
+    });
+
+    test("decodes numeric entity in link", () => {
+        const xml = `<rss><channel><item>
+            <title>T</title>
+            <link>https://example.com/caf&#233;</link>
+        </item></channel></rss>`;
+        const items = parseRssFeed(xml, "S", "");
+        assert.equal(items[0].link, "https://example.com/café");
+    });
+
     test("strips HTML from descriptions", () => {
         const items = parseRssFeed(RSS_SAMPLE, "Test");
         assert.equal(items[0].description, "This is article one");
@@ -267,6 +387,21 @@ describe("parseRssFeed", () => {
         items.forEach(item => assert.equal(item.source, "MySource"));
     });
 
+    test("sets sourceUrl on all items", () => {
+        const items = parseRssFeed(RSS_SAMPLE, "Test", "https://example.com/feed.xml");
+        items.forEach(item => assert.equal(item.sourceUrl, "https://example.com/feed.xml"));
+    });
+
+    test("defaults sourceUrl to empty string when not supplied", () => {
+        const items = parseRssFeed(RSS_SAMPLE, "Test");
+        items.forEach(item => assert.equal(item.sourceUrl, ""));
+    });
+
+    test("assigns a non-empty id to every item", () => {
+        const items = parseRssFeed(RSS_SAMPLE, "Test");
+        items.forEach(item => assert.ok(item.id && item.id.length > 0));
+    });
+
     test("extracts timestamps", () => {
         const items = parseRssFeed(RSS_SAMPLE, "Test");
         assert.ok(items[0].timestamp > 0);
@@ -277,6 +412,33 @@ describe("parseRssFeed", () => {
         const items = parseRssFeed(RSS_SAMPLE, "Test");
         assert.equal(items[0].imageUrl, "");
         assert.equal(items[1].imageUrl, "https://img.com/2.jpg");
+    });
+
+    test("drops a file: image URL to empty string (SECURITY)", () => {
+        const xml = `<rss><channel><item>
+            <title>T</title><link>https://x.com/1</link>
+            <media:thumbnail url="file:///etc/passwd"/>
+        </item></channel></rss>`;
+        const items = parseRssFeed(xml, "Test");
+        assert.equal(items[0].imageUrl, "");
+    });
+
+    test("drops a javascript: image URL to empty string (SECURITY)", () => {
+        const xml = `<rss><channel><item>
+            <title>T</title><link>https://x.com/1</link>
+            <media:thumbnail url="javascript:alert(1)"/>
+        </item></channel></rss>`;
+        const items = parseRssFeed(xml, "Test");
+        assert.equal(items[0].imageUrl, "");
+    });
+
+    test("keeps a normal https image URL (SECURITY control)", () => {
+        const xml = `<rss><channel><item>
+            <title>T</title><link>https://x.com/1</link>
+            <media:thumbnail url="https://img.com/ok.jpg"/>
+        </item></channel></rss>`;
+        const items = parseRssFeed(xml, "Test");
+        assert.equal(items[0].imageUrl, "https://img.com/ok.jpg");
     });
 
     test("skips items with no title and no link", () => {
@@ -326,6 +488,15 @@ describe("parseAtomFeed", () => {
         assert.equal(items[1].link, "https://example.com/atom/2");
     });
 
+    test("decodes &amp; in atom link href", () => {
+        const xml = `<feed><entry>
+            <title>T</title>
+            <link rel="alternate" href="https://example.com/a?x=1&amp;y=2"/>
+        </entry></feed>`;
+        const items = parseAtomFeed(xml, "Example", "");
+        assert.equal(items[0].link, "https://example.com/a?x=1&y=2");
+    });
+
     test("uses summary or content for description", () => {
         const items = parseAtomFeed(ATOM_SAMPLE, "AtomTest");
         assert.equal(items[0].description, "Summary of entry 1");
@@ -343,6 +514,36 @@ describe("parseAtomFeed", () => {
         const items = parseAtomFeed(ATOM_SAMPLE, "AtomTest");
         assert.equal(items[0].imageUrl, "https://img.com/atom1.jpg");
         assert.equal(items[1].imageUrl, "");
+    });
+
+    test("drops a file: image URL to empty string (SECURITY)", () => {
+        const xml = `<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+            <title>T</title>
+            <link href="https://x.com/1"/>
+            <media:thumbnail url="file:///etc/passwd"/>
+        </entry></feed>`;
+        const items = parseAtomFeed(xml, "AtomTest");
+        assert.equal(items[0].imageUrl, "");
+    });
+
+    test("drops a javascript: image URL to empty string (SECURITY)", () => {
+        const xml = `<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+            <title>T</title>
+            <link href="https://x.com/1"/>
+            <media:thumbnail url="javascript:alert(1)"/>
+        </entry></feed>`;
+        const items = parseAtomFeed(xml, "AtomTest");
+        assert.equal(items[0].imageUrl, "");
+    });
+
+    test("sets sourceUrl on all entries", () => {
+        const items = parseAtomFeed(ATOM_SAMPLE, "AtomTest", "https://example.com/atom.xml");
+        items.forEach(item => assert.equal(item.sourceUrl, "https://example.com/atom.xml"));
+    });
+
+    test("assigns a non-empty id to every entry", () => {
+        const items = parseAtomFeed(ATOM_SAMPLE, "AtomTest");
+        items.forEach(item => assert.ok(item.id && item.id.length > 0));
     });
 });
 
@@ -415,5 +616,316 @@ describe("parseOpml", () => {
     test("ignores outlines without xmlUrl", () => {
         const xml = '<opml><body><outline text="Category"><outline text="No URL"/></outline></body></opml>';
         assert.deepEqual(parseOpml(xml), []);
+    });
+
+    test("tolerates xmlUrl appearing before title/text", () => {
+        const xml = '<opml><body><outline xmlUrl="https://example.com/a" title="A Feed" text="A"/></body></opml>';
+        const feeds = parseOpml(xml);
+        assert.equal(feeds.length, 1);
+        assert.equal(feeds[0].url, "https://example.com/a");
+        assert.equal(feeds[0].name, "A Feed");
+    });
+
+    test("tolerates xmlUrl appearing after title/text (reversed order)", () => {
+        const xml = '<outline text="A" title="A Feed" xmlUrl="https://example.com/a"/>';
+        const feeds = parseOpml(`<opml><body>${xml}</body></opml>`);
+        assert.equal(feeds.length, 1);
+        assert.equal(feeds[0].url, "https://example.com/a");
+        assert.equal(feeds[0].name, "A Feed");
+    });
+
+    test("prefers title over text when both exist, regardless of order", () => {
+        const xmlTitleFirst = '<outline title="Title Wins" text="Text Loses" xmlUrl="https://example.com/x"/>';
+        const xmlTextFirst = '<outline text="Text Loses" title="Title Wins" xmlUrl="https://example.com/x"/>';
+        assert.equal(parseOpml(`<opml><body>${xmlTitleFirst}</body></opml>`)[0].name, "Title Wins");
+        assert.equal(parseOpml(`<opml><body>${xmlTextFirst}</body></opml>`)[0].name, "Title Wins");
+    });
+
+    test("handles duplicate outlines (does not dedupe on its own)", () => {
+        const xml = `<opml><body>
+            <outline text="Dup" xmlUrl="https://example.com/dup"/>
+            <outline text="Dup" xmlUrl="https://example.com/dup"/>
+        </body></opml>`;
+        const feeds = parseOpml(xml);
+        assert.equal(feeds.length, 2);
+        assert.equal(feeds[0].url, feeds[1].url);
+    });
+});
+
+// ─── makeItemId ───
+
+describe("makeItemId", () => {
+    test("prefers rawId (guid/atom id) with g: prefix", () => {
+        assert.equal(
+            makeItemId("abc-123", "https://x.com/1", "Src", "Title", "date"),
+            "g:abc-123"
+        );
+    });
+
+    test("trims rawId before prefixing", () => {
+        assert.equal(
+            makeItemId("  abc-123  ", "https://x.com/1", "Src", "Title", "date"),
+            "g:abc-123"
+        );
+    });
+
+    test("falls back to link with l: prefix when rawId is empty", () => {
+        assert.equal(
+            makeItemId("", "https://x.com/1", "Src", "Title", "date"),
+            "l:https://x.com/1"
+        );
+    });
+
+    test("falls back to hash with h: prefix when neither rawId nor link exist", () => {
+        const id = makeItemId("", "", "Src", "Title", "date");
+        assert.ok(id.indexOf("h:") === 0);
+    });
+
+    test("hash fallback is deterministic across calls", () => {
+        const id1 = makeItemId("", "", "Src", "Same Title", "2026-01-01");
+        const id2 = makeItemId("", "", "Src", "Same Title", "2026-01-01");
+        assert.equal(id1, id2);
+    });
+
+    test("hash fallback differs for different titles", () => {
+        const id1 = makeItemId("", "", "Src", "Title A", "2026-01-01");
+        const id2 = makeItemId("", "", "Src", "Title B", "2026-01-01");
+        assert.notEqual(id1, id2);
+    });
+
+    test("hash fallback is stable across process runs (no Date.now/Math.random)", () => {
+        // Same call twice in the same run must produce identical output;
+        // this is a proxy for "no time- or randomness-based inputs".
+        const a = makeItemId(null, null, "Src", "T", "D");
+        const b = makeItemId(null, null, "Src", "T", "D");
+        assert.equal(a, b);
+    });
+});
+
+// ─── id extraction integration (RSS/Atom) ───
+
+describe("id extraction — RSS <guid>", () => {
+    test("uses guid as id", () => {
+        const xml = `<rss><channel><item>
+            <title>T</title><link>https://x.com/1</link>
+            <guid>unique-guid-1</guid>
+        </item></channel></rss>`;
+        const items = parseRssFeed(xml, "Test");
+        assert.equal(items[0].id, "g:unique-guid-1");
+    });
+
+    test("uses guid as id when isPermaLink=false", () => {
+        const xml = `<rss><channel><item>
+            <title>T</title><link>https://x.com/1</link>
+            <guid isPermaLink="false">tag:example.com,2026:1</guid>
+        </item></channel></rss>`;
+        const items = parseRssFeed(xml, "Test");
+        assert.equal(items[0].id, "g:tag:example.com,2026:1");
+    });
+
+    test("uses guid as id when isPermaLink attribute is absent", () => {
+        const xml = `<rss><channel><item>
+            <title>T</title><link>https://x.com/1</link>
+            <guid>https://x.com/1</guid>
+        </item></channel></rss>`;
+        const items = parseRssFeed(xml, "Test");
+        assert.equal(items[0].id, "g:https://x.com/1");
+    });
+
+    test("uses guid wrapped in CDATA as id", () => {
+        const xml = `<rss><channel><item>
+            <title>T</title><link>https://x.com/1</link>
+            <guid><![CDATA[cdata-guid-1]]></guid>
+        </item></channel></rss>`;
+        const items = parseRssFeed(xml, "Test");
+        assert.equal(items[0].id, "g:cdata-guid-1");
+    });
+
+    test("falls back to link when no guid present", () => {
+        const xml = `<rss><channel><item>
+            <title>T</title><link>https://x.com/no-guid</link>
+        </item></channel></rss>`;
+        const items = parseRssFeed(xml, "Test");
+        assert.equal(items[0].id, "l:https://x.com/no-guid");
+    });
+
+    test("supports <dc:date> as a date fallback after pubDate", () => {
+        const xml = `<rss><channel><item>
+            <title>T</title><link>https://x.com/1</link>
+            <dc:date>2026-02-10T12:00:00Z</dc:date>
+        </item></channel></rss>`;
+        const items = parseRssFeed(xml, "Test");
+        assert.equal(items[0].dateStr, "2026-02-10T12:00:00Z");
+        assert.ok(items[0].timestamp > 0);
+    });
+
+    test("pubDate takes priority over dc:date when both exist", () => {
+        const xml = `<rss><channel><item>
+            <title>T</title><link>https://x.com/1</link>
+            <pubDate>Mon, 10 Feb 2026 12:00:00 GMT</pubDate>
+            <dc:date>2020-01-01T00:00:00Z</dc:date>
+        </item></channel></rss>`;
+        const items = parseRssFeed(xml, "Test");
+        assert.equal(items[0].dateStr, "Mon, 10 Feb 2026 12:00:00 GMT");
+    });
+
+    test("malformed/missing date yields timestamp 0 without throwing", () => {
+        const xml = `<rss><channel><item>
+            <title>T</title><link>https://x.com/1</link>
+            <pubDate>not a real date</pubDate>
+        </item></channel></rss>`;
+        assert.doesNotThrow(() => {
+            const items = parseRssFeed(xml, "Test");
+            assert.equal(items[0].timestamp, 0);
+        });
+    });
+
+    test("missing date entirely yields timestamp 0", () => {
+        const xml = `<rss><channel><item>
+            <title>T</title><link>https://x.com/1</link>
+        </item></channel></rss>`;
+        const items = parseRssFeed(xml, "Test");
+        assert.equal(items[0].timestamp, 0);
+    });
+});
+
+describe("id extraction — Atom <id>", () => {
+    test("uses atom id as item id", () => {
+        const xml = `<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+            <title>T</title>
+            <id>urn:uuid:1234</id>
+            <link href="https://x.com/1"/>
+        </entry></feed>`;
+        const items = parseAtomFeed(xml, "Test");
+        assert.equal(items[0].id, "g:urn:uuid:1234");
+    });
+
+    test("falls back to link when atom id is absent", () => {
+        const xml = `<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+            <title>T</title>
+            <link href="https://x.com/1"/>
+        </entry></feed>`;
+        const items = parseAtomFeed(xml, "Test");
+        assert.equal(items[0].id, "l:https://x.com/1");
+    });
+
+    test("malformed date yields timestamp 0 without throwing", () => {
+        const xml = `<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+            <title>T</title>
+            <link href="https://x.com/1"/>
+            <updated>not-a-date</updated>
+        </entry></feed>`;
+        assert.doesNotThrow(() => {
+            const items = parseAtomFeed(xml, "Test");
+            assert.equal(items[0].timestamp, 0);
+        });
+    });
+});
+
+describe("Atom alternate-link selection is attribute-order independent", () => {
+    test("rel before href resolves to alternate", () => {
+        const xml = `<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+            <title>T</title>
+            <link rel="alternate" href="https://x.com/alt"/>
+        </entry></feed>`;
+        const items = parseAtomFeed(xml, "Test");
+        assert.equal(items[0].link, "https://x.com/alt");
+    });
+
+    test("href before rel also resolves to alternate", () => {
+        const xml = `<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+            <title>T</title>
+            <link href="https://x.com/alt" rel="alternate"/>
+        </entry></feed>`;
+        const items = parseAtomFeed(xml, "Test");
+        assert.equal(items[0].link, "https://x.com/alt");
+    });
+
+    test("link with no rel attribute at all counts as alternate", () => {
+        const xml = `<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+            <title>T</title>
+            <link href="https://x.com/no-rel"/>
+        </entry></feed>`;
+        const items = parseAtomFeed(xml, "Test");
+        assert.equal(items[0].link, "https://x.com/no-rel");
+    });
+
+    test("rel=self appearing first is skipped in favor of a later alternate", () => {
+        const xml = `<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+            <title>T</title>
+            <link rel="self" href="https://x.com/self"/>
+            <link href="https://x.com/real" rel="alternate"/>
+        </entry></feed>`;
+        const items = parseAtomFeed(xml, "Test");
+        assert.equal(items[0].link, "https://x.com/real");
+    });
+
+    test("rel=enclosure is not chosen when an alternate exists", () => {
+        const xml = `<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+            <title>T</title>
+            <link rel="enclosure" href="https://x.com/media.mp3"/>
+            <link rel="alternate" href="https://x.com/real"/>
+        </entry></feed>`;
+        const items = parseAtomFeed(xml, "Test");
+        assert.equal(items[0].link, "https://x.com/real");
+    });
+
+    test("no alternate present falls back to the first link seen", () => {
+        const xml = `<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+            <title>T</title>
+            <link rel="self" href="https://x.com/self"/>
+            <link rel="enclosure" href="https://x.com/media.mp3"/>
+        </entry></feed>`;
+        const items = parseAtomFeed(xml, "Test");
+        assert.equal(items[0].link, "https://x.com/self");
+    });
+});
+
+// ─── extractImageUrl: enclosure attribute order ───
+
+describe("extractImageUrl — enclosure attribute order reversed", () => {
+    test("extracts enclosure image with type before url (already covered) and url before type", () => {
+        const reversed = '<enclosure length="99" url="https://img.com/rev.jpg" type="image/gif" />';
+        assert.equal(extractImageUrl(reversed, ""), "https://img.com/rev.jpg");
+    });
+});
+
+// ─── dedupeItems ───
+
+describe("dedupeItems", () => {
+    test("removes items with duplicate ids, keeping the first occurrence", () => {
+        const items = [
+            { id: "g:1", title: "First" },
+            { id: "g:2", title: "Second" },
+            { id: "g:1", title: "Duplicate of first" }
+        ];
+        const result = dedupeItems(items);
+        assert.equal(result.length, 2);
+        assert.equal(result[0].title, "First");
+        assert.equal(result[1].title, "Second");
+    });
+
+    test("returns empty array for empty input", () => {
+        assert.deepEqual(dedupeItems([]), []);
+    });
+
+    test("preserves order of first occurrences", () => {
+        const items = [
+            { id: "a" }, { id: "b" }, { id: "a" }, { id: "c" }, { id: "b" }
+        ];
+        const result = dedupeItems(items).map(i => i.id);
+        assert.deepEqual(result, ["a", "b", "c"]);
+    });
+
+    test("integrates with parseRssFeed to remove repeated entries", () => {
+        const xml = `<rss><channel>
+            <item><title>A</title><link>https://x.com/1</link><guid>1</guid></item>
+            <item><title>A again</title><link>https://x.com/1</link><guid>1</guid></item>
+        </channel></rss>`;
+        const items = parseRssFeed(xml, "Test");
+        const deduped = dedupeItems(items);
+        assert.equal(items.length, 2);
+        assert.equal(deduped.length, 1);
+        assert.equal(deduped[0].title, "A");
     });
 });
