@@ -1,9 +1,9 @@
 {
   "id": "dankRssWidget",
   "name": "Dank RSS Widget",
-  "description": "Desktop widget that displays RSS/Atom feeds with auto-refresh",
-  "version": "1.0.0",
-  "author": "BrendonJL",
+  "description": "Desktop widget that displays RSS/Atom feeds with auto-refresh, plus full Miniflux integration with bidirectional read/unread/starred sync",
+  "version": "1.1.0",
+  "author": "BrendonJL, Alessandro Ianne",
   "type": "desktop",
   "capabilities": ["desktop-widget"],
   "component": "./DankRssWidget.qml",
