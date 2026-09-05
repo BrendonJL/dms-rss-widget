@@ -33,6 +33,7 @@ DesktopPluginComponent {
     property var feedItems: []
     property bool isLoading: true   // [patch:resize] start loading -> resize/recreate shows a spinner, not the empty placeholder
     property int pendingFetches: 0
+    property int _fetchSeq: 0   // [patch:dedup] run token; results from a superseded fetch are dropped
     property var windowRef: null
     property int previousItemCount: 0
     property var readLinks: ({})  // track clicked links
@@ -134,26 +135,34 @@ DesktopPluginComponent {
         }
 
         root.isLoading = true;
+        var seq = ++root._fetchSeq;   // [patch:dedup] token for this run; older in-flight runs are dropped
         root.pendingFetches = root.feeds.length;
         var allItems = [];
 
         for (var i = 0; i < root.feeds.length; i++) {
-            fetchFeed(i, allItems);
+            fetchFeed(i, allItems, seq);
         }
     }
 
-    function fetchFeed(index, collector) {
+    function fetchFeed(index, collector, seq) {
         var feed = root.feeds[index];
         var url = feed.url || "";
         var name = feed.name || url;
 
         if (!url) {
-            root.pendingFetches--;
-            if (root.pendingFetches <= 0) finalizeFetch(collector);
+            if (seq === root._fetchSeq) {   // [patch:dedup] ignore stale runs
+                root.pendingFetches--;
+                if (root.pendingFetches <= 0) finalizeFetch(collector);
+            }
             return;
         }
 
-        Proc.runCommand("rssFetch:" + index, ["curl", "-sS", "--connect-timeout", "5", "--max-time", "10", "-L", "--proto", "=http,https", "--proto-redir", "=http,https", "--max-redirs", "5", "--max-filesize", "5000000", "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0", url], function(output, exitCode) {  // [patch:secure] http(s) only, bound redirects + size
+        // [patch:dedup] null id => a unique Proc per call. Reusing "rssFetch:"+index across
+        // overlapping runs let the 2nd run mutate the shared, persistent debounce entry that the
+        // 1st (already-launched) proc still referenced, so one feed's items got pushed twice.
+        Proc.runCommand(null, ["curl", "-sS", "--connect-timeout", "5", "--max-time", "10", "-L", "--proto", "=http,https", "--proto-redir", "=http,https", "--max-redirs", "5", "--max-filesize", "5000000", "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0", url], function(output, exitCode) {  // [patch:secure] http(s) only, bound redirects + size
+            if (seq !== root._fetchSeq)   // [patch:dedup] a newer fetch started -> drop this stale result
+                return;
             if (exitCode === 0 && output && output.trim().length > 0) {
                 var body = (output.length > 5000000) ? output.slice(0, 5000000) : output;  // [patch:secure] bound XML size (ReDoS)
                 var items = parseFeed(body, name);
@@ -170,6 +179,15 @@ DesktopPluginComponent {
     }
 
     function finalizeFetch(items) {
+        // [patch:dedup] de-duplicate by link (safety net against overlapping fetches or a feed repeating an item)
+        var _seen = {};
+        var _uniq = [];
+        for (var d = 0; d < items.length; d++) {
+            var _k = items[d].link || ("#" + d);
+            if (!_seen[_k]) { _seen[_k] = true; _uniq.push(items[d]); }
+        }
+        items = _uniq;
+
         // Sort based on sortMode
         if (root.sortMode === "oldest") {
             items.sort(function(a, b) { return a.timestamp - b.timestamp; });
