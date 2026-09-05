@@ -31,7 +31,7 @@ DesktopPluginComponent {
 
     // --- Internal state ---
     property var feedItems: []
-    property bool isLoading: false
+    property bool isLoading: true   // [patch:resize] start loading -> resize/recreate shows a spinner, not the empty placeholder
     property int pendingFetches: 0
     property var windowRef: null
     property int previousItemCount: 0
@@ -96,7 +96,7 @@ DesktopPluginComponent {
 
     Timer {
         id: initialRunTimer
-        interval: 1500
+        interval: 150   // [patch:resize] was 1500 — re-fetch fast after a resize-triggered recreate
         repeat: false
         running: false
         onTriggered: root.handleVisibilityChange()
