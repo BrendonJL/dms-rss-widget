@@ -51,6 +51,8 @@ DesktopPluginComponent {
         initialRunTimer.running = true;
     }
 
+    function isSafeUrl(u) { return typeof u === "string" && /^https?:\/\//i.test(u); }   // [patch:secure] scheme allowlist for open/Image/cache
+
     onVisibleChanged: root.handleVisibilityChange()
     onWidgetWidthChanged: root.handleVisibilityChange()
     onWidgetHeightChanged: root.handleVisibilityChange()
@@ -129,9 +131,10 @@ DesktopPluginComponent {
             return;
         }
 
-        Proc.runCommand("rssFetch:" + index, ["curl", "-sS", "--connect-timeout", "5", "--max-time", "10", "-L", "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0", url], function(output, exitCode) {
-            if (exitCode === 0 && output.trim().length > 0) {
-                var items = parseFeed(output, name);
+        Proc.runCommand("rssFetch:" + index, ["curl", "-sS", "--connect-timeout", "5", "--max-time", "10", "-L", "--proto", "=http,https", "--proto-redir", "=http,https", "--max-redirs", "5", "--max-filesize", "5000000", "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0", url], function(output, exitCode) {  // [patch:secure] http(s) only, bound redirects + size
+            if (exitCode === 0 && output && output.trim().length > 0) {
+                var body = (output.length > 5000000) ? output.slice(0, 5000000) : output;  // [patch:secure] bound XML size (ReDoS)
+                var items = parseFeed(body, name);
                 for (var j = 0; j < items.length; j++) {
                     collector.push(items[j]);
                 }
@@ -580,7 +583,7 @@ DesktopPluginComponent {
                         // Thumbnail (hidden in compact mode)
                         Rectangle {
                             id: thumbRect
-                            visible: root.viewMode !== "compact" && root.showImages && (model.imageUrl || "") !== "" && thumbImage.status !== Image.Error
+                            visible: root.viewMode !== "compact" && root.showImages && root.isSafeUrl(model.imageUrl) && thumbImage.status !== Image.Error   // [patch:secure] http(s) only
                             Layout.preferredWidth: 48
                             Layout.preferredHeight: 48
                             Layout.alignment: Qt.AlignVCenter
@@ -591,7 +594,7 @@ DesktopPluginComponent {
                             Image {
                                 id: thumbImage
                                 anchors.fill: parent
-                                source: (root.showImages && (model.imageUrl || "") !== "") ? model.imageUrl : ""
+                                source: (root.showImages && root.isSafeUrl(model.imageUrl)) ? model.imageUrl : ""   // [patch:secure] http(s) only
                                 fillMode: Image.PreserveAspectCrop
                                 asynchronous: true
                                 cache: true
@@ -618,7 +621,11 @@ DesktopPluginComponent {
                                 root.readLinks = newRead;
 
                                 if (root.openInBrowser) {
-                                    Quickshell.execDetached(["xdg-open", model.link]);
+                                    if (root.isSafeUrl(model.link)) {   // [patch:secure] only open http(s) links
+                                        Quickshell.execDetached(["xdg-open", model.link]);
+                                    } else if (typeof ToastService !== "undefined") {
+                                        ToastService.showError("Blocked a non-http(s) link");
+                                    }
                                 }
                             }
                         }
