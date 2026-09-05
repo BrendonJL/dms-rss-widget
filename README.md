@@ -28,6 +28,22 @@ A desktop widget plugin for [DankMaterialShell](https://github.com/AvengeMedia/D
 - Appearance customization (background opacity, borders)
 - CDATA unwrapping and HTML entity decoding
 - Feed source labels per item
+- **Optional [Miniflux](https://miniflux.app/) mode** — sync with a self-hosted Miniflux server instead of fetching feeds directly, with bidirectional read/unread and starred sync
+
+## Miniflux mode
+
+Instead of fetching RSS/Atom URLs directly, the widget can act as a front-end for a
+[Miniflux](https://miniflux.app/) server. Switch **Source** to *Miniflux* in settings, enter your
+server URL and an API token, and hit **Test Connection**.
+
+In Miniflux mode:
+
+- Unread (or starred) entries are pulled from the server
+- Opening an item marks it read on the server (toggleable via *Mark as read on open*)
+- The star button bookmarks the entry in Miniflux
+- *Show starred entries* switches the view to your bookmarks
+
+Create an API token in Miniflux under **Settings → API Keys**.
 
 ### Planned (not in this milestone)
 
@@ -77,6 +93,7 @@ Each configured feed shows a status line: item count when its last fetch succeed
 
 - DankMaterialShell >= 1.2.0
 - `curl` (used for fetching feeds)
+- A running Miniflux server and API token — only if you use Miniflux mode
 
 ## Data & persistence
 
