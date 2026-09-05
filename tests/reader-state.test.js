@@ -540,3 +540,68 @@ describe("addAllBookmarked", () => {
         assert.deepStrictEqual(R.addAllBookmarked(["x", "y"], []), ["x", "y"]);
     });
 });
+
+describe("reconcileServerStatus", () => {
+    test("server marks an id read that's currently absent -> added, readChanged true", () => {
+        const result = R.reconcileServerStatus([], [], [{ id: "m:1", status: "read", starred: false }]);
+        assert.deepStrictEqual(result.readOrder, ["m:1"]);
+        assert.strictEqual(result.readChanged, true);
+        assert.strictEqual(result.bookmarkChanged, false);
+    });
+
+    test("server marks an id unread that IS in readOrder -> removed, readChanged true", () => {
+        const result = R.reconcileServerStatus(["m:1", "m:2"], [], [{ id: "m:1", status: "unread", starred: false }]);
+        assert.deepStrictEqual(result.readOrder, ["m:2"]);
+        assert.strictEqual(result.readChanged, true);
+    });
+
+    test("no-op when server status already matches local state", () => {
+        const result = R.reconcileServerStatus(["m:1"], ["m:2"], [
+            { id: "m:1", status: "read", starred: false },
+            { id: "m:2", status: "unread", starred: true }
+        ]);
+        assert.deepStrictEqual(result.readOrder, ["m:1"]);
+        assert.deepStrictEqual(result.bookmarkOrder, ["m:2"]);
+        assert.strictEqual(result.readChanged, false);
+        assert.strictEqual(result.bookmarkChanged, false);
+    });
+
+    test("mixed batch: read added, read removed, starred added all in one call", () => {
+        const result = R.reconcileServerStatus(
+            ["m:2"], [],
+            [
+                { id: "m:1", status: "read", starred: true },
+                { id: "m:2", status: "unread", starred: false },
+                { id: "m:3", status: "unread", starred: false }
+            ]
+        );
+        assert.deepStrictEqual(result.readOrder, ["m:1"]);
+        assert.deepStrictEqual(result.bookmarkOrder, ["m:1"]);
+        assert.strictEqual(result.readChanged, true);
+        assert.strictEqual(result.bookmarkChanged, true);
+    });
+
+    test("cap is respected when reconciling into a near-cap readOrder", () => {
+        const existing = ["a", "b"];
+        const result = R.reconcileServerStatus(existing, [], [
+            { id: "m:1", status: "read", starred: false },
+            { id: "m:2", status: "read", starred: false }
+        ], 3);
+        assert.strictEqual(result.readOrder.length, 3);
+    });
+
+    test("empty serverEntries -> no changes, both *Changed flags false", () => {
+        const result = R.reconcileServerStatus(["m:1"], ["m:2"], []);
+        assert.deepStrictEqual(result.readOrder, ["m:1"]);
+        assert.deepStrictEqual(result.bookmarkOrder, ["m:2"]);
+        assert.strictEqual(result.readChanged, false);
+        assert.strictEqual(result.bookmarkChanged, false);
+    });
+
+    test("null/undefined readOrder/bookmarkOrder do not throw", () => {
+        assert.doesNotThrow(() => R.reconcileServerStatus(null, undefined, [{ id: "m:1", status: "read", starred: true }]));
+        const result = R.reconcileServerStatus(null, undefined, [{ id: "m:1", status: "read", starred: true }]);
+        assert.deepStrictEqual(result.readOrder, ["m:1"]);
+        assert.deepStrictEqual(result.bookmarkOrder, ["m:1"]);
+    });
+});

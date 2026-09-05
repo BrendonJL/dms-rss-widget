@@ -12,7 +12,8 @@ const {
     parseAtomFeed,
     parseFeed,
     parseOpml,
-    dedupeItems
+    dedupeItems,
+    parseMinifluxEntries
 } = require("../FeedParser.js");
 
 // ─── extractTag ───
@@ -927,5 +928,129 @@ describe("dedupeItems", () => {
         assert.equal(items.length, 2);
         assert.equal(deduped.length, 1);
         assert.equal(deduped[0].title, "A");
+    });
+});
+
+// ─── parseMinifluxEntries ───
+
+describe("parseMinifluxEntries", () => {
+    test("parses a well-formed entries object into 'm:'-prefixed ids", () => {
+        const json = { entries: [{ id: 42, title: "Hello", url: "https://x.com/1" }] };
+        const result = parseMinifluxEntries(json, "https://miniflux.example.com");
+        assert.equal(result.items.length, 1);
+        assert.equal(result.items[0].id, "m:42");
+    });
+
+    test("id collision safety vs makeItemId output for the same numeric-looking id", () => {
+        const result = parseMinifluxEntries({ entries: [{ id: 42, title: "T", url: "https://x.com" }] }, "");
+        assert.notEqual(result.items[0].id, makeItemId("42", "", "src", "t", ""));
+    });
+
+    test("maps title/link/description; content preferred over summary; HTML stripped", () => {
+        const json = {
+            entries: [{
+                id: 1,
+                title: "  My Title  ",
+                url: "https://x.com/a",
+                content: "<p>Content <b>wins</b></p>",
+                summary: "Summary text"
+            }]
+        };
+        const result = parseMinifluxEntries(json, "");
+        const item = result.items[0];
+        assert.equal(item.title, "My Title");
+        assert.equal(item.link, "https://x.com/a");
+        assert.equal(item.description, "Content wins");
+    });
+
+    test("falls back to summary when content is absent", () => {
+        const json = { entries: [{ id: 1, title: "T", url: "https://x.com", summary: "Only summary" }] };
+        const result = parseMinifluxEntries(json, "");
+        assert.equal(result.items[0].description, "Only summary");
+    });
+
+    test("timestamp/dateStr from published_at; unparseable date yields timestamp 0", () => {
+        const good = parseMinifluxEntries({ entries: [{ id: 1, published_at: "2026-01-01T00:00:00Z" }] }, "");
+        assert.ok(good.items[0].timestamp > 0);
+        assert.equal(good.items[0].dateStr, "2026-01-01T00:00:00Z");
+
+        const bad = parseMinifluxEntries({ entries: [{ id: 2, published_at: "not-a-date" }] }, "");
+        assert.equal(bad.items[0].timestamp, 0);
+        assert.equal(bad.items[0].dateStr, "not-a-date");
+    });
+
+    test("source from entry.feed.title; missing entry.feed yields empty source", () => {
+        const withFeed = parseMinifluxEntries({ entries: [{ id: 1, feed: { title: "My Feed" } }] }, "");
+        assert.equal(withFeed.items[0].source, "My Feed");
+
+        const withoutFeed = parseMinifluxEntries({ entries: [{ id: 2 }] }, "");
+        assert.equal(withoutFeed.items[0].source, "");
+    });
+
+    test("sourceUrl falls back to defaultSourceUrl", () => {
+        const result = parseMinifluxEntries({ entries: [{ id: 1 }] }, "https://miniflux.example.com");
+        assert.equal(result.items[0].sourceUrl, "https://miniflux.example.com");
+    });
+
+    test("imageUrl: image/* enclosure wins over inline <img> in content", () => {
+        const json = {
+            entries: [{
+                id: 1,
+                content: '<img src="https://x.com/inline.jpg">',
+                enclosures: [{ url: "https://x.com/enclosure.jpg", mime_type: "image/jpeg" }]
+            }]
+        };
+        const result = parseMinifluxEntries(json, "");
+        assert.equal(result.items[0].imageUrl, "https://x.com/enclosure.jpg");
+    });
+
+    test("imageUrl: no enclosure falls back to inline <img>", () => {
+        const json = { entries: [{ id: 1, content: '<img src="https://x.com/inline.jpg">' }] };
+        const result = parseMinifluxEntries(json, "");
+        assert.equal(result.items[0].imageUrl, "https://x.com/inline.jpg");
+    });
+
+    test("imageUrl: neither enclosure nor inline image yields empty string", () => {
+        const result = parseMinifluxEntries({ entries: [{ id: 1, content: "plain text" }] }, "");
+        assert.equal(result.items[0].imageUrl, "");
+    });
+
+    test("imageUrl safety: javascript:/data: enclosure or <img> is rejected", () => {
+        const jsEnclosure = parseMinifluxEntries({
+            entries: [{ id: 1, enclosures: [{ url: "javascript:alert(1)", mime_type: "image/jpeg" }] }]
+        }, "");
+        assert.equal(jsEnclosure.items[0].imageUrl, "");
+
+        const dataImg = parseMinifluxEntries({
+            entries: [{ id: 2, content: '<img src="data:image/png;base64,xxx">' }]
+        }, "");
+        assert.equal(dataImg.items[0].imageUrl, "");
+    });
+
+    test("malformed input returns the empty shape without throwing", () => {
+        assert.deepEqual(parseMinifluxEntries(null, ""), { items: [], serverStatus: [] });
+        assert.deepEqual(parseMinifluxEntries({}, ""), { items: [], serverStatus: [] });
+        assert.deepEqual(parseMinifluxEntries({ entries: null }, ""), { items: [], serverStatus: [] });
+    });
+
+    test("an entry missing id is skipped; other valid entries still parse", () => {
+        const json = { entries: [{ title: "No id" }, { id: 5, title: "Has id" }] };
+        const result = parseMinifluxEntries(json, "");
+        assert.equal(result.items.length, 1);
+        assert.equal(result.items[0].id, "m:5");
+    });
+
+    test("serverStatus carries status and starred per entry independent of items", () => {
+        const json = {
+            entries: [
+                { id: 1, status: "read", starred: true },
+                { id: 2, status: "unread", starred: false }
+            ]
+        };
+        const result = parseMinifluxEntries(json, "");
+        assert.deepEqual(result.serverStatus, [
+            { id: "m:1", status: "read", starred: true },
+            { id: "m:2", status: "unread", starred: false }
+        ]);
     });
 });

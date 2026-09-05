@@ -410,6 +410,84 @@ function addAllBookmarked(bookmarkOrder, ids, cap) {
     return addAllRead(bookmarkOrder, ids, cap);
 }
 
+// --- Miniflux server-status reconciliation (v2.4 §4.2) ----------------------
+//
+// Called ONLY right after a successful Miniflux fetch, so the server's view
+// (which already reflects any local push this widget made moments earlier)
+// is applied as the eventual source of truth. `serverEntries` is
+// `[{ id, status, starred }]` where `id` is the ALREADY-PREFIXED "m:"+entryId
+// string -- prefixing is the caller's job (this file never constructs ids).
+// Pure, no I/O -- delegates to addAllRead/addAllBookmarked/removeRead for the
+// actual list surgery rather than duplicating that logic.
+function reconcileServerStatus(readOrder, bookmarkOrder, serverEntries, cap) {
+    var ro = boundIdList(readOrder, cap);
+    var bo = boundIdList(bookmarkOrder, cap);
+    var readMap = buildIdMap(ro);
+    var bookmarkMap = buildIdMap(bo);
+
+    var toMarkRead = [];
+    var toMarkUnread = {};
+    var toMarkStarred = [];
+    var toMarkUnstarred = {};
+
+    var entries = (serverEntries && serverEntries.length !== undefined) ? serverEntries : [];
+    for (var i = 0; i < entries.length; i++) {
+        var e = entries[i];
+        if (!e || typeof e.id !== "string" || e.id.length === 0)
+            continue;
+
+        if (e.status === "read" && !readMap[e.id]) {
+            toMarkRead.push(e.id);
+        } else if (e.status === "unread" && readMap[e.id]) {
+            toMarkUnread[e.id] = true;
+        }
+
+        if (e.starred && !bookmarkMap[e.id]) {
+            toMarkStarred.push(e.id);
+        } else if (!e.starred && bookmarkMap[e.id]) {
+            toMarkUnstarred[e.id] = true;
+        }
+    }
+
+    var readChanged = toMarkRead.length > 0 || Object.keys(toMarkUnread).length > 0;
+    var bookmarkChanged = toMarkStarred.length > 0 || Object.keys(toMarkUnstarred).length > 0;
+
+    // Apply removals first, then additions, matching the "delegate to
+    // existing primitives" guidance in §4.2.
+    var newReadOrder = ro;
+    if (Object.keys(toMarkUnread).length > 0) {
+        var filtered = [];
+        for (var k = 0; k < ro.length; k++) {
+            if (!toMarkUnread[ro[k]])
+                filtered.push(ro[k]);
+        }
+        newReadOrder = filtered;
+    }
+    if (toMarkRead.length > 0) {
+        newReadOrder = addAllRead(newReadOrder, toMarkRead, cap);
+    }
+
+    var newBookmarkOrder = bo;
+    if (Object.keys(toMarkUnstarred).length > 0) {
+        var filteredB = [];
+        for (var m = 0; m < bo.length; m++) {
+            if (!toMarkUnstarred[bo[m]])
+                filteredB.push(bo[m]);
+        }
+        newBookmarkOrder = filteredB;
+    }
+    if (toMarkStarred.length > 0) {
+        newBookmarkOrder = addAllBookmarked(newBookmarkOrder, toMarkStarred, cap);
+    }
+
+    return {
+        readOrder: newReadOrder,
+        bookmarkOrder: newBookmarkOrder,
+        readChanged: readChanged,
+        bookmarkChanged: bookmarkChanged
+    };
+}
+
 // The feeds that a fetch cycle should actually request.
 function activeFeeds(feeds) {
     var out = [];
@@ -455,6 +533,7 @@ if (typeof module !== "undefined" && module.exports) {
         clearSelection: clearSelection,
         countSelected: countSelected,
         pruneSelected: pruneSelected,
-        addAllBookmarked: addAllBookmarked
+        addAllBookmarked: addAllBookmarked,
+        reconcileServerStatus: reconcileServerStatus
     };
 }

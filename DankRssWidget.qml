@@ -31,6 +31,17 @@ DesktopPluginComponent {
     property int fontSize: pluginData.fontSize ?? Theme.fontSizeSmall
     property bool notifyNewItems: pluginData.notifyNewItems ?? true
 
+    // --- Miniflux settings (v2.4) ---
+    // "standard" | "miniflux" -- exclusive, never hybrid (see v2.4 plan §0).
+    // The ?? "standard" default is load-bearing for users upgrading from a
+    // pre-2.4 install with no sourceMode key at all: they must land in
+    // standard/RSS mode with every existing behavior intact (v2.4 plan §5.5).
+    property string sourceMode: pluginData.sourceMode ?? "standard"
+    property string minifluxUrl: (pluginData.minifluxUrl ?? "").replace(/\/$/, "")
+    property string minifluxToken: pluginData.minifluxToken ?? ""
+    property bool syncReadOnOpen: pluginData.syncReadOnOpen ?? true
+    property bool showStarred: pluginData.showStarred ?? false
+
     // --- Internal state ---
     property var allItems: []          // full sorted/capped result set
     // Defaults true (not false): between Component.onCompleted and the
@@ -49,19 +60,42 @@ DesktopPluginComponent {
     property bool searchActive: false   // whether the search field is revealed
     property int timeTick: 0           // bumped to re-evaluate relative-time bindings
 
-    // T6: clicks anywhere in the row/controls must be ignored while the niri
-    // overview is open -- otherwise clicking a thumbnail in the overview to
-    // switch workspaces can land on this widget instead and silently open a
-    // link / mark an item read. CompositorService.isNiri and
-    // NiriService.inOverview are both `qs.Services` singletons (already
-    // imported above) and this exact expression is how
-    // DesktopPluginWrapper.qml itself gates overview-only behavior, so it is
-    // known-safe in a plugin context; the typeof guards are defense in depth
-    // only, matching how this file already treats ToastService/PluginService.
-    readonly property bool overviewOpen: (typeof CompositorService !== "undefined"
-        && typeof NiriService !== "undefined")
-        ? (CompositorService.isNiri && NiriService.inOverview)
-        : false
+    // T6/PR#3: clicks anywhere in the row/controls must be ignored while the
+    // niri overview is open -- otherwise clicking a thumbnail in the overview
+    // to switch workspaces can land on this widget instead and silently open
+    // a link / mark an item read. A plain "inOverview" check is not enough:
+    // the overview-close IPC event and the Wayland pointer delivery are async,
+    // so NiriService.inOverview can already read false by the time the stray
+    // click arrives. _overviewGuard stays true for overviewReleaseTimer's
+    // window after overview close to absorb that race. CompositorService.isNiri
+    // and NiriService.inOverview are both `qs.Services` singletons (already
+    // imported above); the typeof guards are defense in depth only, matching
+    // how this file already treats ToastService/PluginService.
+    property bool _overviewGuard: false
+
+    function _clickFromOverview() {
+        return (typeof CompositorService !== "undefined"
+            && typeof NiriService !== "undefined"
+            && CompositorService.isNiri)
+            ? (NiriService.inOverview || root._overviewGuard)
+            : false;
+    }
+
+    Connections {
+        target: (typeof NiriService !== "undefined") ? NiriService : null
+        function onInOverviewChanged() {
+            if (NiriService.inOverview)
+                root._overviewGuard = true;
+            else
+                overviewReleaseTimer.restart();
+        }
+    }
+
+    Timer {
+        id: overviewReleaseTimer
+        interval: 450
+        onTriggered: root._overviewGuard = false
+    }
 
     // D8: only steal keyboard focus while the search field is actually
     // revealed, so the widget never intercepts keys (e.g. compositor
@@ -119,6 +153,15 @@ DesktopPluginComponent {
         }
     }
 
+    // Settings' "Force Refresh" button (Miniflux mode) has no direct handle
+    // to this widget instance, only to shared pluginData -- bumping this
+    // value is how it asks for an immediate refresh.
+    property var lastRefreshRequest: pluginData.lastRefreshRequest ?? 0
+    onLastRefreshRequestChanged: {
+        if (root.isRunnable())
+            root.fetchAllFeeds();
+    }
+
     // --- Lifecycle ---
     Component.onCompleted: {
         root.windowRef = Window.window ?? null;
@@ -155,13 +198,29 @@ DesktopPluginComponent {
         }
     }
 
+    // v2.4 Risk #3: switching sourceMode must clear ONLY the per-mode view
+    // (feedModel/allItems), never readMap/bookmarkMap -- those are shared,
+    // cross-mode-safe id lists keyed by the "m:"/"g:"/"l:"/"h:"-prefixed
+    // stable ids, and clearing them on every toggle would un-read/un-bookmark
+    // everything in BOTH modes every time the user flips the settings switch.
+    onSourceModeChanged: {
+        if (root.isRunnable()) {
+            root.allItems = [];
+            feedModel.clear();
+            root.fetchAllFeeds();
+            timer.restart();
+        }
+    }
+
     function handleVisibilityChange() {
         if (root.isRunnable()) {
-            if (root.feeds.length === 0) {
-                // Nothing ever will be fetched for this config -- resolve
-                // isLoading now instead of leaving the T5 default-true spinner
-                // running forever. fetchAllFeeds() (called below when feeds
-                // exist) already does the equivalent for "all feeds disabled".
+            // In "standard" mode a zero-feed config will never fetch anything --
+            // resolve isLoading now instead of leaving the T5 default-true
+            // spinner running forever. In "miniflux" mode `feeds` is irrelevant
+            // (Miniflux has no per-feed list here); fetchAllFeeds/
+            // fetchMinifluxEntries resolve isLoading themselves when
+            // minifluxUrl/minifluxToken are unset.
+            if (root.sourceMode === "standard" && root.feeds.length === 0) {
                 root.isLoading = false;
             } else if (!timer.running) {
                 fetchAllFeeds();
@@ -271,9 +330,22 @@ DesktopPluginComponent {
     function toggleBookmark(itemId) {
         if (!itemId)
             return;
+        // v2.4 §2.3: bookmarkMap/bookmarkOrder are reused as-is for
+        // Miniflux's starred state -- no separate starred map. Bookmarks
+        // made in RSS mode are untouched by a mode switch: an RSS id's
+        // "h:"/"g:"/"l:" prefix can never collide with a Miniflux "m:" id,
+        // so switching sourceMode naturally hides the other mode's
+        // bookmarks from view (they simply aren't in allItems) without
+        // deleting them.
         root.bookmarkOrder = ReaderState.toggleBookmark(root.bookmarkOrder, itemId, root.idHistoryCap);
         root.bookmarkMap = ReaderState.buildIdMap(root.bookmarkOrder);
         root.saveBookmarkState();
+
+        if (root.sourceMode === "miniflux") {
+            var numId = root.minifluxNumericId(itemId);
+            if (numId)
+                root.minifluxToggleStar(numId);
+        }
 
         // In the Saved view, un-bookmarking should actually remove the row —
         // otherwise the list shows items that no longer belong to the filter.
@@ -300,6 +372,24 @@ DesktopPluginComponent {
         root.readOrder = ReaderState.addAllRead(root.readOrder, ids, root.idHistoryCap);
         root.readMap = ReaderState.buildIdMap(root.readOrder);
         root.saveReadState();
+
+        // v2.4 §2.7: push to the server in one batched call rather than one
+        // per id (Miniflux's PUT /v1/entries already accepts an array of
+        // entry_ids). Filtered to "m:"-prefixed ids as a cheap correctness
+        // guard -- only one source mode's items are ever in allItems/
+        // selectedMap at a time, so this filter should never actually drop
+        // anything in practice.
+        if (root.sourceMode === "miniflux") {
+            var numIds = [];
+            for (var i = 0; i < ids.length; i++) {
+                var numId = root.minifluxNumericId(ids[i]);
+                if (numId)
+                    numIds.push(numId);
+            }
+            if (numIds.length > 0)
+                root.minifluxMarkRead(numIds);
+        }
+
         root.clearSelection();
         if (root.filterMode === "unread") root.applyFilter();
     }
@@ -307,9 +397,38 @@ DesktopPluginComponent {
     function bulkSaveSelected() {
         var ids = Object.keys(root.selectedMap);
         if (ids.length === 0) return;
+
+        // v2.4 §2.7: capture "already bookmarked" BEFORE the local additive
+        // update below, since addAllBookmarked marks every selected id as
+        // bookmarked regardless of its prior state -- checking bookmarkMap
+        // AFTER that update would see every id as bookmarked and could never
+        // tell which ones were newly starred.
+        var alreadyBookmarked = {};
+        if (root.sourceMode === "miniflux") {
+            for (var i = 0; i < ids.length; i++) {
+                if (root.bookmarkMap[ids[i]])
+                    alreadyBookmarked[ids[i]] = true;
+            }
+        }
+
         root.bookmarkOrder = ReaderState.addAllBookmarked(root.bookmarkOrder, ids, root.idHistoryCap);
         root.bookmarkMap = ReaderState.buildIdMap(root.bookmarkOrder);
         root.saveBookmarkState();
+
+        // minifluxToggleStar TOGGLES server-side (no "set" endpoint), so it
+        // must only be called for ids not already starred -- calling it on
+        // an already-starred entry would un-star it.
+        if (root.sourceMode === "miniflux") {
+            for (var j = 0; j < ids.length; j++) {
+                var id = ids[j];
+                if (alreadyBookmarked[id])
+                    continue;
+                var numId = root.minifluxNumericId(id);
+                if (numId)
+                    root.minifluxToggleStar(numId);
+            }
+        }
+
         root.clearSelection();
     }
 
@@ -346,6 +465,22 @@ DesktopPluginComponent {
             : ReaderState.removeAllRead(root.readOrder, ids);
         root.readMap = ReaderState.buildIdMap(root.readOrder);
         root.saveReadState();
+
+        // v2.4 §2.7: same batched-push pattern as bulkMarkReadSelected.
+        if (root.sourceMode === "miniflux") {
+            var numIds = [];
+            for (var i2 = 0; i2 < ids.length; i2++) {
+                var numId = root.minifluxNumericId(ids[i2]);
+                if (numId)
+                    numIds.push(numId);
+            }
+            if (numIds.length > 0) {
+                if (read)
+                    root.minifluxMarkRead(numIds);
+                else
+                    root.minifluxMarkUnread(numIds);
+            }
+        }
     }
 
     // --- Feed fetching ---
@@ -370,6 +505,15 @@ DesktopPluginComponent {
         // and the cycle finalizes early on a half-filled result set.
         root.fetchGeneration++;
         var gen = root.fetchGeneration;
+
+        // v2.4: exclusive source-mode branch. fetchGeneration is incremented
+        // ABOVE this check (not below) so the RSS and Miniflux paths always
+        // share one generation counter, even if sourceMode is toggled
+        // mid-flight (v2.4 plan §5 Risk #1).
+        if (root.sourceMode === "miniflux") {
+            root.fetchMinifluxEntries(gen);
+            return;
+        }
 
         var statuses = [];
         var targets = [];
@@ -564,6 +708,226 @@ DesktopPluginComponent {
 
         root.seenIds = result.mergedSeen;
         root.saveSeenState();
+    }
+
+    // --- Miniflux source mode (v2.4) ---
+
+    function toastError(msg) {
+        if (typeof ToastService !== "undefined")
+            ToastService.showError(msg);
+    }
+
+    // Strips the "m:" id prefix for the numeric id Miniflux's API expects.
+    // Returns "" for anything that isn't a Miniflux id (defensive: callers
+    // should already only reach here with "m:"-prefixed ids, but a filter
+    // that silently no-ops on a non-Miniflux id is cheap insurance against
+    // read-state corruption crossing between source modes -- v2.4 plan §5
+    // Risk #2).
+    function minifluxNumericId(itemId) {
+        if (typeof itemId !== "string" || itemId.indexOf("m:") !== 0)
+            return "";
+        return itemId.slice(2);
+    }
+
+    // T4/v2.4 §2.4: null Proc id on every Miniflux call -- PR #6 used fixed
+    // string ids ("miniflux:"+procTag+":fetchEntries", "markRead", "star:"+id)
+    // which share Proc's debounce-map key across overlapping calls; the
+    // second call in flight clobbers the first's callback exactly like the
+    // bug T4 already fixed once for RSS (see fetchFeed's comment above).
+    // A null id makes Proc generate a fresh id per call and self-clean.
+    //
+    // SECURITY (v2.4 §2.5): the API token is always its own argv element,
+    // never concatenated into a single string handed to a shell -- this
+    // file never invokes "sh -c"/"bash -c" anywhere, matching PR #6's
+    // original (correct) pattern. Curl hardening flags match fetchFeed's.
+    function minifluxApiCall(method, endpoint, body, callback) {
+        // Config may still be settling on startup (pluginData populates
+        // async); stay silent -- the empty state already prompts to
+        // configure Miniflux.
+        if (!root.minifluxUrl || !root.minifluxToken)
+            return;
+        var url = root.minifluxUrl + endpoint;
+        var args = [
+            "curl", "-sS",
+            "--connect-timeout", "5",
+            "--max-time", "25",
+            "--proto", "=http,https",
+            "--proto-redir", "=http,https",
+            "--max-redirs", "5",
+            "--max-filesize", "5000000",
+            "-X", method,
+            "-H", "X-Auth-Token: " + root.minifluxToken
+        ];
+        if (method !== "GET") {
+            args.push("-H", "Content-Type: application/json");
+            if (body)
+                args.push("-d", body);
+        }
+        args.push(url);
+        // Explicit timeoutMs: curl's own --max-time is 25s, longer than
+        // Proc's presumed default -- without this a slow-but-fine request
+        // races Proc's own timeout and gets killed early, surfacing a
+        // spurious failure toast (see PR #6's original comment).
+        Proc.runCommand(null, args, callback, undefined, 30000);
+    }
+
+    function fetchMinifluxEntries(gen) {
+        // Skip quietly until config is ready; the empty state already
+        // prompts the user to configure Miniflux in settings.
+        if (!root.minifluxUrl || !root.minifluxToken) {
+            root.allItems = [];
+            root.feedStatuses = [];
+            root.isLoading = false;
+            root.applyFilter();
+            root.saveFeedStatuses();
+            return;
+        }
+
+        // Only nag on failure when there's nothing on screen; a transient
+        // blip during a periodic refresh should keep the stale items on
+        // screen silently rather than spamming a toast every cycle.
+        var hadItems = root.allItems.length > 0;
+        root.isLoading = true;
+
+        // v2.4 §2.4: ONE synthetic feed-status entry, not per-category --
+        // Miniflux has no concept of this widget's per-feed list, just one
+        // logical stream. Keyed by root.minifluxUrl so any code that treats
+        // feedStatuses as url-keyed (statusForUrl in settings) still resolves
+        // it correctly if ever reused for Miniflux.
+        var status = {
+            url: root.minifluxUrl,
+            name: "Miniflux",
+            state: "loading",
+            lastFetched: 0,
+            lastSuccess: 0,
+            lastError: "",
+            itemCount: 0
+        };
+        root.feedStatuses = [status];
+
+        var endpoint = root.showStarred
+            ? "/v1/entries?starred=true&limit=" + root.maxItems + "&order=published_at&direction=desc"
+            : "/v1/entries?status=unread&limit=" + root.maxItems + "&order=published_at&direction=desc";
+
+        root.minifluxApiCall("GET", endpoint, null, function(output, exitCode) {
+            // Stale callback from a superseded fetch cycle: drop it entirely.
+            // This is the fetch-generation guard PR #6 never had (it predates
+            // CONTRACT 7) -- without it, a fast manual refresh firing while
+            // the periodic timer's fetch is still in flight could finalize
+            // out of order.
+            if (gen !== root.fetchGeneration)
+                return;
+
+            status.lastFetched = Date.now();
+
+            // SECURITY: same belt-and-suspenders re-check fetchFeed applies
+            // before handing the payload to a parser.
+            if (output && output.length > 5000000) {
+                status.state = "error";
+                status.lastError = "Response too large";
+                root.feedStatuses = [status];
+                if (!hadItems)
+                    root.toastError("Miniflux fetch failed: response too large");
+                root.isLoading = false;
+                root.saveFeedStatuses();
+                return;
+            }
+
+            var parsed = null;
+            var parseFailed = false;
+            if (exitCode === 0 && output && output.trim().length > 0) {
+                try {
+                    parsed = JSON.parse(output);
+                } catch (e) {
+                    parsed = null;
+                    parseFailed = true;
+                }
+            }
+
+            if (parsed && parsed.error_message) {
+                parsed = null;
+                parseFailed = true;
+                status.lastError = "Miniflux: " + parsed.error_message;
+            }
+
+            var result = (parsed && !parseFailed)
+                ? FeedParser.parseMinifluxEntries(parsed, root.minifluxUrl)
+                : { items: [], serverStatus: [] };
+
+            // classifyFetch still applies (v2.4 §2.4): a JSON parse failure
+            // is treated like RSS's parseFailed path, passing items.length
+            // === 0 through so it still resolves to "error".
+            var verdict = ReaderState.classifyFetch(exitCode, output, result.items.length);
+            status.state = verdict.state;
+            status.lastError = parseFailed ? (status.lastError || "Parse failed") : verdict.lastError;
+
+            if (verdict.state === "ok") {
+                status.lastSuccess = status.lastFetched;
+                status.itemCount = result.items.length;
+
+                // Server wins on fetch reconciliation (v2.4 §2.2/§2.3):
+                // reconcile server read/starred status into local readMap/
+                // bookmarkMap. This is the ONLY place this runs -- never on
+                // a local action -- so a local push has already had a
+                // chance to reach the server by the time this corrects any
+                // drift.
+                var reconciled = ReaderState.reconcileServerStatus(
+                    root.readOrder, root.bookmarkOrder, result.serverStatus, root.idHistoryCap);
+                if (reconciled.readChanged) {
+                    root.readOrder = reconciled.readOrder;
+                    root.readMap = ReaderState.buildIdMap(root.readOrder);
+                    root.saveReadState();
+                }
+                if (reconciled.bookmarkChanged) {
+                    root.bookmarkOrder = reconciled.bookmarkOrder;
+                    root.bookmarkMap = ReaderState.buildIdMap(root.bookmarkOrder);
+                    root.saveBookmarkState();
+                }
+            } else if (!hadItems) {
+                root.toastError("Miniflux fetch failed"
+                    + (status.lastError ? ": " + status.lastError : ""));
+            }
+
+            // Miniflux items flow through the EXACT same finalizeFetch as
+            // RSS -- same sort/cap/notify logic, no special case (v2.4 §5
+            // Risk #7). It only reads ctx.gen/collector/statuses, so this
+            // one-target ctx shape (no `pending` field needed) is valid.
+            root.finalizeFetch({
+                gen: gen,
+                collector: result.items,
+                statuses: [status]
+            });
+        });
+    }
+
+    // Pushes a local read/unread change to the server. Fire-and-forget: a
+    // failed push does NOT roll back local state (a transient network
+    // failure must not un-mark something the user just read) -- the next
+    // fetch's reconciliation corrects any drift (v2.4 §2.2).
+    function minifluxMarkRead(numericIds) {
+        var body = JSON.stringify({ entry_ids: numericIds, status: "read" });
+        root.minifluxApiCall("PUT", "/v1/entries", body, function(output, exitCode) {
+            if (exitCode !== 0)
+                root.toastError("Failed to mark as read");
+        });
+    }
+
+    function minifluxMarkUnread(numericIds) {
+        var body = JSON.stringify({ entry_ids: numericIds, status: "unread" });
+        root.minifluxApiCall("PUT", "/v1/entries", body, function(output, exitCode) {
+            if (exitCode !== 0)
+                root.toastError("Failed to mark as unread");
+        });
+    }
+
+    // PUT /v1/entries/{id}/bookmark toggles star state server-side with no
+    // body -- purely fire-and-forget here, since bookmarkMap is already the
+    // local source of truth and the next fetch reconciles any drift.
+    function minifluxToggleStar(numericId) {
+        root.minifluxApiCall("PUT", "/v1/entries/" + numericId + "/bookmark", null, function(output, exitCode) {
+            if (exitCode !== 0)
+                root.toastError("Failed to toggle bookmark");
+        });
     }
 
     // --- View model ---
@@ -1027,7 +1391,7 @@ DesktopPluginComponent {
                             // T6: a click that lands here while the niri
                             // overview is open is a stray overview-navigation
                             // click, not user intent to open/mark this item.
-                            if (root.overviewOpen)
+                            if (root._clickFromOverview())
                                 return;
 
                             // D1: row click ALWAYS opens + marks read. Never
@@ -1039,6 +1403,15 @@ DesktopPluginComponent {
                             if (!id)
                                 return;
                             root.markRead(id);
+                            // v2.4 §2.2: opening an item syncs read state to
+                            // the server only when the user opted in via
+                            // "Mark as read on open" -- unlike the explicit
+                            // mark-read button (below), which always syncs.
+                            if (root.sourceMode === "miniflux" && root.syncReadOnOpen) {
+                                var numId = root.minifluxNumericId(id);
+                                if (numId)
+                                    root.minifluxMarkRead([numId]);
+                            }
                             if (root.openInBrowser && model.link) {
                                 // T2 SECURITY: never hand an unsafe-scheme
                                 // link (javascript:, file:, data:, ...) to
@@ -1074,7 +1447,7 @@ DesktopPluginComponent {
                             opacity: (rowHover.hovered || itemDelegate.isSelected) ? 1.0 : 0.45
                             enabled: true
                             onClicked: {
-                                if (root.overviewOpen)
+                                if (root._clickFromOverview())
                                     return;
                                 root.toggleSelected(model.itemId);
                             }
@@ -1204,12 +1577,26 @@ DesktopPluginComponent {
                             opacity: (rowHover.hovered || itemDelegate.isRead) ? 1.0 : 0.45
                             enabled: true
                             onClicked: {
-                                if (root.overviewOpen)
+                                if (root._clickFromOverview())
                                     return;
-                                if (itemDelegate.isRead)
+                                var wasRead = itemDelegate.isRead;
+                                if (wasRead)
                                     root.markUnread(model.itemId);
                                 else
                                     root.markRead(model.itemId);
+                                // v2.4 §2.2: an explicit toggle via this
+                                // button ALWAYS syncs to the server,
+                                // regardless of syncReadOnOpen (that setting
+                                // only gates the row-click "open" path above).
+                                if (root.sourceMode === "miniflux") {
+                                    var numId = root.minifluxNumericId(model.itemId);
+                                    if (numId) {
+                                        if (wasRead)
+                                            root.minifluxMarkUnread([numId]);
+                                        else
+                                            root.minifluxMarkRead([numId]);
+                                    }
+                                }
                             }
 
                             Behavior on opacity {
@@ -1231,7 +1618,7 @@ DesktopPluginComponent {
                             opacity: (rowHover.hovered || itemDelegate.isBookmarked) ? 1.0 : 0.45
                             enabled: true
                             onClicked: {
-                                if (root.overviewOpen)
+                                if (root._clickFromOverview())
                                     return;
                                 root.toggleBookmark(model.itemId);
                             }
@@ -1255,13 +1642,18 @@ DesktopPluginComponent {
 
                 DankIcon {
                     name: {
+                        // v2.4 §2.6: mode-aware branch checked BEFORE the
+                        // RSS-specific ones -- Miniflux has no `feeds` list,
+                        // so the RSS branches below would misfire on it.
+                        if (root.sourceMode === "miniflux" && !root.minifluxUrl)
+                            return "sync";
                         if (root.failedFeedCount > 0 && root.allItems.length === 0)
                             return "cloud_off";
                         if (root.allItems.length > 0 && root.searching)
                             return "search_off";
                         if (root.allItems.length > 0 && root.filterMode === "bookmarked")
                             return "bookmark_border";
-                        return "rss_feed";
+                        return root.sourceMode === "miniflux" ? "sync" : "rss_feed";
                     }
                     size: Theme.iconSize * 2
                     color: Theme.withAlpha(Theme.surfaceVariantText, 0.4)
@@ -1270,9 +1662,11 @@ DesktopPluginComponent {
 
                 StyledText {
                     text: {
-                        if (root.feeds.length === 0)
+                        if (root.sourceMode === "miniflux" && !root.minifluxUrl)
+                            return "Configure Miniflux in settings";
+                        if (root.sourceMode === "standard" && root.feeds.length === 0)
                             return "No feeds configured";
-                        if (root.activeFeedCount === 0)
+                        if (root.sourceMode === "standard" && root.activeFeedCount === 0)
                             return "All feeds disabled";
                         if (root.allItems.length === 0 && root.failedFeedCount > 0)
                             return "All feeds failed to load";
@@ -1296,9 +1690,11 @@ DesktopPluginComponent {
                 StyledText {
                     visible: text !== ""
                     text: {
-                        if (root.feeds.length === 0)
+                        if (root.sourceMode === "miniflux" && !root.minifluxUrl)
+                            return "Enter your server URL and API token";
+                        if (root.sourceMode === "standard" && root.feeds.length === 0)
                             return "Add feeds in the widget settings";
-                        if (root.activeFeedCount === 0)
+                        if (root.sourceMode === "standard" && root.activeFeedCount === 0)
                             return "Re-enable a feed in settings";
                         if (root.allItems.length === 0 && root.failedFeedCount > 0)
                             return "See per-feed errors in settings";

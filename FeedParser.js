@@ -262,6 +262,86 @@ function dedupeItems(items) {
     return out;
 }
 
+// CONTRACT (v2.4 §4.1): Miniflux entries flow through this function into the
+// SAME Item shape RSS/Atom items use, with a distinct id prefix ("m:") so a
+// Miniflux id can never collide with makeItemId's "g:"/"l:"/"h:" outputs.
+//
+// `json` is the ALREADY-JSON.parse'd `GET /v1/entries` response body (an
+// object with an `entries` array). `defaultSourceUrl` fills each Item's
+// `sourceUrl` (Miniflux entries don't carry the widget's configured server
+// URL, only their own per-entry `feed` object).
+//
+// Return shape deliberately deviates from parseFeed's plain array: reconciling
+// server read/starred status into local state (ReaderState.reconcileServerStatus)
+// needs that status per entry, and that decision belongs in pure, tested code
+// rather than inline QML. Returns { items: Item[], serverStatus: [{id, status, starred}] }.
+// Never throws: malformed/missing input yields the empty shape.
+function parseMinifluxEntries(json, defaultSourceUrl) {
+    var empty = { items: [], serverStatus: [] };
+
+    if (!json || typeof json !== "object")
+        return empty;
+
+    var entries = json.entries;
+    if (!entries || entries.length === undefined)
+        return empty;
+
+    var items = [];
+    var serverStatus = [];
+
+    for (var i = 0; i < entries.length; i++) {
+        var entry = entries[i];
+        if (!entry || entry.id === undefined || entry.id === null)
+            continue;
+
+        var itemId = "m:" + String(entry.id);
+        var title = cleanText(entry.title || "");
+        var link = entry.url || "";
+        var content = entry.content || entry.summary || "";
+        var description = cleanText(stripHtml(content));
+        var publishedAt = entry.published_at || "";
+        var timestamp = publishedAt ? (new Date(publishedAt).getTime() || 0) : 0;
+        var source = entry.feed ? (entry.feed.title || "") : "";
+
+        items.push({
+            id: itemId,
+            title: title,
+            link: link,
+            description: description,
+            dateStr: publishedAt,
+            timestamp: timestamp,
+            source: source,
+            sourceUrl: defaultSourceUrl || "",
+            imageUrl: minifluxEntryImage(entry)
+        });
+
+        serverStatus.push({
+            id: itemId,
+            status: entry.status,
+            starred: !!entry.starred
+        });
+    }
+
+    return { items: items, serverStatus: serverStatus };
+}
+
+// Miniflux keeps the thumbnail in `entry.enclosures` (mime_type image/*), not
+// inline in content; fall back to an <img> in the content/summary only if
+// there's no such enclosure. Ported from PR #6's minifluxEntryImage, now
+// living here (pure, testable) instead of duplicated in QML. `block=""` is
+// passed to extractImageUrl since there is no XML block to scan for
+// media:/enclosure tags -- Miniflux already gives us entry.enclosures directly.
+function minifluxEntryImage(entry) {
+    var enclosures = entry.enclosures || [];
+    for (var k = 0; k < enclosures.length; k++) {
+        var enc = enclosures[k];
+        var mimeType = (enc && enc.mime_type) || "";
+        if (mimeType.indexOf("image/") === 0 && enc.url && isSafeUrl(enc.url))
+            return enc.url;
+    }
+    return extractImageUrl("", entry.content || entry.summary || "");
+}
+
 function parseOpml(xml) {
     var feeds = [];
     var outlineRegex = /<outline[^>]*xmlUrl=["']([^"']+)["'][^>]*>/gi;
@@ -293,6 +373,7 @@ if (typeof module !== "undefined" && module.exports) {
         parseAtomFeed: parseAtomFeed,
         parseFeed: parseFeed,
         parseOpml: parseOpml,
-        dedupeItems: dedupeItems
+        dedupeItems: dedupeItems,
+        parseMinifluxEntries: parseMinifluxEntries
     };
 }
