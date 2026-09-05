@@ -53,6 +53,28 @@ DesktopPluginComponent {
 
     function isSafeUrl(u) { return typeof u === "string" && /^https?:\/\//i.test(u); }   // [patch:secure] scheme allowlist for open/Image/cache
 
+    // In Niri's "overview" (all-workspaces preview), selecting a workspace delivers that click
+    // to this background layer-shell surface; in the surface's own (unscaled) coords it can land
+    // on an item -> spurious xdg-open. Ignore clicks while in overview, plus a short window after
+    // it closes (the close event and the pointer delivery are async, so inOverview may already be
+    // false at click time).
+    property bool _overviewGuard: false
+    function _clickFromOverview() { return NiriService.inOverview || root._overviewGuard; }
+    Connections {
+        target: NiriService
+        function onInOverviewChanged() {
+            if (NiriService.inOverview)
+                root._overviewGuard = true;
+            else
+                overviewReleaseTimer.restart();
+        }
+    }
+    Timer {
+        id: overviewReleaseTimer
+        interval: 450
+        onTriggered: root._overviewGuard = false
+    }
+
     onVisibleChanged: root.handleVisibilityChange()
     onWidgetWidthChanged: root.handleVisibilityChange()
     onWidgetHeightChanged: root.handleVisibilityChange()
@@ -608,6 +630,7 @@ DesktopPluginComponent {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
+                            if (root._clickFromOverview()) return;   // ignore overview-select clicks
                             if (!model.link) return;
                             var newRead = Object.assign({}, root.readLinks);
 
