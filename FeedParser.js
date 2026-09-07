@@ -241,10 +241,80 @@ function parseAtomFeed(xml, sourceName, sourceUrl) {
     return items;
 }
 
-function parseFeed(xml, sourceName, sourceUrl) {
-    if (xml.indexOf("<feed") !== -1) {
-        return parseAtomFeed(xml, sourceName, sourceUrl);
+// Returns the tag name of the document's ROOT element, lowercased and with any
+// namespace prefix stripped ("rdf:RDF" -> "rdf"), or "" if none can be found.
+//
+// Reported by @Xn4m3d (#7): routing used to be `xml.indexOf("<feed") !== -1`,
+// a substring test over the WHOLE document. Any RSS 2.0 feed carrying an
+// element whose name merely starts with "feed" was handed to the Atom parser,
+// which then found no <entry> and returned zero items with nothing logged --
+// the feed just silently vanished. Real feeds do this: CNBC ships
+// <feed_asset>, FeedBurner ships <feedburner:*>. A tighter test like
+// /<feed[\s>]/ is still wrong, because a <feed> element can legitimately
+// appear inside an RSS <description> or a CDATA block. The format is a
+// property of the root element, so that is what we look at.
+//
+// The scan skips the XML declaration, processing instructions, comments and
+// DOCTYPE so that a "<feed" mentioned inside a comment cannot decide the route.
+function rootElementName(xml) {
+    if (!xml)
+        return "";
+
+    var i = 0;
+    while (i < xml.length) {
+        var lt = xml.indexOf("<", i);
+        if (lt === -1)
+            return "";
+
+        var next = xml.charAt(lt + 1);
+        if (next === "?") {
+            var pi = xml.indexOf("?>", lt + 2);
+            if (pi === -1)
+                return "";
+            i = pi + 2;
+        } else if (next === "!") {
+            if (xml.substr(lt + 2, 2) === "--") {
+                var comment = xml.indexOf("-->", lt + 4);
+                if (comment === -1)
+                    return "";
+                i = comment + 3;
+            } else {
+                var decl = xml.indexOf(">", lt + 2);
+                if (decl === -1)
+                    return "";
+                i = decl + 1;
+            }
+        } else {
+            var m = /^<([A-Za-z_][A-Za-z0-9_.\-]*(?::[A-Za-z_][A-Za-z0-9_.\-]*)?)/
+                .exec(xml.substr(lt, 128));
+            if (!m) {
+                i = lt + 1;
+                continue;
+            }
+            var name = m[1];
+            var colon = name.indexOf(":");
+            return (colon === -1 ? name : name.substr(colon + 1)).toLowerCase();
+        }
     }
+    return "";
+}
+
+function parseFeed(xml, sourceName, sourceUrl) {
+    var root = rootElementName(xml);
+
+    if (root === "feed")
+        return parseAtomFeed(xml, sourceName, sourceUrl);
+    // "rss" is RSS 0.9x/2.0; "rdf" is RSS 1.0, whose root is <rdf:RDF> and
+    // whose entries are <item> elements, so the RSS parser handles both.
+    if (root === "rss" || root === "rdf")
+        return parseRssFeed(xml, sourceName, sourceUrl);
+
+    // Unrecognised or unparseable root (a wrapper element, a truncated
+    // download). Rather than guess, route on which container element is
+    // actually present; ties and empty documents fall through to RSS, which
+    // is what the old code did for everything that wasn't Atom.
+    if (/<entry[\s>]/i.test(xml) && !/<item[\s>]/i.test(xml))
+        return parseAtomFeed(xml, sourceName, sourceUrl);
     return parseRssFeed(xml, sourceName, sourceUrl);
 }
 
@@ -372,6 +442,7 @@ if (typeof module !== "undefined" && module.exports) {
         parseRssFeed: parseRssFeed,
         parseAtomFeed: parseAtomFeed,
         parseFeed: parseFeed,
+        rootElementName: rootElementName,
         parseOpml: parseOpml,
         dedupeItems: dedupeItems,
         parseMinifluxEntries: parseMinifluxEntries

@@ -236,7 +236,22 @@ Requires Node.js 18+ (uses the built-in `node:test` runner).
 **1.0.0 is the only version previously published to the DMS registry.** The 2.0.0
 through 2.2.0 entries below were developed but never released — this is the first
 published update since 1.0.0, so if you're upgrading from 1.0.0, every entry from
-2.0.0 through 2.3.0 applies to you.
+2.0.0 through 2.3.1 applies to you.
+
+### 2.3.1
+
+- **Fixed: RSS feeds containing an element whose name starts with "feed" silently
+  loaded zero items.** Reported by [@Xn4m3d](https://github.com/Xn4m3d) in
+  [#7](https://github.com/BrendonJL/dms-rss-widget/issues/7). Format detection in
+  `parseFeed` was a substring test (`xml.indexOf("<feed")`) over the entire
+  document, so an RSS 2.0 feed carrying, say, CNBC's `<feed_asset>` or
+  FeedBurner's `<feedburner:*>` elements was routed to the Atom parser, which
+  found no `<entry>` and returned nothing — the feed just disappeared with no
+  error logged. Detection now resolves the document's **root element** (skipping
+  the XML declaration, processing instructions, comments and DOCTYPE, and
+  stripping any namespace prefix), so `<rss>` and RSS 1.0's `<rdf:RDF>` go to the
+  RSS parser and only a genuine `<feed>` root goes to Atom. Verified against the
+  live CNBC feed: 0 items before, 30 after.
 
 ### 2.3.0
 

@@ -11,6 +11,7 @@ const {
     parseRssFeed,
     parseAtomFeed,
     parseFeed,
+    rootElementName,
     parseOpml,
     dedupeItems,
     parseMinifluxEntries
@@ -563,6 +564,116 @@ describe("parseFeed", () => {
         const items = parseFeed(rss, "Test");
         assert.equal(items.length, 1);
         assert.equal(items[0].title, "B");
+    });
+
+    // Regression, reported by @Xn4m3d (#7): routing was a substring test for
+    // "<feed" over the whole document, so an RSS feed containing any element
+    // whose name merely STARTS with "feed" was handed to the Atom parser and
+    // silently yielded zero items. CNBC ships <feed_asset>; FeedBurner ships
+    // <feedburner:*>. Both are real, live feeds.
+    test("routes an RSS feed containing a <feed_asset> element to the RSS parser", () => {
+        const rss = '<?xml version="1.0"?><rss version="2.0"><channel>'
+            + '<feed_asset>promo</feed_asset>'
+            + '<item><title>CNBC story</title><link>https://cnbc.example/a</link></item>'
+            + '</channel></rss>';
+        const items = parseFeed(rss, "CNBC");
+        assert.equal(items.length, 1);
+        assert.equal(items[0].title, "CNBC story");
+    });
+
+    test("routes an RSS feed using feedburner: namespaced elements to the RSS parser", () => {
+        const rss = '<rss version="2.0" xmlns:feedburner="http://rssnamespace.org/feedburner/ext/1.0"><channel>'
+            + '<item><title>Burned</title><link>https://fb.example/a</link>'
+            + '<feedburner:origLink>https://orig.example/a</feedburner:origLink></item>'
+            + '</channel></rss>';
+        const items = parseFeed(rss, "FeedBurner");
+        assert.equal(items.length, 1);
+        assert.equal(items[0].title, "Burned");
+    });
+
+    test("ignores a <feed mentioned in a comment before the root element", () => {
+        const rss = '<?xml version="1.0"?><!-- migrated from <feed> --><rss version="2.0"><channel>'
+            + '<item><title>Commented</title><link>https://c.example/a</link></item>'
+            + '</channel></rss>';
+        const items = parseFeed(rss, "Test");
+        assert.equal(items.length, 1);
+        assert.equal(items[0].title, "Commented");
+    });
+
+    test("ignores a <feed> appearing inside item content", () => {
+        const rss = '<rss version="2.0"><channel><item><title>Meta</title>'
+            + '<link>https://m.example/a</link>'
+            + '<description><![CDATA[How to write a <feed> document]]></description>'
+            + '</item></channel></rss>';
+        const items = parseFeed(rss, "Test");
+        assert.equal(items.length, 1);
+        assert.equal(items[0].title, "Meta");
+    });
+
+    test("detects Atom behind an XML declaration and a comment", () => {
+        const atom = '<?xml version="1.0" encoding="UTF-8"?><!-- generated -->'
+            + '<feed xmlns="http://www.w3.org/2005/Atom">'
+            + '<entry><title>Declared</title><link href="https://a.example/1"/></entry>'
+            + '</feed>';
+        const items = parseFeed(atom, "Test");
+        assert.equal(items.length, 1);
+        assert.equal(items[0].title, "Declared");
+    });
+
+    // A prefixed Atom root (<atom:feed>) routes to the Atom parser correctly --
+    // see the rootElementName tests. The entry-level regexes in parseAtomFeed
+    // still only match unprefixed <entry>, which is a separate limitation and
+    // deliberately not addressed by this fix.
+    test("routes a prefixed <atom:feed> root to the Atom parser", () => {
+        assert.equal(rootElementName('<atom:feed xmlns:atom="http://www.w3.org/2005/Atom"/>'), "feed");
+    });
+
+    test("routes RSS 1.0 (<rdf:RDF> root) to the RSS parser", () => {
+        const rdf = '<?xml version="1.0"?><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+            + '<item><title>RDF item</title><link>https://r.example/a</link></item>'
+            + '</rdf:RDF>';
+        const items = parseFeed(rdf, "Test");
+        assert.equal(items.length, 1);
+        assert.equal(items[0].title, "RDF item");
+    });
+
+    test("falls back to the container element when the root is unrecognised", () => {
+        const wrapped = '<payload><entry><title>Wrapped</title><link href="https://w.example/1"/></entry></payload>';
+        const items = parseFeed(wrapped, "Test");
+        assert.equal(items.length, 1);
+        assert.equal(items[0].title, "Wrapped");
+    });
+
+    test("returns an empty list rather than throwing on junk input", () => {
+        assert.deepEqual(parseFeed("", "Test"), []);
+        assert.deepEqual(parseFeed("not xml at all", "Test"), []);
+    });
+});
+
+// ─── rootElementName ───
+
+describe("rootElementName", () => {
+    test("returns the root tag name", () => {
+        assert.equal(rootElementName('<rss version="2.0"><channel/></rss>'), "rss");
+    });
+
+    test("strips a namespace prefix and lowercases", () => {
+        assert.equal(rootElementName('<rdf:RDF xmlns:rdf="x"/>'), "rdf");
+        assert.equal(rootElementName('<atom:Feed/>'), "feed");
+    });
+
+    test("skips the XML declaration, comments and DOCTYPE", () => {
+        assert.equal(
+            rootElementName('<?xml version="1.0"?><!DOCTYPE rss><!-- <feed> --><rss/>'),
+            "rss"
+        );
+    });
+
+    test("returns empty string when there is no element", () => {
+        assert.equal(rootElementName(""), "");
+        assert.equal(rootElementName("plain text"), "");
+        assert.equal(rootElementName(null), "");
+        assert.equal(rootElementName("<!-- unterminated"), "");
     });
 });
 
