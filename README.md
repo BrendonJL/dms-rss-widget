@@ -231,6 +231,27 @@ Requires Node.js 18+ (uses the built-in `node:test` runner).
 
 ![RSS Widget on desktop](screenshot.png)
 
+## Related plugins
+
+**[Dank News RSS & Ticker](https://github.com/Xn4m3d/dms-rss-widget)** by
+[@Xn4m3d](https://github.com/Xn4m3d) takes the same feeds in a different
+direction: a full-width scrolling headline bar that docks under the DankBar or
+follows a bottom bar, plus an optional companion pill that shows the same
+headlines inside the bar itself. It's registered separately, as
+`dankNewsRssTicker` and `dankNewsRssTickerPill`, so it installs alongside this
+plugin rather than replacing it.
+
+Rough guide: if you want a desktop card you sit down and read, use this one. If
+you want headlines scrolling past while you work, use theirs.
+
+The two share ancestry and fixes flow between them — PRs
+[#1](https://github.com/BrendonJL/dms-rss-widget/pull/1),
+[#2](https://github.com/BrendonJL/dms-rss-widget/pull/2),
+[#3](https://github.com/BrendonJL/dms-rss-widget/pull/3) and
+[#5](https://github.com/BrendonJL/dms-rss-widget/pull/5) came here from @Xn4m3d,
+as did the parser bugs fixed in 2.3.1 and 2.3.2
+([#7](https://github.com/BrendonJL/dms-rss-widget/issues/7)).
+
 ## Changelog
 
 **1.0.0 is the only version previously published to the DMS registry.** The 2.0.0
