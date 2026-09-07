@@ -12,6 +12,8 @@ const {
     parseAtomFeed,
     parseFeed,
     rootElementName,
+    rootElementPrefix,
+    stripNamespacePrefix,
     parseOpml,
     dedupeItems,
     parseMinifluxEntries
@@ -620,12 +622,47 @@ describe("parseFeed", () => {
         assert.equal(items[0].title, "Declared");
     });
 
-    // A prefixed Atom root (<atom:feed>) routes to the Atom parser correctly --
-    // see the rootElementName tests. The entry-level regexes in parseAtomFeed
-    // still only match unprefixed <entry>, which is a separate limitation and
-    // deliberately not addressed by this fix.
-    test("routes a prefixed <atom:feed> root to the Atom parser", () => {
-        assert.equal(rootElementName('<atom:feed xmlns:atom="http://www.w3.org/2005/Atom"/>'), "feed");
+    // A fully prefixed Atom document (<atom:feed><atom:entry><atom:title>...)
+    // used to route correctly and then parse to zero items, because every
+    // regex in parseAtomFeed matches unprefixed tags only.
+    test("parses a fully prefixed Atom document", () => {
+        const atom = '<?xml version="1.0"?><atom:feed xmlns:atom="http://www.w3.org/2005/Atom">'
+            + '<atom:entry><atom:title>Prefixed</atom:title>'
+            + '<atom:link rel="alternate" href="https://p.example/1"/>'
+            + '<atom:updated>2026-09-07T00:00:00Z</atom:updated></atom:entry>'
+            + '<atom:entry><atom:title>Second</atom:title>'
+            + '<atom:link href="https://p.example/2"/></atom:entry>'
+            + '</atom:feed>';
+        const items = parseFeed(atom, "Test");
+        assert.equal(items.length, 2);
+        assert.deepEqual(items.map(i => i.title), ["Prefixed", "Second"]);
+        assert.equal(items[0].link, "https://p.example/1");
+        assert.equal(items[0].dateStr, "2026-09-07T00:00:00Z");
+    });
+
+    test("prefixed Atom entries still get distinct non-empty ids", () => {
+        const atom = '<atom:feed xmlns:atom="http://www.w3.org/2005/Atom">'
+            + '<atom:entry><atom:id>urn:a</atom:id><atom:title>A</atom:title>'
+            + '<atom:link href="https://p.example/a"/></atom:entry>'
+            + '<atom:entry><atom:id>urn:b</atom:id><atom:title>B</atom:title>'
+            + '<atom:link href="https://p.example/b"/></atom:entry>'
+            + '</atom:feed>';
+        const items = parseFeed(atom, "Test");
+        assert.equal(items.length, 2);
+        assert.ok(items[0].id && items[1].id);
+        assert.notEqual(items[0].id, items[1].id);
+    });
+
+    test("an unrelated namespace on a prefixed Atom feed is left intact", () => {
+        const atom = '<atom:feed xmlns:atom="http://www.w3.org/2005/Atom" '
+            + 'xmlns:media="http://search.yahoo.com/mrss/">'
+            + '<atom:entry><atom:title>Pic</atom:title>'
+            + '<atom:link href="https://p.example/1"/>'
+            + '<media:thumbnail url="https://img.example/t.jpg"/></atom:entry>'
+            + '</atom:feed>';
+        const items = parseFeed(atom, "Test");
+        assert.equal(items.length, 1);
+        assert.equal(items[0].imageUrl, "https://img.example/t.jpg");
     });
 
     test("routes RSS 1.0 (<rdf:RDF> root) to the RSS parser", () => {
@@ -674,6 +711,41 @@ describe("rootElementName", () => {
         assert.equal(rootElementName("plain text"), "");
         assert.equal(rootElementName(null), "");
         assert.equal(rootElementName("<!-- unterminated"), "");
+    });
+});
+
+// ─── rootElementPrefix / stripNamespacePrefix ───
+
+describe("rootElementPrefix", () => {
+    test("returns the root prefix, lowercased", () => {
+        assert.equal(rootElementPrefix('<atom:feed xmlns:atom="x"/>'), "atom");
+        assert.equal(rootElementPrefix('<A10:feed/>'), "a10");
+    });
+
+    test("returns empty string for an unprefixed or missing root", () => {
+        assert.equal(rootElementPrefix('<feed xmlns="x"/>'), "");
+        assert.equal(rootElementPrefix(""), "");
+    });
+});
+
+describe("stripNamespacePrefix", () => {
+    test("strips opening and closing tags of the named prefix only", () => {
+        assert.equal(
+            stripNamespacePrefix("<atom:entry><media:thumbnail/></atom:entry>", "atom"),
+            "<entry><media:thumbnail/></entry>"
+        );
+    });
+
+    test("leaves xmlns attributes alone", () => {
+        assert.equal(
+            stripNamespacePrefix('<atom:feed xmlns:atom="http://x"/>', "atom"),
+            '<feed xmlns:atom="http://x"/>'
+        );
+    });
+
+    test("is a no-op without a prefix", () => {
+        assert.equal(stripNamespacePrefix("<entry/>", ""), "<entry/>");
+        assert.equal(stripNamespacePrefix("", "atom"), "");
     });
 });
 

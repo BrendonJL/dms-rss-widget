@@ -236,7 +236,19 @@ Requires Node.js 18+ (uses the built-in `node:test` runner).
 **1.0.0 is the only version previously published to the DMS registry.** The 2.0.0
 through 2.2.0 entries below were developed but never released — this is the first
 published update since 1.0.0, so if you're upgrading from 1.0.0, every entry from
-2.0.0 through 2.3.1 applies to you.
+2.0.0 through 2.3.2 applies to you.
+
+### 2.3.2
+
+- **Fixed: Atom feeds that put their elements behind a namespace prefix loaded
+  zero items.** A document written as `<atom:feed><atom:entry><atom:title>` was
+  routed to the Atom parser correctly but then parsed to nothing, because every
+  regex in `parseAtomFeed` matches unprefixed tags only — the same silent
+  disappearance as the 2.3.1 bug, with a different cause. `parseAtomFeed` now
+  normalises away the prefix declared on the root element before parsing.
+  Only the root's own prefix is touched, so other namespaces a feed carries for
+  extra data (`media:`, `dc:`, `content:`) are left intact, as are `xmlns:`
+  attributes. Found while writing the regression tests for 2.3.1.
 
 ### 2.3.1
 

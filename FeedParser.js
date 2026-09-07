@@ -208,7 +208,26 @@ function pickAtomLink(block) {
     return foundAlt ? altHref : firstHref;
 }
 
+// Removes ONE namespace prefix from element tags: "<atom:entry>" -> "<entry>".
+// Only the prefix it is asked for is touched, so unrelated namespaces a feed
+// carries for extra data (media:, dc:, content:) survive untouched, as do
+// attributes -- xmlns:atom="..." is left alone deliberately.
+function stripNamespacePrefix(xml, prefix) {
+    if (!xml || !prefix)
+        return xml;
+    var escaped = prefix.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
+    return xml.replace(new RegExp("<(/?)" + escaped + ":", "gi"), "<$1");
+}
+
 function parseAtomFeed(xml, sourceName, sourceUrl) {
+    // An Atom document may put its elements behind a prefix declared on the
+    // root (<atom:feed><atom:entry><atom:title>...). Every regex below matches
+    // unprefixed tags only, so such a feed parsed to zero items -- the same
+    // silent disappearance @Xn4m3d reported in #7 for the RSS misroute, with a
+    // different cause. Normalise the root's own prefix away up front rather
+    // than making every regex below namespace-aware.
+    xml = stripNamespacePrefix(xml, rootElementPrefix(xml));
+
     var items = [];
     var entryRegex = /<entry[\s>]([\s\S]*?)<\/entry>/gi;
     var match;
@@ -257,6 +276,23 @@ function parseAtomFeed(xml, sourceName, sourceUrl) {
 // The scan skips the XML declaration, processing instructions, comments and
 // DOCTYPE so that a "<feed" mentioned inside a comment cannot decide the route.
 function rootElementName(xml) {
+    var raw = rootElementRaw(xml);
+    var colon = raw.indexOf(":");
+    return (colon === -1 ? raw : raw.substr(colon + 1)).toLowerCase();
+}
+
+// The root element's namespace prefix, lowercased ("atom" for <atom:feed>), or
+// "" when the root carries no prefix. parseAtomFeed uses this to normalise a
+// fully prefixed Atom document before its regexes run.
+function rootElementPrefix(xml) {
+    var raw = rootElementRaw(xml);
+    var colon = raw.indexOf(":");
+    return colon === -1 ? "" : raw.substr(0, colon).toLowerCase();
+}
+
+// Shared scanner: the root element's tag name exactly as written, prefix
+// included, or "" if the document has no element.
+function rootElementRaw(xml) {
     if (!xml)
         return "";
 
@@ -291,9 +327,7 @@ function rootElementName(xml) {
                 i = lt + 1;
                 continue;
             }
-            var name = m[1];
-            var colon = name.indexOf(":");
-            return (colon === -1 ? name : name.substr(colon + 1)).toLowerCase();
+            return m[1];
         }
     }
     return "";
@@ -443,6 +477,8 @@ if (typeof module !== "undefined" && module.exports) {
         parseAtomFeed: parseAtomFeed,
         parseFeed: parseFeed,
         rootElementName: rootElementName,
+        rootElementPrefix: rootElementPrefix,
+        stripNamespacePrefix: stripNamespacePrefix,
         parseOpml: parseOpml,
         dedupeItems: dedupeItems,
         parseMinifluxEntries: parseMinifluxEntries
