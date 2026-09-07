@@ -1,0 +1,56 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # Note the glob: `node --test tests/` (directory form) fails on Node 24.
+      - run: node --test tests/*.test.js
+
+  manifest:
+    name: manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: plugin.json is valid JSON with the required fields
+        run: |
+          jq -e '.id and .name and .version and .component and .type' plugin.json > /dev/null
+
+      # The DMS registry crawls version/author straight out of plugin.json, so a
+      # bumped manifest with no changelog entry ships a version nobody can read
+      # about -- and an unbumped manifest ships changes the registry never shows.
+      - name: version has a changelog entry
+        run: |
+          v=$(jq -r .version plugin.json)
+          echo "plugin.json version: $v"
+          grep -qF "### $v" README.md || {
+            echo "::error file=README.md::No '### $v' section in the README changelog"
+            exit 1
+          }
+
+      # FeedParser.js and ReaderState.js are require()d by the Node tests, so a
+      # stray .pragma library line breaks the suite without breaking the widget.
+      - name: no .pragma library in the shared JS modules
+        run: |
+          if grep -n '^\s*\.pragma' FeedParser.js ReaderState.js; then
+            echo "::error::.pragma library breaks require() in the test suite"
+            exit 1
+          fi
