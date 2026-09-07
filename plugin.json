@@ -2,7 +2,7 @@
   "id": "dankRssWidget",
   "name": "Dank RSS Widget",
   "description": "Desktop widget that displays RSS/Atom feeds with auto-refresh, plus full Miniflux integration with bidirectional read/unread/starred sync",
-  "version": "2.3.2",
+  "version": "2.3.3",
   "author": "BrendonJL, Xn4m3d, Alessandro Ianne",
   "type": "desktop",
   "capabilities": [

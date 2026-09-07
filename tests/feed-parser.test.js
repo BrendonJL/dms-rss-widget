@@ -4,6 +4,8 @@ const {
     extractTag,
     cleanText,
     stripHtml,
+    htmlToText,
+    separateBlocks,
     getRelativeTime,
     extractImageUrl,
     isSafeUrl,
@@ -378,12 +380,14 @@ describe("parseRssFeed", () => {
         assert.equal(items[2].description, "Bold description");
     });
 
-    test("decodes entities in descriptions", () => {
+    test("decodes entities in descriptions without leaving markup behind", () => {
         const items = parseRssFeed(RSS_SAMPLE, "Test");
-        // Entity-encoded HTML survives stripHtml (which only matches real tags),
-        // then cleanText decodes entities, leaving decoded <p> tags intact.
-        // This is fine in the widget since QML StyledText renders HTML.
-        assert.equal(items[1].description, "<p>HTML &amp; entities</p>");
+        // This test previously asserted "<p>HTML &amp; entities</p>", on the
+        // theory that DMS's StyledText renders HTML. It does not: StyledText is
+        // a plain QtQuick Text with `textFormat: Text.PlainText`, so the tags
+        // were displayed to the user verbatim. Confirmed on screen, and against
+        // the live Guardian feed where 137 of 137 descriptions leaked markup.
+        assert.equal(items[1].description, "HTML & entities");
     });
 
     test("sets source name on all items", () => {
@@ -504,8 +508,9 @@ describe("parseAtomFeed", () => {
     test("uses summary or content for description", () => {
         const items = parseAtomFeed(ATOM_SAMPLE, "AtomTest");
         assert.equal(items[0].description, "Summary of entry 1");
-        // Entity-encoded <p> tags survive stripHtml then get decoded by cleanText
-        assert.equal(items[1].description, "<p>Content of entry 2</p>");
+        // Entity-encoded tags are stripped, not decoded onto the screen -- see
+        // the note in the parseRssFeed description test above.
+        assert.equal(items[1].description, "Content of entry 2");
     });
 
     test("uses updated or published for timestamp", () => {
@@ -711,6 +716,66 @@ describe("rootElementName", () => {
         assert.equal(rootElementName("plain text"), "");
         assert.equal(rootElementName(null), "");
         assert.equal(rootElementName("<!-- unterminated"), "");
+    });
+});
+
+// ─── htmlToText ───
+
+describe("htmlToText", () => {
+    test("strips real tags", () => {
+        assert.equal(htmlToText("<p>Hello <b>world</b></p>"), "Hello world");
+    });
+
+    // The regression: descriptions arrive entity-encoded from the Guardian, BBC
+    // and others. Stripping before decoding left the decoded tags on screen.
+    test("strips entity-encoded tags", () => {
+        assert.equal(htmlToText("&lt;p&gt;Chancellor says&lt;/p&gt;"), "Chancellor says");
+    });
+
+    test("strips a mix of real and entity-encoded tags", () => {
+        assert.equal(
+            htmlToText("<p>Intro&lt;/p&gt;&lt;ul&gt;&lt;li&gt;point</p>"),
+            "Intro point"
+        );
+    });
+
+    test("still decodes ordinary entities in the text", () => {
+        assert.equal(htmlToText("<p>Tom &amp; Jerry &quot;quoted&quot;</p>"), 'Tom & Jerry "quoted"');
+    });
+
+    test("collapses whitespace and trims", () => {
+        assert.equal(htmlToText("<p>  spaced\n\n  out  </p>"), "spaced out");
+    });
+
+    test("leaves plain text alone", () => {
+        assert.equal(htmlToText("just words"), "just words");
+    });
+
+    // Deleting a block tag welded the text on either side into one word:
+    // "...across the country</p><p>Far-right AfD..." showed as "countryFar-right".
+    test("treats a block-tag boundary as a word break", () => {
+        assert.equal(htmlToText("<p>the country</p><p>Far-right wins</p>"), "the country Far-right wins");
+        assert.equal(htmlToText("a<br>b"), "a b");
+        assert.equal(htmlToText("<ul><li>one</li><li>two</li></ul>"), "one two");
+    });
+
+    test("treats an entity-encoded block boundary as a word break too", () => {
+        assert.equal(htmlToText("&lt;p&gt;first&lt;/p&gt;&lt;p&gt;second&lt;/p&gt;"), "first second");
+    });
+
+    test("inline tags do not introduce a space mid-word", () => {
+        assert.equal(htmlToText("un<b>der</b>stand"), "understand");
+        assert.equal(htmlToText('read <a href="https://x">more</a> here'), "read more here");
+    });
+
+    test("handles empty and missing input", () => {
+        assert.equal(htmlToText(""), "");
+        assert.equal(htmlToText(null), "");
+        assert.equal(htmlToText(undefined), "");
+    });
+
+    test("a bare comparison without a closing angle survives", () => {
+        assert.equal(htmlToText("5 &lt; 6 and rising"), "5 < 6 and rising");
     });
 });
 

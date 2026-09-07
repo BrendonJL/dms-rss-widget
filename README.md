@@ -257,7 +257,26 @@ as did the parser bugs fixed in 2.3.1 and 2.3.2
 **1.0.0 is the only version previously published to the DMS registry.** The 2.0.0
 through 2.2.0 entries below were developed but never released — this is the first
 published update since 1.0.0, so if you're upgrading from 1.0.0, every entry from
-2.0.0 through 2.3.2 applies to you.
+2.0.0 through 2.3.3 applies to you.
+
+### 2.3.3
+
+- **Fixed: HTML markup showed up as literal text in item descriptions.** Feeds
+  that entity-encode their description markup — the Guardian, the BBC and many
+  others — rendered as `<p>Chancellor says …</p><ul><li>` in the widget. The
+  parser stripped tags *before* decoding entities, so the decode step recreated
+  tags the stripper had already passed. Descriptions now go through
+  `htmlToText`, which strips, decodes, then strips again, so both real and
+  entity-encoded markup are removed and a double-encoded description resolves
+  to plain text. Measured on the live Guardian feed: 137 of 137 descriptions
+  affected before, 0 after.
+- Block-level tags (`</p>`, `<br>`, `</li>` …) are replaced with a space rather
+  than deleted, since they mark a word boundary: "across the country</p><p>Far-right
+  AfD" was rendering as "the countryFar-right". Inline tags are still deleted
+  outright, so "un<b>der</b>stand" stays "understand".
+- Two tests asserted the old behaviour on the assumption that DMS's
+  `StyledText` renders HTML. It doesn't — it sets `textFormat: Text.PlainText`,
+  so the markup was always shown to the user verbatim. Corrected.
 
 ### 2.3.2
 
