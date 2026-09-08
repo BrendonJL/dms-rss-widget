@@ -30,6 +30,51 @@ A desktop widget plugin for [DankMaterialShell](https://github.com/AvengeMedia/D
 - Feed source labels per item
 - **Optional [Miniflux](https://miniflux.app/) mode** — sync with a self-hosted Miniflux server instead of fetching feeds directly, with bidirectional read/unread and starred sync
 
+## Roadmap
+
+Full designs live in [`docs/plans/`](docs/plans/). Contributors welcome on
+anything here — the **Phase 6** items are deliberately self-contained and are
+the best place to start.
+
+**In progress**
+
+- Search focus and search-during-selection fixes — [design](docs/plans/2026-09-07-search-fixes-design.md)
+
+**Planned** — [full roadmap design](docs/plans/2026-09-07-roadmap-design.md)
+
+| Phase | Work | Depends on |
+|---|---|---|
+| 0 | Backend provider interface — replaces the inline `sourceMode` branches | — |
+| 1 | Google Reader API backend (FreshRSS, TT-RSS, Inoreader, TheOldReader, BazQux, Miniflux) | 0 |
+| 2 | Keyboard navigation (`j`/`k`/`o`/`m`/`s`, `/` to search) | search fixes |
+| 3 | Local AI via any OpenAI-compatible runtime (ollama, vLLM, llama.cpp, LM Studio): per-article TL;DR, daily digest, interest ranking | 0 |
+| 4 | Notes/export provider: markdown directory, Obsidian, Neovim | — |
+| 5 | Reader + annotation app — a standalone window for reading, highlighting and note-taking | 3, 4 |
+| 6 | Independent smaller items — see below | — |
+
+**Phase 6 / good first issues**
+
+- Feed autodiscovery (paste a site URL, find its feed)
+- OPML **export** (import already exists)
+- Categories/folders (Miniflux returns them; we flatten them)
+- Per-feed refresh intervals
+- Audio enclosures → MPRIS, so podcast feeds play through the DMS media widget
+- Rule-based notifications (notify on *interesting* items, not just new ones)
+- Mark-read-on-scroll, per-source snooze, oldest-first sort
+
+**Design principle for anything with a vendor in its name:** it gets an
+interface with presets, never a hardcoded integration. Feed backends speak the
+Google Reader API, AI runtimes speak the OpenAI-compatible chat API, and notes
+apps are "write a markdown file to a directory". Adding ollama should not make
+vLLM harder, and adding Obsidian should not make Neovim harder.
+
+**Not planned**
+
+- **Fever API** — covers only backends the Google Reader API already reaches,
+  and is read-only in Miniflux.
+- **Evernote export** — its local API was retired; there is no integration
+  surface left that fits the export interface. Use the markdown provider.
+
 ## Miniflux mode
 
 Instead of fetching RSS/Atom URLs directly, the widget can act as a front-end for a
@@ -76,7 +121,7 @@ backed up, synced, or otherwise readable by other tools.
 
 - At very narrow widget widths (approaching the 100px floor) the filter chips can still crowd each other. Fully solving it would need chip wrapping or eliding, which is not implemented. At normal sizes (the default and above) this is not visible.
 - Compact view rows reserve slightly more vertical padding than their margins strictly need. This is a pre-existing cosmetic issue, not introduced or fixed in this release.
-- The widget now declares `acceptsKeyboardFocus` (gated to when search is open) so the search field can receive typed input. No other widget in the installed DMS build uses this property, so while it is wired correctly per the documented mechanism, its behavior is unproven across DMS versions and may interact with compositor-specific layer-shell focus policy.
+- `acceptsKeyboardFocus` gating search means the search field needs a **second click** before it accepts typing. The DMS wrapper maps this property onto layer-shell `WlrKeyboardFocus.OnDemand` (`Modules/Plugins/DesktopPluginWrapper.qml`), and `on_demand` grants keyboard focus only on a click that lands while the surface is already focus-eligible — which it is not at the instant the search toggle is clicked. Fix designed, see the roadmap.
 - The Miniflux settings layout (Connection section, read-only feed list, mode-gated visibility of the RSS-only sections) has not been visually verified in a live DMS session.
 
 ## Installation
