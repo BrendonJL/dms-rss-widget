@@ -97,10 +97,16 @@ DesktopPluginComponent {
         onTriggered: root._overviewGuard = false
     }
 
-    // D8: only steal keyboard focus while the search field is actually
-    // revealed, so the widget never intercepts keys (e.g. compositor
-    // keybinds) meant for other DMS surfaces while search is closed.
-    property bool acceptsKeyboardFocus: root.searchActive
+    // D8: DMS maps this onto WlrKeyboardFocus.OnDemand (surface-eligible,
+    // not surface-focused) vs. None. Widening it to include pointer hover
+    // does not reintroduce the keybind-swallowing problem this guard exists
+    // for: OnDemand never grants focus on its own, it only lets a click that
+    // lands on us claim it. While the pointer merely rests over the widget
+    // with nothing clicked, keys still go to niri untouched. This is needed
+    // because the surface must already be focus-eligible *before* the click
+    // that opens search, or that very click grants nothing and typing is a
+    // no-op until a second click (see search-fixes design doc, Problem 1).
+    property bool acceptsKeyboardFocus: root.searchActive || widgetHover.hovered
 
     // Read tracking, keyed by stable item id. `readMap` is replaced (not mutated)
     // so QML property-change notification fires; `readOrder` keeps newest-first
@@ -115,12 +121,26 @@ DesktopPluginComponent {
     property var bookmarkOrder: []
 
     // Selection is TRANSIENT: never persisted, never bounded/capped like
-    // readOrder/bookmarkOrder — it is a working set over currently-visible
-    // items only. Plain map (not an id-order list) because membership is
-    // all that matters; order is irrelevant. Mirrors readMap/bookmarkMap's
-    // "map alongside a QML property, replaced not mutated" pattern.
+    // readOrder/bookmarkOrder. Pruned only against root.allItems (S10), so it
+    // survives search/filter-chip changes and can include ids currently
+    // hidden by the active filter -- not just what's on screen. Plain map
+    // (not an id-order list) because membership is all that matters; order
+    // is irrelevant. Mirrors readMap/bookmarkMap's "map alongside a QML
+    // property, replaced not mutated" pattern.
     property var selectedMap: ({})
     readonly property int selectedCount: ReaderState.countSelected(root.selectedMap)
+
+    // The visible set applyFilter last built, cached so the selection bar can
+    // ask "how many selected items are off-screen right now?" without redoing
+    // the filter pass -- and, more importantly, so that answer changes on the
+    // same debounced beat as the list itself rather than on every keystroke.
+    property var visibleItems: []
+
+    // Shared by searchToggleComponent and both Loaders that instantiate it.
+    // A Loader given an explicit Layout size does NOT stretch its item to fit,
+    // so the button only lands correctly while the two numbers agree -- with a
+    // literal in each place, drift would silently leave dead click area.
+    readonly property int searchToggleSize: 22
 
     // Per-feed runtime status, mirrored to the state tier for the settings panel
     property var feedStatuses: []
@@ -956,9 +976,15 @@ DesktopPluginComponent {
             });
         }
 
-        // S10: prune selection against the newly-rebuilt visible set so
-        // selectedCount can never exceed what's on screen.
-        root.selectedMap = ReaderState.pruneSelected(root.selectedMap, visible);
+        // S10: prune selection against the full dataset (root.allItems), not
+        // the newly-rebuilt visible set -- selection must survive search and
+        // filter-chip changes and only drop an id once it leaves the dataset
+        // entirely (e.g. a refresh evicting an old item). selectedCount can
+        // therefore exceed what's on screen; bulk actions already iterate
+        // selectedMap rather than the visible model, so this is safe, and the
+        // selection-bar label below surfaces the hidden portion explicitly.
+        root.selectedMap = ReaderState.pruneSelected(root.selectedMap, root.allItems);
+        root.visibleItems = visible;
     }
 
     onFilterModeChanged: root.applyFilter()
@@ -975,6 +1001,17 @@ DesktopPluginComponent {
         border.width: root.enableBorder ? root.borderThickness : 0
         border.color: Theme.withAlpha(root.resolvedBorderColor, root.borderOpacity)
         clip: true
+
+        // Backs D8's acceptsKeyboardFocus above. A pointer handler, not a
+        // MouseArea: the widget is full of child MouseAreas (filterArea,
+        // markAllArea, per-item areas) and a parent MouseArea's containsMouse
+        // goes false whenever a hover-enabled child takes the pointer, so the
+        // flag would flicker exactly while the user aims at the search
+        // button. HoverHandler observes the pointer over its parent's bounds
+        // without competing for the event.
+        HoverHandler {
+            id: widgetHover
+        }
 
         ColumnLayout {
             anchors.fill: parent
@@ -1060,6 +1097,32 @@ DesktopPluginComponent {
                 color: Theme.outlineVariant
             }
 
+            // Search toggle, shared by the actions bar and the selection bar
+            // (S6) so the two copies cannot drift out of sync. Layout.*
+            // sizing is set on the Loader that instantiates this, not here --
+            // a Component's root item isn't a direct RowLayout child, so
+            // attached properties set inside it are ignored by the layout.
+            Component {
+                id: searchToggleComponent
+
+                DankActionButton {
+                    iconName: root.searchActive ? "search_off" : "search"
+                    iconSize: 14
+                    buttonSize: root.searchToggleSize
+                    iconColor: (root.searchActive || root.searching) ? Theme.primary : Theme.surfaceVariantText
+                    onClicked: {
+                        root.searchActive = !root.searchActive;
+                        // Closing search must not leave an invisible query
+                        // silently filtering the list.
+                        if (!root.searchActive && root.searchQuery !== "") {
+                            searchField.clear();
+                            root.searchQuery = "";
+                            root.applyFilter();
+                        }
+                    }
+                }
+            }
+
             // --- Actions bar: filter + mark all (normal mode) ---
             RowLayout {
                 Layout.fillWidth: true
@@ -1113,23 +1176,10 @@ DesktopPluginComponent {
 
                 // Search toggle. Search gets its own row when revealed so the
                 // filter chips stay readable at narrow widget widths.
-                DankActionButton {
-                    iconName: root.searchActive ? "search_off" : "search"
-                    iconSize: 14
-                    buttonSize: 22
-                    Layout.preferredWidth: 22
-                    Layout.preferredHeight: 22
-                    iconColor: (root.searchActive || root.searching) ? Theme.primary : Theme.surfaceVariantText
-                    onClicked: {
-                        root.searchActive = !root.searchActive;
-                        // Closing search must not leave an invisible query
-                        // silently filtering the list.
-                        if (!root.searchActive && root.searchQuery !== "") {
-                            searchField.clear();
-                            root.searchQuery = "";
-                            root.applyFilter();
-                        }
-                    }
+                Loader {
+                    Layout.preferredWidth: root.searchToggleSize
+                    Layout.preferredHeight: root.searchToggleSize
+                    sourceComponent: searchToggleComponent
                 }
 
                 // Mark all read / unread toggle
@@ -1186,8 +1236,20 @@ DesktopPluginComponent {
                 spacing: Theme.spacingXS
                 visible: root.selectedCount > 0
 
+                // S10: selection can now include ids hidden by the active
+                // filter/search (pruned only against root.allItems), so the
+                // label must say so rather than silently undercounting what
+                // "N selected" implies is on screen. Derived from
+                // root.visibleItems (the set applyFilter last built) rather
+                // than re-running filterItems here: that would both duplicate
+                // the scan and read root.searchQuery live, so the count would
+                // race ahead of the list during searchDebounce's 150ms and
+                // briefly disagree with what is on screen.
+                readonly property int hiddenSelected: root.selectedCount - ReaderState.countSelectedIn(root.selectedMap, root.visibleItems)
+
                 StyledText {
                     text: root.selectedCount + " selected"
+                        + (selectionActionsRow.hiddenSelected > 0 ? " (" + selectionActionsRow.hiddenSelected + " hidden)" : "")
                     font.pixelSize: root.fontSize - 2
                     color: Theme.surfaceVariantText
                     Layout.fillWidth: true
@@ -1266,6 +1328,16 @@ DesktopPluginComponent {
                     }
                 }
 
+                // Search toggle (Problem 2): the header's filter/search row
+                // is replaced by this bar while items are selected, so
+                // search needs its own entry point here too, sharing the
+                // header's exact behaviour via searchToggleComponent.
+                Loader {
+                    Layout.preferredWidth: root.searchToggleSize
+                    Layout.preferredHeight: root.searchToggleSize
+                    sourceComponent: searchToggleComponent
+                }
+
                 // Clear selection — icon-only always (never needs a label; "X"
                 // reads as "clear" without text at any width).
                 DankActionButton {
@@ -1302,8 +1374,15 @@ DesktopPluginComponent {
                 }
 
                 onVisibleChanged: {
-                    if (visible)
+                    // D8/Problem 1: focus arrival is not synchronous with the
+                    // click that revealed us (seat focus grant races Qt's
+                    // internal focus item), so a single forceActiveFocus()
+                    // can land before the surface is actually eligible. The
+                    // deferred retry catches that case.
+                    if (visible) {
                         forceActiveFocus();
+                        Qt.callLater(forceActiveFocus);
+                    }
                 }
             }
 
