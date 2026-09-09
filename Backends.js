@@ -26,6 +26,14 @@
 //
 //   var backends = Backends.createBackends({ FeedParser: FeedParser, ReaderState: ReaderState });
 
+// Proc-side timeout for Miniflux calls, deliberately LONGER than curl's own
+// --max-time of 25s. Carried on the request descriptor because it is a real
+// part of the contract: DankRssWidget.qml:787-790 documents that without it a
+// slow-but-fine request races Proc's default timeout and gets killed early,
+// surfacing a spurious failure toast. Standard-mode fetches use null (Proc's
+// default), matching fetchFeed today.
+var MINIFLUX_PROC_TIMEOUT_MS = 30000;
+
 // ─── shared curl argv builder (Miniflux) ───
 //
 // Lifted verbatim from minifluxApiCall (DankRssWidget.qml:763-792).
@@ -103,6 +111,7 @@ function createStandardBackend(deps) {
                     "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0",
                     url
                 ],
+                timeoutMs: null,
                 parse: function (stdout) {
                     try {
                         return { items: FeedParser.parseFeed(stdout, name, url), serverStatus: [], error: null };
@@ -167,6 +176,7 @@ function createMinifluxBackend(deps) {
 
             return {
                 argv: minifluxCurlArgv("GET", minifluxUrl, endpoint, config.minifluxToken, null),
+                timeoutMs: MINIFLUX_PROC_TIMEOUT_MS,
                 parse: function (stdout) {
                     var parsed = null;
                     var error = null;
@@ -212,6 +222,7 @@ function createMinifluxBackend(deps) {
 
             return {
                 argv: minifluxCurlArgv("PUT", config.minifluxUrl, "/v1/entries/" + id + "/bookmark", config.minifluxToken, null),
+                timeoutMs: MINIFLUX_PROC_TIMEOUT_MS,
                 parse: function (stdout) { return null; }
             };
         },
@@ -233,6 +244,7 @@ function minifluxMarkRequest(config, ids, status) {
 
     return {
         argv: minifluxCurlArgv("PUT", config.minifluxUrl, "/v1/entries", config.minifluxToken, body),
+        timeoutMs: MINIFLUX_PROC_TIMEOUT_MS,
         parse: function (stdout) { return null; }
     };
 }

@@ -13,10 +13,12 @@ single biggest obstacle to the rest of the roadmap.
 
 ## The constraint that decides the design
 
-**Only `.js` files in this repo can be tested.** `node --test` requires the
-shared modules directly; QML cannot be executed, compiled, or exercised from a
-development session at all — the only checks available to it are reading and
-`qmllint`'s parse.
+**JS is testable with `node --test`; QML is testable, but only just.**
+The shared modules are required directly by the Node suite. QML *can* also be
+run headless (`tests/qml/run.sh`, added 2026-09-08 — this doc originally claimed
+it could not), but only for logic reachable from a bare `qml` runtime: anything
+touching `qs.Common`, `qs.Widgets`, `Quickshell.Io` or the DMS plugin wrapper is
+still unreachable, so widget behaviour proper remains read-and-review only.
 
 So the split is not "a backend object per mode." It is:
 
@@ -122,6 +124,23 @@ Write them before the implementation. This repo's 2.3.x history is three
 releases in one day where every bug was caught by a human reading code and none
 by the suite, twice because a test written afterwards asserted the broken
 behaviour it was meant to catch.
+
+## QML smoke tests
+
+`tests/qml/run.sh` runs `.qml` files under a real Qt engine, headless. It exists
+because the DI factory below could not otherwise be verified at all.
+
+Two environment settings are required and **both fail silently** when missing:
+`QT_QPA_PLATFORM=offscreen`, and `QML2_IMPORT_PATH` pointing at the Qt build's
+`lib/qt-6/qml`. Without the latter the `qml` tool prints only "Did not load any
+objects, exiting." and no error — which is why this was written off as
+impossible in the first place. `console.log` does not reach stdout either, so
+tests report through staged exit codes (55 = pass).
+
+`tests/qml/backends-di.qml` verifies the thing no unit test can: that a QML JS
+namespace object survives being passed by value into `createBackends`, and that
+`deps.FeedParser` still dispatches from inside the returned closure. **Verified
+passing** — the highest risk in this phase is retired.
 
 ## Manual verification (Brendon, after 0b)
 
