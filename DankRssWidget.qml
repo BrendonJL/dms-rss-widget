@@ -592,10 +592,14 @@ DesktopPluginComponent {
         var descriptors = [];
 
         if (!backend.capabilities.serverState) {
-            var byUrl = {};
+            // Keyed by meta.index (position in root.feeds), NOT by url: two
+            // enabled feeds may share a url under different display names,
+            // and keying on url collapses them onto one descriptor so one
+            // renders its items under the other's name.
+            var byIndex = ({});
             for (var r = 0; r < requests.length; r++) {
                 if (requests[r].meta)
-                    byUrl[requests[r].meta.url] = requests[r];
+                    byIndex[requests[r].meta.index] = requests[r];
             }
 
             for (var i = 0; i < root.feeds.length; i++) {
@@ -627,7 +631,7 @@ DesktopPluginComponent {
                     itemCount: 0
                 };
                 statuses.push(status);
-                var matched = byUrl[feed.url];
+                var matched = byIndex[i];
                 if (matched)
                     descriptors.push({ req: matched, statusIndex: statuses.length - 1 });
             }

@@ -130,8 +130,18 @@ function createStandardBackend(deps) {
             var feeds = (config && config.feeds) || [];
             var active = ReaderState.activeFeeds(feeds);
             var out = [];
-            for (var i = 0; i < active.length; i++)
-                out.push(buildStandardFetchRequest(active[i], FeedParser));
+            for (var i = 0; i < active.length; i++) {
+                var req = buildStandardFetchRequest(active[i], FeedParser);
+                // meta.index is the position in the ORIGINAL feeds array, not
+                // in `active`. The caller matches descriptors to its own
+                // status rows by this index. Matching on url instead collapses
+                // two feeds that share a url under different display names
+                // onto one descriptor, and one of them then renders its items
+                // under the other feed's name. Nothing enforces url
+                // uniqueness in settings, so that config is reachable.
+                req.meta.index = feeds.indexOf(active[i]);
+                out.push(req);
+            }
             return out;
         },
 

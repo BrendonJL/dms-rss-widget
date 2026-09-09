@@ -89,14 +89,30 @@ describe("StandardBackend.fetchRequests", () => {
         var reqs = backend.fetchRequests({ feeds: feeds });
         assert.equal(reqs.length, 2);
         assert.deepEqual(reqs.map(function (r) { return r.meta; }), [
-            { url: "https://a.com/f.xml", name: "A" },
-            { url: "https://c.com/f.xml", name: "C" }
+            { url: "https://a.com/f.xml", name: "A", index: 0 },
+            { url: "https://c.com/f.xml", name: "C", index: 3 }
         ]);
+    });
+
+    // REGRESSION: descriptors were matched to status rows by url, so two
+    // enabled feeds sharing a url under different names collapsed onto one
+    // descriptor and one rendered its items under the other feed's name.
+    // Nothing enforces url uniqueness in settings, so this config is reachable.
+    test("meta.index distinguishes two enabled feeds sharing one url", () => {
+        var feeds = [
+            feed({ url: "https://dup.com/f.xml", name: "First" }),
+            feed({ url: "https://other.com/f.xml", name: "Middle", enabled: false }),
+            feed({ url: "https://dup.com/f.xml", name: "Second" })
+        ];
+        var reqs = backend.fetchRequests({ feeds: feeds });
+        assert.equal(reqs.length, 2);
+        assert.deepEqual(reqs.map(function (r) { return r.meta.index; }), [0, 2]);
+        assert.deepEqual(reqs.map(function (r) { return r.meta.name; }), ["First", "Second"]);
     });
 
     test("meta.name falls back to the url when name is absent", () => {
         var reqs = backend.fetchRequests({ feeds: [feed({ url: "https://x.com/f.xml", name: undefined })] });
-        assert.deepEqual(reqs[0].meta, { url: "https://x.com/f.xml", name: "https://x.com/f.xml" });
+        assert.deepEqual(reqs[0].meta, { url: "https://x.com/f.xml", name: "https://x.com/f.xml", index: 0 });
     });
 
     test("timeoutMs is null (Proc's default), matching fetchFeed today", () => {
