@@ -4,6 +4,12 @@ Date: 2026-09-09
 Status: ready to implement
 Depends on: Phase 0. **Requires an interface extension** — see below.
 
+> **Status:** 1a and 1b implemented — `GoogleReader.js`, `ChainRunner.js`,
+> `tests/live-greader.js`, and the `session` parameter (now shared by all
+> three backends) all exist. 1c (settings UI: a third source-mode option,
+> URL/username/password fields) is not implemented —
+> `DankRssWidgetSettings.qml` still offers only Standard/Miniflux.
+
 ## Why this backend is worth the trouble
 
 One protocol reaches FreshRSS, Tiny Tiny RSS (via plugin), Inoreader,
@@ -130,9 +136,11 @@ server hides.
 ## Make the dangerous part testable instead of careful
 
 The chain arithmetic is the one place a mistake finalises a fetch on partial
-results, and it would live in `DankRssWidget.qml`, which cannot be executed.
-So do not put it there. Extract it into a pure module, `ChainRunner.js`,
-covered by `node --test` like everything else:
+results, and it would live in `DankRssWidget.qml`, which `node --test` cannot
+reach (`tests/qml/run.sh` can execute `.qml` files headlessly, but only logic
+that doesn't touch `qs.Common`/`qs.Widgets`/`Quickshell.Io` — this widget's
+fetch orchestration does). So do not put it there. Extract it into a pure
+module, `ChainRunner.js`, covered by `node --test` like everything else:
 
 ```js
 createChain(descriptor, maxLinks)          -> chain

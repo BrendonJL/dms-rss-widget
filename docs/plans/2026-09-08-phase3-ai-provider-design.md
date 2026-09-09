@@ -4,6 +4,12 @@ Date: 2026-09-08
 Status: ready to implement (stage 3a); UX stages depend on measurements below
 Depends on: Phase 0 (backend interface), for config plumbing only
 
+> **Status:** stage 3a implemented — `AiProvider.js`, its tests, and the QML
+> DI round-trip (`tests/qml/ai-provider.qml`) all exist. Stages 3b-3d
+> (per-article TL;DR, digest, interest ranking — the actual UI features) are
+> not implemented; nothing in `DankRssWidget.qml` references `AiProvider.js`
+> yet.
+
 ## Interface: the OpenAI-compatible chat API, not "an ollama integration"
 
 A provider is `{ label, baseUrl, model, apiKey?, timeoutMs }` and nothing else.

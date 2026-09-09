@@ -4,6 +4,12 @@ Date: 2026-09-08
 Status: 4a ready to implement
 Depends on: nothing. Blocks Phase 5 (reader/annotation app).
 
+> **Status:** stage 4a implemented — `ExportProvider.js`, its tests, and the
+> QML DI round-trip (`tests/qml/export-provider.qml`) all exist. Stage 4b (the
+> QML side: writing via `FileView`, wiring it into the widget) is not
+> implemented — nothing in `DankRssWidget.qml` references `ExportProvider.js`
+> yet.
+
 ## Principle
 
 **Obsidian is not an integration. It is a directory of markdown files.** Build

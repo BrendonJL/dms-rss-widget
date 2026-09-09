@@ -1,5 +1,11 @@
 # Dank RSS Widget v2 Agent Swarm Prompt And Spec
 
+> **Status:** historical. This is the original v2 kickoff prompt/spec
+> (2026-09-05). Most P0/P1 items shipped; the repo has since moved well past
+> this spec's architecture (see `v2-contract.md` and later phase docs). Kept
+> for the reasoning behind the initial swarm split, not as a description of
+> current behaviour.
+
 ## Copy-Paste Prompt For Claude
 
 You are working in `/var/home/blasley/projects/dms-rss-widget`, a Dank Material Shell desktop widget plugin written in QML with extracted JavaScript parser tests.

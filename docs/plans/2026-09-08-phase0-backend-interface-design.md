@@ -4,6 +4,16 @@ Date: 2026-09-08
 Status: ready to implement
 Depends on: nothing. Blocks Phase 1 (Google Reader) and Phase 3 (AI).
 
+> **Status:** implemented (0a and 0b, including the addendum below).
+> `Backends.js` exists with `StandardBackend`/`MinifluxBackend`; QML is wired
+> to `root.backend`/`root.backends`. The `fetchRequest`/`toggleStarRequest`
+> signatures in the "Interface" section below are what stage 0a shipped with —
+> superseded first by the plural `fetchRequests` addendum, then by Phase 1's
+> `session` parameter (`tests/backend-interface.test.js` is now the source of
+> truth for the live signatures). `DankRssWidgetSettings.qml` is still not
+> capability-driven (Phase 0b as originally scoped) — its `sourceMode`
+> branches remain.
+
 ## The problem, measured
 
 `sourceMode` is branched on in **21 places in `DankRssWidget.qml`** and **20 more
@@ -222,8 +232,9 @@ The UI switches on `reason`, never on the backend id.
 
 ## Verification
 
-- `node --test tests/*.test.js` — existing 308 plus new `fetchRequests` and
-  `configState` cases. Must stay green.
+- `node --test tests/*.test.js` — existing tests (308 at the time of writing;
+  the suite has grown since — check the current count, don't cite this one)
+  plus new `fetchRequests` and `configState` cases. Must stay green.
 - `tests/qml/run.sh` — extend `backends-di.qml`, or add a sibling, to exercise
   `fetchRequests` and `runRequest`'s descriptor handling under a real engine.
 - `qmllint` parses `DankRssWidget.qml`.

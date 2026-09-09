@@ -4,6 +4,12 @@ Date: 2026-09-07
 Status: agreed in principle; per-phase specs still to be written
 Scope: architecture for everything after the 2.3.x line
 
+> **Status as of this audit:** Phase 0 (backend interface) and Phase 1
+> (Google Reader, minus the settings UI) are implemented. Phase 3 (AI) and
+> Phase 4 (export) exist only as unwired JS modules + tests (stages 3a/4a) —
+> no UI integration yet. Phase 2 (keyboard navigation) and Phase 5 (reader
+> app) have not been started. See each phase's own design doc for detail.
+
 ## Guiding principle
 
 Every external thing this widget talks to — feed backend, AI runtime, notes

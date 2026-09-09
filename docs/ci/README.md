@@ -1,7 +1,11 @@
 # Staged CI changes
 
+> **Status:** the qml-syntax job below is live in `.github/workflows/tests.yml`
+> (applied in `ebea5c5`). `tests.yml.proposed` is kept in sync as a mirror, not
+> a pending change — diff it against the real workflow before trusting either.
+
 Claude cannot write to `.github/workflows/` — a security hook blocks all
-workflow-file writes. Proposed changes are staged here for a human to move:
+workflow-file writes. Future changes get staged here for a human to move:
 
     cp docs/ci/tests.yml.proposed .github/workflows/tests.yml
 

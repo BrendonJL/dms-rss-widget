@@ -4,6 +4,10 @@ Date: 2026-09-07
 Status: approved, ready to implement
 Scope: two bugs in `DankRssWidget.qml` + one behaviour change in `ReaderState.js`
 
+> **Status:** implemented. `HoverHandler`/`acceptsKeyboardFocus`, the
+> selection-bar search toggle, and `pruneSelected` against `root.allItems`
+> are all live in `DankRssWidget.qml`/`ReaderState.js`.
+
 ## Problem 1 — the search field ignores typing until you click it again
 
 Click the search icon, the field appears, typing does nothing. Click the field
