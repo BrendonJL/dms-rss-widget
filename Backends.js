@@ -132,7 +132,7 @@ function createStandardBackend(deps) {
         // fetchAllFeeds iterates today (DankRssWidget.qml:514-568).
         // ReaderState.activeFeeds applies exactly that filter and preserves
         // order, so it is reused rather than re-derived here.
-        fetchRequests: function (config) {
+        fetchRequests: function (config, session) {
             var feeds = (config && config.feeds) || [];
             var active = ReaderState.activeFeeds(feeds);
             var out = [];
@@ -165,9 +165,16 @@ function createStandardBackend(deps) {
 
         // No server-backed state in standard mode: read/unread/star are
         // purely local (ReaderState), so these are always a no-op.
-        markReadRequest: function (config, ids) { return null; },
-        markUnreadRequest: function (config, ids) { return null; },
-        toggleStarRequest: function (config, id) { return null; },
+        //
+        // `session` and `currentlyStarred` are unused here but present in the
+        // signature on purpose: the caller invokes these positionally without
+        // knowing which backend it holds, so every backend must take the same
+        // arguments in the same order. Google Reader needs both. Omitting them
+        // here would silently bind `session` to `ids`.
+        markReadRequest: function (config, session, ids) { return null; },
+        markUnreadRequest: function (config, session, ids) { return null; },
+        toggleStarRequest: function (config, session, id, currentlyStarred) { return null; },
+
 
         // Identity: nothing to reconcile against.
         reconcile: function (localState, serverEntries) {
@@ -207,7 +214,7 @@ function createMinifluxBackend(deps) {
         // (DankRssWidget.qml:828-830) and minifluxApiCall's GET argv. Always
         // a single-element array (one server, one request) or [] when the
         // config isn't usable yet -- see the Stage 0b addendum.
-        fetchRequests: function (config) {
+        fetchRequests: function (config, session) {
             if (!minifluxConfigReady(config))
                 return [];
 
@@ -261,16 +268,21 @@ function createMinifluxBackend(deps) {
         // when there's something to send" guard previously lived in each
         // caller (bulkMarkReadSelected, setAllRead); it is now the
         // no-op decision this function itself makes.
-        markReadRequest: function (config, ids) {
+        // `session` is unused by Miniflux (a static API token, no handshake)
+        // but is positionally required: see the note on StandardBackend.
+        markReadRequest: function (config, session, ids) {
             return minifluxMarkRequest(config, ids, "read");
         },
-        markUnreadRequest: function (config, ids) {
+        markUnreadRequest: function (config, session, ids) {
             return minifluxMarkRequest(config, ids, "unread");
         },
 
         // PUT /v1/entries/{id}/bookmark, mirroring minifluxToggleStar
         // (DankRssWidget.qml:946-951).
-        toggleStarRequest: function (config, id) {
+        // Miniflux's endpoint toggles server-side, so currentlyStarred is not
+        // needed here. Google Reader has no toggle and must be told which of
+        // a= / r= to send, so it is part of the shared signature.
+        toggleStarRequest: function (config, session, id, currentlyStarred) {
             if (!minifluxConfigReady(config) || !id)
                 return null;
 
@@ -321,10 +333,21 @@ function minifluxMarkRequest(config, ids, status) {
 // ─── factory ───
 
 function createBackends(deps) {
-    return {
+    var backends = {
         standard: createStandardBackend(deps),
         miniflux: createMinifluxBackend(deps)
     };
+
+    // GoogleReader.js is a sibling shared module, not required() here (same
+    // reason FeedParser/ReaderState aren't: a literal require() would work
+    // in Node but has no equivalent QML accepts). The caller passes the
+    // already-imported module through deps.GoogleReader instead, and only
+    // when it's supplied does the "greader" backend get registered -- so
+    // existing callers that don't know about it yet keep working unchanged.
+    if (deps && deps.GoogleReader)
+        backends.greader = deps.GoogleReader.createGoogleReaderBackend(deps);
+
+    return backends;
 }
 
 if (typeof module !== "undefined" && module.exports) {

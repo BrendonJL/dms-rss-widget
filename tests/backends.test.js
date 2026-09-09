@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 
 const FeedParser = require("../FeedParser.js");
 const ReaderState = require("../ReaderState.js");
+const GoogleReader = require("../GoogleReader.js");
 const {
     createStandardBackend,
     createMinifluxBackend,
@@ -18,6 +19,16 @@ describe("createBackends", () => {
         var backends = createBackends(deps);
         assert.equal(backends.standard.id, "standard");
         assert.equal(backends.miniflux.id, "miniflux");
+    });
+
+    test("does NOT register greader when deps.GoogleReader is absent (existing callers keep working)", () => {
+        var backends = createBackends(deps);
+        assert.equal(backends.greader, undefined);
+    });
+
+    test("registers greader only when deps.GoogleReader is supplied, and never via require()", () => {
+        var backends = createBackends(Object.assign({}, deps, { GoogleReader: GoogleReader }));
+        assert.equal(backends.greader.id, "greader");
     });
 });
 
@@ -172,15 +183,15 @@ describe("StandardBackend server-state no-ops", () => {
     var backend = createStandardBackend(deps);
 
     test("markReadRequest is always a no-op", () => {
-        assert.equal(backend.markReadRequest({}, ["l:https://x.com/1"]), null);
+        assert.equal(backend.markReadRequest({}, null, ["l:https://x.com/1"]), null);
     });
 
     test("markUnreadRequest is always a no-op", () => {
-        assert.equal(backend.markUnreadRequest({}, ["l:https://x.com/1"]), null);
+        assert.equal(backend.markUnreadRequest({}, null, ["l:https://x.com/1"]), null);
     });
 
     test("toggleStarRequest is always a no-op", () => {
-        assert.equal(backend.toggleStarRequest({}, "l:https://x.com/1"), null);
+        assert.equal(backend.toggleStarRequest({}, null, "l:https://x.com/1"), null);
     });
 
     test("reconcile is identity: unchanged orders, no *Changed flags", () => {
@@ -298,7 +309,7 @@ describe("MinifluxBackend mark read/unread", () => {
     var config = { minifluxUrl: "https://miniflux.example.com", minifluxToken: "SECRET_TOKEN_VALUE" };
 
     test("markReadRequest builds the batched PUT /v1/entries argv with status=read", () => {
-        var req = backend.markReadRequest(config, ["1", "2", "3"]);
+        var req = backend.markReadRequest(config, null, ["1", "2", "3"]);
         assert.deepEqual(req.argv, [
             "curl", "-sS",
             "--fail-with-body",
@@ -317,19 +328,19 @@ describe("MinifluxBackend mark read/unread", () => {
     });
 
     test("markUnreadRequest builds the same shape with status=unread", () => {
-        var req = backend.markUnreadRequest(config, ["5"]);
+        var req = backend.markUnreadRequest(config, null, ["5"]);
         var body = req.argv[req.argv.indexOf("-d") + 1];
         assert.deepEqual(JSON.parse(body), { entry_ids: [5], status: "unread" });
     });
 
     test("returns null (no-op) for an empty or missing id list", () => {
-        assert.equal(backend.markReadRequest(config, []), null);
-        assert.equal(backend.markReadRequest(config, null), null);
-        assert.equal(backend.markUnreadRequest(config, []), null);
+        assert.equal(backend.markReadRequest(config, null, []), null);
+        assert.equal(backend.markReadRequest(config, null, null), null);
+        assert.equal(backend.markUnreadRequest(config, null, []), null);
     });
 
     test("returns null when config is not ready", () => {
-        assert.equal(backend.markReadRequest({ minifluxUrl: "", minifluxToken: "" }, ["1"]), null);
+        assert.equal(backend.markReadRequest({ minifluxUrl: "", minifluxToken: "" }, null, ["1"]), null);
     });
 });
 
@@ -345,7 +356,7 @@ describe("MinifluxBackend.toggleStarRequest", () => {
         // (DankRssWidget.qml:781-784) -- only "-d" itself is conditional on
         // a truthy body. minifluxToggleStar calls with body=null, so this
         // header appears here even though bookmark takes no payload.
-        var req = backend.toggleStarRequest(config, "42");
+        var req = backend.toggleStarRequest(config, null, "42");
         assert.deepEqual(req.argv, [
             "curl", "-sS",
             "--fail-with-body",
@@ -364,8 +375,8 @@ describe("MinifluxBackend.toggleStarRequest", () => {
     });
 
     test("returns null when id is falsy", () => {
-        assert.equal(backend.toggleStarRequest(config, ""), null);
-        assert.equal(backend.toggleStarRequest(config, null), null);
+        assert.equal(backend.toggleStarRequest(config, null, ""), null);
+        assert.equal(backend.toggleStarRequest(config, null, null), null);
     });
 
     test("returns null when config is not ready", () => {
@@ -432,15 +443,15 @@ describe("SECURITY: token isolation in argv", () => {
     });
 
     test("markReadRequest isolates the token", () => {
-        assertTokenIsolated(backend.markReadRequest(config, ["1"]).argv);
+        assertTokenIsolated(backend.markReadRequest(config, null, ["1"]).argv);
     });
 
     test("markUnreadRequest isolates the token", () => {
-        assertTokenIsolated(backend.markUnreadRequest(config, ["1"]).argv);
+        assertTokenIsolated(backend.markUnreadRequest(config, null, ["1"]).argv);
     });
 
     test("toggleStarRequest isolates the token", () => {
-        assertTokenIsolated(backend.toggleStarRequest(config, "1").argv);
+        assertTokenIsolated(backend.toggleStarRequest(config, null, "1").argv);
     });
 
     test("a token containing shell metacharacters is still a single opaque argv element", () => {

@@ -66,21 +66,21 @@ check("serverStatus is populated", Array.isArray(res.serverStatus) && res.server
 // --- mutate on the server, then read it back through a second fetch ---
 const numericId = String(first.id).slice(2);
 
-run(backend.markReadRequest(config, [numericId]));
+run(backend.markReadRequest(config, null, [numericId]));
 let after = run(backend.fetchRequests(config)[0]);
 let stillThere = after.items.some(i => i.id === first.id);
 check("markRead removed the item from the unread feed", !stillThere);
 
-run(backend.markUnreadRequest(config, [numericId]));
+run(backend.markUnreadRequest(config, null, [numericId]));
 after = run(backend.fetchRequests(config)[0]);
 check("markUnread put it back", after.items.some(i => i.id === first.id));
 
-run(backend.toggleStarRequest(config, numericId));
+run(backend.toggleStarRequest(config, null, numericId));
 const starred = run(backend.fetchRequests({ ...config, showStarred: true })[0]);
 check("toggleStar starred it server-side", starred.items.some(i => i.id === first.id),
   "starred n=" + starred.items.length);
 
-run(backend.toggleStarRequest(config, numericId));
+run(backend.toggleStarRequest(config, null, numericId));
 const unstarred = run(backend.fetchRequests({ ...config, showStarred: true })[0]);
 check("toggleStar again unstarred it", !unstarred.items.some(i => i.id === first.id));
 
