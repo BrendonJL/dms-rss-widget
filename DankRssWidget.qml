@@ -640,7 +640,7 @@ DesktopPluginComponent {
             // (in practice at most one -- one server, one request). meta is
             // null (no per-feed identity to attribute), so fall back to a
             // generic label derived from the backend's own id.
-            var label = backend.id.charAt(0).toUpperCase() + backend.id.slice(1);
+            var label = root.backendLabel();
             for (var s = 0; s < requests.length; s++) {
                 var req = requests[s];
                 var status2 = {
@@ -704,7 +704,7 @@ DesktopPluginComponent {
                 status.state = "error";
                 status.lastError = "Response too large";
                 if (root.backend.capabilities.serverState && !hadItems) {
-                    var label0 = root.backend.id.charAt(0).toUpperCase() + root.backend.id.slice(1);
+                    var label0 = root.backendLabel();
                     root.toastError(label0 + " fetch failed: response too large");
                 }
                 ctx.pending--;
@@ -752,7 +752,7 @@ DesktopPluginComponent {
                     root.saveBookmarkState();
                 }
             } else if (root.backend.capabilities.serverState && !hadItems) {
-                var label = root.backend.id.charAt(0).toUpperCase() + root.backend.id.slice(1);
+                var label = root.backendLabel();
                 root.toastError(label + " fetch failed" + (status.lastError ? ": " + status.lastError : ""));
             }
 
@@ -841,6 +841,15 @@ DesktopPluginComponent {
         if (typeof itemId !== "string" || itemId.indexOf("m:") !== 0)
             return "";
         return itemId.slice(2);
+    }
+
+    // Display name for a server-backed backend, used in status rows and error
+    // toasts where there is no per-feed identity to show. Derived from the
+    // backend's own id rather than a hardcoded string, so a new backend needs
+    // no change here.
+    function backendLabel() {
+        var id = root.backend.id;
+        return id.charAt(0).toUpperCase() + id.slice(1);
     }
 
     // minifluxApiCall, fetchMinifluxEntries, minifluxMarkRead,
