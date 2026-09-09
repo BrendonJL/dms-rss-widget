@@ -57,77 +57,74 @@ jobs:
             exit 1
           fi
 
-  # QML syntax check.
+  # QML syntax check, via qmlformat rather than qmllint.
   #
-  # SCOPE, honestly: this validates SYNTAX and little else. The DMS shell is
-  # not installable in CI, so qs.Common / qs.Widgets / Quickshell and every
-  # type reached through them (Theme, StyledText, DankActionButton, and by
-  # cascade even Rectangle's properties) are genuinely unresolvable. The
-  # resulting import / unqualified / missing-type / missing-property warnings
-  # are noise about a missing dependency, not findings about the code, and on
-  # older qmllint releases they are fatal -- which is why the first version of
-  # this job failed while passing locally on Qt 6.11.
+  # WHY NOT qmllint: it is a type checker, and the DMS shell it would need to
+  # resolve types against cannot be installed in CI. Two attempts failed here.
+  # Ubuntu's qt6-declarative-dev-tools ships the binary without the QML module
+  # tree, so qmllint cannot even load its own builtins ("Failed to find the
+  # following builtins: jsroot.qmltypes"), and every finding after that is a
+  # cascade from that one missing dependency rather than anything about the
+  # code. Disabling the noisy categories did not help either: those flags vary
+  # by Qt release and the older binary did not honour them.
   #
-  # So those categories are disabled explicitly and the check is kept to what
-  # it can actually prove. That is still worth having: a QML syntax error
-  # currently ships silently and breaks the widget at load, with no other
-  # tripwire anywhere in this repo. Verified both ways -- clean on all current
-  # .qml files, and exit 255 on a deliberately malformed one.
-  qmllint:
-    name: qmllint
+  # qmlformat parses without resolving anything, so it works with no module
+  # tree at all. It proves exactly one thing -- the file is syntactically
+  # valid QML -- which is also the only thing qmllint could ever have proven
+  # in this environment, and is worth having: a syntax error currently ships
+  # silently and breaks the widget at load.
+  #
+  # Verified locally in both directions: clean on every .qml file, exit 1 on a
+  # malformed property and on a stray closing brace.
+  #
+  # For the richer semantic checks, run qmllint LOCALLY, where a full Qt and
+  # the DMS shell are present:
+  #     qmllint DankRssWidget.qml
+  qml-syntax:
+    name: qml-syntax
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: install qmllint
+      - name: install qmlformat
         run: |
           sudo apt-get update
           sudo apt-get install -y qt6-declarative-dev-tools
 
-      - name: locate qmllint
+      - name: locate qmlformat
         id: find
         run: |
-          bin=$(command -v qmllint || true)
-          [ -n "$bin" ] || bin=$(ls /usr/lib/qt6/bin/qmllint 2>/dev/null || true)
-          [ -n "$bin" ] || bin=$(find /usr -name 'qmllint*' -type f -perm -u+x 2>/dev/null | head -1)
+          bin=$(command -v qmlformat || true)
+          [ -n "$bin" ] || bin=$(ls /usr/lib/qt6/bin/qmlformat 2>/dev/null || true)
+          [ -n "$bin" ] || bin=$(find /usr -name 'qmlformat*' -type f -perm -u+x 2>/dev/null | head -1)
           if [ -z "$bin" ]; then
-            echo "::error::qmllint not found after installing qt6-declarative-dev-tools"
+            echo "::error::qmlformat not found after installing qt6-declarative-dev-tools"
             exit 1
           fi
           echo "bin=$bin" >> "$GITHUB_OUTPUT"
           "$bin" --version
 
-      # Category flags have come and gone across Qt releases, and an unknown
-      # option is itself a fatal error -- so ask this binary what it supports
-      # rather than assuming, and pass only those.
-      - name: build the supported flag set
-        id: flags
+      # Self-test first. A syntax checker that cannot fail is worse than none,
+      # and a broken tool would otherwise pass every file silently.
+      - name: prove the checker can fail
         run: |
-          bin='${{ steps.find.outputs.bin }}'
-          help=$("$bin" --help 2>&1 || true)
-          flags=""
-          for c in import unqualified missing-type missing-property \
-                   unresolved-type unresolved-alias missing-enum-entry; do
-            if printf '%s' "$help" | grep -q -- "--$c "; then
-              flags="$flags --$c disable"
-            else
-              echo "note: this qmllint has no --$c, skipping"
-            fi
-          done
-          echo "flags=$flags" >> "$GITHUB_OUTPUT"
-          echo "using:$flags"
+          printf 'import QtQuick\nItem { property int x: }\n' > /tmp/broken.qml
+          if '${{ steps.find.outputs.bin }}' /tmp/broken.qml > /dev/null 2>&1; then
+            echo "::error::qmlformat accepted a deliberately malformed file -- this check proves nothing"
+            exit 1
+          fi
+          echo "checker rejects malformed QML as expected"
 
-      - name: lint QML
+      - name: check QML syntax
         run: |
-          bin='${{ steps.find.outputs.bin }}'
           status=0
           for f in *.qml tests/qml/*.qml; do
             [ -e "$f" ] || continue
-            if ! "$bin" ${{ steps.flags.outputs.flags }} "$f" > /tmp/out.txt 2>&1; then
-              echo "::error file=$f::qmllint failed"
-              cat /tmp/out.txt
+            if ! '${{ steps.find.outputs.bin }}' "$f" > /dev/null 2>/tmp/err.txt; then
+              echo "::error file=$f::QML syntax error"
+              cat /tmp/err.txt
               status=1
             fi
           done
-          if [ "$status" = "0" ]; then echo "all .qml files parse cleanly"; fi
+          if [ "$status" = "0" ]; then echo "all .qml files are syntactically valid"; fi
           exit $status
