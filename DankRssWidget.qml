@@ -9,6 +9,7 @@ import qs.Widgets
 import qs.Modules.Plugins
 import "FeedParser.js" as FeedParser
 import "ReaderState.js" as ReaderState
+import "Backends.js" as Backends
 
 DesktopPluginComponent {
     id: root
@@ -41,6 +42,21 @@ DesktopPluginComponent {
     property string minifluxToken: pluginData.minifluxToken ?? ""
     property bool syncReadOnOpen: pluginData.syncReadOnOpen ?? true
     property bool showStarred: pluginData.showStarred ?? false
+
+    // --- Backend provider interface (Phase 0 / stage 0b) ---
+    // JS owns every backend-specific decision (which URL, method, headers,
+    // body, how to parse a response, what the backend can do); QML owns only
+    // the side effects (running Proc, showing toasts, assigning properties).
+    // See docs/plans/2026-09-08-phase0-backend-interface-design.md.
+    readonly property var backends: Backends.createBackends({ FeedParser: FeedParser, ReaderState: ReaderState })
+    readonly property var backend: root.backends[root.sourceMode] || root.backends.standard
+    readonly property var backendConfig: ({
+        feeds: root.feeds,
+        minifluxUrl: root.minifluxUrl,
+        minifluxToken: root.minifluxToken,
+        maxItems: root.maxItems,
+        showStarred: root.showStarred
+    })
 
     // --- Internal state ---
     property var allItems: []          // full sorted/capped result set
@@ -234,13 +250,15 @@ DesktopPluginComponent {
 
     function handleVisibilityChange() {
         if (root.isRunnable()) {
-            // In "standard" mode a zero-feed config will never fetch anything --
-            // resolve isLoading now instead of leaving the T5 default-true
-            // spinner running forever. In "miniflux" mode `feeds` is irrelevant
-            // (Miniflux has no per-feed list here); fetchAllFeeds/
-            // fetchMinifluxEntries resolve isLoading themselves when
-            // minifluxUrl/minifluxToken are unset.
-            if (root.sourceMode === "standard" && root.feeds.length === 0) {
+            // A local (non-server-backed) backend with a zero-feed config
+            // will never fetch anything -- resolve isLoading now instead of
+            // leaving the T5 default-true spinner running forever. A
+            // server-backed backend (e.g. Miniflux) has no per-feed list
+            // here; fetchAllFeeds resolves isLoading itself when its config
+            // isn't ready, and the timer is still armed below so a
+            // later-configured server is picked up without a dedicated
+            // "config changed" watcher.
+            if (!root.backend.capabilities.serverState && root.feeds.length === 0) {
                 root.isLoading = false;
             } else if (!timer.running) {
                 fetchAllFeeds();
@@ -361,11 +379,14 @@ DesktopPluginComponent {
         root.bookmarkMap = ReaderState.buildIdMap(root.bookmarkOrder);
         root.saveBookmarkState();
 
-        if (root.sourceMode === "miniflux") {
-            var numId = root.minifluxNumericId(itemId);
-            if (numId)
-                root.minifluxToggleStar(numId);
-        }
+        // Asking the backend directly (instead of branching on sourceMode)
+        // means this is a no-op for free on any backend without server-side
+        // star state: StandardBackend.toggleStarRequest always returns null.
+        var req = root.backend.toggleStarRequest(root.backendConfig, root.minifluxNumericId(itemId));
+        root.runRequest(req, function(output, code) {
+            if (code !== null && code !== 0)
+                root.toastError("Failed to toggle bookmark");
+        });
 
         // In the Saved view, un-bookmarking should actually remove the row —
         // otherwise the list shows items that no longer belong to the filter.
@@ -398,17 +419,18 @@ DesktopPluginComponent {
         // entry_ids). Filtered to "m:"-prefixed ids as a cheap correctness
         // guard -- only one source mode's items are ever in allItems/
         // selectedMap at a time, so this filter should never actually drop
-        // anything in practice.
-        if (root.sourceMode === "miniflux") {
-            var numIds = [];
-            for (var i = 0; i < ids.length; i++) {
-                var numId = root.minifluxNumericId(ids[i]);
-                if (numId)
-                    numIds.push(numId);
-            }
-            if (numIds.length > 0)
-                root.minifluxMarkRead(numIds);
+        // anything in practice. markReadRequest is a no-op (null) on any
+        // backend without server-side read state, so no mode check is needed.
+        var numIds = [];
+        for (var i = 0; i < ids.length; i++) {
+            var numId = root.minifluxNumericId(ids[i]);
+            if (numId)
+                numIds.push(numId);
         }
+        root.runRequest(root.backend.markReadRequest(root.backendConfig, numIds), function(output, code) {
+            if (code !== null && code !== 0)
+                root.toastError("Failed to mark as read");
+        });
 
         root.clearSelection();
         if (root.filterMode === "unread") root.applyFilter();
@@ -422,31 +444,33 @@ DesktopPluginComponent {
         // update below, since addAllBookmarked marks every selected id as
         // bookmarked regardless of its prior state -- checking bookmarkMap
         // AFTER that update would see every id as bookmarked and could never
-        // tell which ones were newly starred.
+        // tell which ones were newly starred. Computed unconditionally: on a
+        // backend without server-side star state this is only ever consulted
+        // by a loop whose toggleStarRequest is already a guaranteed no-op.
         var alreadyBookmarked = {};
-        if (root.sourceMode === "miniflux") {
-            for (var i = 0; i < ids.length; i++) {
-                if (root.bookmarkMap[ids[i]])
-                    alreadyBookmarked[ids[i]] = true;
-            }
+        for (var i = 0; i < ids.length; i++) {
+            if (root.bookmarkMap[ids[i]])
+                alreadyBookmarked[ids[i]] = true;
         }
 
         root.bookmarkOrder = ReaderState.addAllBookmarked(root.bookmarkOrder, ids, root.idHistoryCap);
         root.bookmarkMap = ReaderState.buildIdMap(root.bookmarkOrder);
         root.saveBookmarkState();
 
-        // minifluxToggleStar TOGGLES server-side (no "set" endpoint), so it
-        // must only be called for ids not already starred -- calling it on
-        // an already-starred entry would un-star it.
-        if (root.sourceMode === "miniflux") {
-            for (var j = 0; j < ids.length; j++) {
-                var id = ids[j];
-                if (alreadyBookmarked[id])
-                    continue;
-                var numId = root.minifluxNumericId(id);
-                if (numId)
-                    root.minifluxToggleStar(numId);
-            }
+        // toggleStarRequest TOGGLES server-side (no "set" endpoint) on a
+        // server-backed backend, so it must only be called for ids not
+        // already starred -- calling it on an already-starred entry would
+        // un-star it.
+        for (var j = 0; j < ids.length; j++) {
+            var id = ids[j];
+            if (alreadyBookmarked[id])
+                continue;
+            var numId = root.minifluxNumericId(id);
+            var req = root.backend.toggleStarRequest(root.backendConfig, numId);
+            root.runRequest(req, function(output, code) {
+                if (code !== null && code !== 0)
+                    root.toastError("Failed to toggle bookmark");
+            });
         }
 
         root.clearSelection();
@@ -487,20 +511,19 @@ DesktopPluginComponent {
         root.saveReadState();
 
         // v2.4 §2.7: same batched-push pattern as bulkMarkReadSelected.
-        if (root.sourceMode === "miniflux") {
-            var numIds = [];
-            for (var i2 = 0; i2 < ids.length; i2++) {
-                var numId = root.minifluxNumericId(ids[i2]);
-                if (numId)
-                    numIds.push(numId);
-            }
-            if (numIds.length > 0) {
-                if (read)
-                    root.minifluxMarkRead(numIds);
-                else
-                    root.minifluxMarkUnread(numIds);
-            }
+        var numIds = [];
+        for (var i2 = 0; i2 < ids.length; i2++) {
+            var numId = root.minifluxNumericId(ids[i2]);
+            if (numId)
+                numIds.push(numId);
         }
+        var req = read
+            ? root.backend.markReadRequest(root.backendConfig, numIds)
+            : root.backend.markUnreadRequest(root.backendConfig, numIds);
+        root.runRequest(req, function(output, code) {
+            if (code !== null && code !== 0)
+                root.toastError(read ? "Failed to mark as read" : "Failed to mark as unread");
+        });
     }
 
     // --- Feed fetching ---
@@ -509,6 +532,31 @@ DesktopPluginComponent {
             return;
         root.fetchAllFeeds();
         timer.restart();
+    }
+
+    // The ONLY place a request descriptor becomes a process. `req.timeoutMs`
+    // must be honoured: Miniflux carries 30000 deliberately, longer than
+    // curl's own 25s --max-time inside that descriptor's argv, because
+    // otherwise a slow-but-fine request races Proc's default timeout and
+    // surfaces a spurious failure toast. A null/absent request is a no-op
+    // for that backend (e.g. StandardBackend's mark/star requests) -- report
+    // it as such via a null exit code so callers can tell "nothing to do"
+    // apart from a real failure.
+    function runRequest(req, cb) {
+        if (!req) {
+            cb(null, null);
+            return;
+        }
+        // T4/v2.4 §2.4: id is deliberately null on every call -- Proc's
+        // debounce map (_procDebouncers) keys entries by id and only cleans
+        // up entries created with a falsy id; a fixed string id is kept
+        // forever and, worse, is SHARED across overlapping calls (a manual
+        // refresh firing while a periodic one is still in flight), so the
+        // second call would clobber the first's callback before it exits.
+        // A null id makes Proc generate a fresh id per call and self-clean.
+        Proc.runCommand(null, req.argv, function(out, code) {
+            cb(out, code);
+        }, undefined, req.timeoutMs || undefined);
     }
 
     function fetchAllFeeds() {
@@ -523,55 +571,91 @@ DesktopPluginComponent {
         // Invalidate any in-flight callbacks from a previous cycle. Without this,
         // two overlapping fetches share one collector and one pending counter,
         // and the cycle finalizes early on a half-filled result set.
+        //
+        // v2.4/Stage 0b: incremented ABOVE the backend lookup below (not
+        // below it) so every backend shares one generation counter, even if
+        // sourceMode is toggled mid-flight (v2.4 plan §5 Risk #1).
         root.fetchGeneration++;
         var gen = root.fetchGeneration;
 
-        // v2.4: exclusive source-mode branch. fetchGeneration is incremented
-        // ABOVE this check (not below) so the RSS and Miniflux paths always
-        // share one generation counter, even if sourceMode is toggled
-        // mid-flight (v2.4 plan §5 Risk #1).
-        if (root.sourceMode === "miniflux") {
-            root.fetchMinifluxEntries(gen);
-            return;
-        }
+        var backend = root.backend;
+        var config = root.backendConfig;
+        var requests = backend.fetchRequests(config) || [];
 
+        // Per-feed status rows: only a LOCAL (non-server-backed) backend has
+        // a feed list of its own here -- a server-backed backend (Miniflux)
+        // has no concept of it, just one logical stream. fetchRequests only
+        // returns descriptors for ELIGIBLE feeds (enabled + url set); the
+        // status rows for disabled/url-less feeds, which produce no
+        // descriptor, are still QML's job.
         var statuses = [];
-        var targets = [];
-        for (var i = 0; i < root.feeds.length; i++) {
-            var feed = root.feeds[i];
-            if (!feed || !feed.url) {
-                continue;
+        var descriptors = [];
+
+        if (!backend.capabilities.serverState) {
+            var byUrl = {};
+            for (var r = 0; r < requests.length; r++) {
+                if (requests[r].meta)
+                    byUrl[requests[r].meta.url] = requests[r];
             }
-            var name = feed.name || feed.url;
-            // A feed with no `enabled` key predates per-feed disable and counts
-            // as enabled — see ReaderState.isFeedEnabled.
-            if (!ReaderState.isFeedEnabled(feed)) {
-                statuses.push({
+
+            for (var i = 0; i < root.feeds.length; i++) {
+                var feed = root.feeds[i];
+                if (!feed || !feed.url)
+                    continue;
+                var name = feed.name || feed.url;
+                // A feed with no `enabled` key predates per-feed disable and
+                // counts as enabled -- see ReaderState.isFeedEnabled.
+                if (!ReaderState.isFeedEnabled(feed)) {
+                    statuses.push({
+                        url: feed.url,
+                        name: name,
+                        state: "disabled",
+                        lastFetched: 0,
+                        lastSuccess: 0,
+                        lastError: "",
+                        itemCount: 0
+                    });
+                    continue;
+                }
+                var status = {
                     url: feed.url,
                     name: name,
-                    state: "disabled",
+                    state: "loading",
                     lastFetched: 0,
                     lastSuccess: 0,
                     lastError: "",
                     itemCount: 0
-                });
-                continue;
+                };
+                statuses.push(status);
+                var matched = byUrl[feed.url];
+                if (matched)
+                    descriptors.push({ req: matched, statusIndex: statuses.length - 1 });
             }
-            statuses.push({
-                url: feed.url,
-                name: name,
-                state: "loading",
-                lastFetched: 0,
-                lastSuccess: 0,
-                lastError: "",
-                itemCount: 0
-            });
-            targets.push({ url: feed.url, name: name, statusIndex: statuses.length - 1 });
+        } else {
+            // Server-backed backend: one synthetic status row per descriptor
+            // (in practice at most one -- one server, one request). meta is
+            // null (no per-feed identity to attribute), so fall back to a
+            // generic label derived from the backend's own id.
+            var label = backend.id.charAt(0).toUpperCase() + backend.id.slice(1);
+            for (var s = 0; s < requests.length; s++) {
+                var req = requests[s];
+                var status2 = {
+                    url: req.meta ? req.meta.url : config.minifluxUrl,
+                    name: req.meta ? req.meta.name : label,
+                    state: "loading",
+                    lastFetched: 0,
+                    lastSuccess: 0,
+                    lastError: "",
+                    itemCount: 0
+                };
+                statuses.push(status2);
+                descriptors.push({ req: req, statusIndex: statuses.length - 1 });
+            }
         }
 
         root.feedStatuses = statuses;
 
-        if (targets.length === 0) {
+        if (descriptors.length === 0) {
             root.allItems = [];
             root.isLoading = false;
             root.applyFilter();
@@ -581,85 +665,91 @@ DesktopPluginComponent {
 
         root.isLoading = true;
 
+        // Only nag on failure when there's nothing on screen; a transient
+        // blip during a periodic refresh should keep the stale items on
+        // screen silently rather than spamming a toast every cycle. Only
+        // relevant for a server-backed backend: a local per-feed backend
+        // already surfaces failures via its own per-feed status rows.
+        var hadItems = root.allItems.length > 0;
+
         var ctx = {
             gen: gen,
-            pending: targets.length,
+            pending: descriptors.length,
             collector: [],
             statuses: statuses
         };
 
-        for (var t = 0; t < targets.length; t++) {
-            root.fetchFeed(targets[t], ctx);
+        for (var d = 0; d < descriptors.length; d++) {
+            root.fetchDescriptor(descriptors[d].req, ctx.statuses[descriptors[d].statusIndex], ctx, hadItems);
         }
     }
 
-    function fetchFeed(target, ctx) {
-        // T4: id is deliberately null/omitted (not "rssFetch:" + target.url).
-        // Proc's debounce map (_procDebouncers) keys entries by id and only
-        // ever cleans up entries created with a falsy id (isRandomId branch
-        // in Proc._launchProc); a per-URL string id is kept forever and, worse,
-        // is SHARED across overlapping calls for the same feed (manual refresh
-        // firing while the timer's fetch is still in flight) -- the second
-        // call clobbers `entry.callback` before the first call's process
-        // exits, so the first call's output is delivered to the second
-        // call's callback. Passing no id makes Proc generate a fresh
-        // Math.random() id per invocation (no collision) and self-clean the
-        // debouncer entry on completion (no leak). See Proc.qml _launchProc.
-        Proc.runCommand(null, [
-            "curl", "-sS",
-            "--connect-timeout", "5",
-            "--max-time", "10",
-            "-L",
-            "--proto", "=http,https",
-            "--proto-redir", "=http,https",
-            "--max-redirs", "5",
-            "--max-filesize", "5000000",
-            "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0",
-            target.url
-        ], function(output, exitCode) {
+    function fetchDescriptor(req, status, ctx, hadItems) {
+        root.runRequest(req, function(output, exitCode) {
             // Stale callback from a superseded fetch cycle: drop it entirely.
             if (ctx.gen !== root.fetchGeneration)
                 return;
 
-            var status = ctx.statuses[target.statusIndex];
             status.lastFetched = Date.now();
 
             // SECURITY: --max-filesize bounds what curl itself will download,
             // but a feed could still redirect to something that leaks a large
             // response for other reasons; belt-and-suspenders cap before the
-            // regex-based parser ever sees the payload.
+            // parser ever sees the payload.
             if (output && output.length > 5000000) {
-                ctx.pending--;
                 status.state = "error";
                 status.lastError = "Response too large";
+                if (root.backend.capabilities.serverState && !hadItems) {
+                    var label0 = root.backend.id.charAt(0).toUpperCase() + root.backend.id.slice(1);
+                    root.toastError(label0 + " fetch failed: response too large");
+                }
+                ctx.pending--;
                 if (ctx.pending <= 0)
                     root.finalizeFetch(ctx);
                 return;
             }
 
-            var items = [];
-            var parseFailed = false;
-            if (exitCode === 0 && output && output.trim().length > 0) {
-                try {
-                    items = FeedParser.parseFeed(output, target.name, target.url);
-                } catch (e) {
-                    items = [];
-                    parseFailed = true;
-                }
-            }
+            var parsed = { items: [], serverStatus: [], error: null };
+            if (exitCode === 0 && output && output.trim().length > 0)
+                parsed = req.parse(output);
 
             // Proc synthesizes exit code 124 on its own timeout, which we
             // surface separately from a generic failure.
-            var verdict = ReaderState.classifyFetch(exitCode, output, items.length);
+            var verdict = ReaderState.classifyFetch(exitCode, output, parsed.items.length);
             status.state = verdict.state;
-            status.lastError = parseFailed ? "Parse failed" : verdict.lastError;
+            status.lastError = parsed.error ? parsed.error : verdict.lastError;
 
             if (verdict.state === "ok") {
                 status.lastSuccess = status.lastFetched;
-                status.itemCount = items.length;
-                for (var j = 0; j < items.length; j++) {
-                    ctx.collector.push(items[j]);
+                status.itemCount = parsed.items.length;
+                for (var j = 0; j < parsed.items.length; j++)
+                    ctx.collector.push(parsed.items[j]);
+
+                // Server wins on fetch reconciliation (v2.4 §2.2/§2.3):
+                // reconcile server read/starred status into local readMap/
+                // bookmarkMap. This is the ONLY place this runs -- never on
+                // a local action -- so a local push has already had a
+                // chance to reach the server by the time this corrects any
+                // drift. A no-op (identity) on any backend without
+                // server-side state.
+                var reconciled = root.backend.reconcile({
+                    readOrder: root.readOrder,
+                    bookmarkOrder: root.bookmarkOrder,
+                    cap: root.idHistoryCap
+                }, parsed.serverStatus);
+                if (reconciled.readChanged) {
+                    root.readOrder = reconciled.readOrder;
+                    root.readMap = ReaderState.buildIdMap(root.readOrder);
+                    root.saveReadState();
                 }
+                if (reconciled.bookmarkChanged) {
+                    root.bookmarkOrder = reconciled.bookmarkOrder;
+                    root.bookmarkMap = ReaderState.buildIdMap(root.bookmarkOrder);
+                    root.saveBookmarkState();
+                }
+            } else if (root.backend.capabilities.serverState && !hadItems) {
+                var label = root.backend.id.charAt(0).toUpperCase() + root.backend.id.slice(1);
+                root.toastError(label + " fetch failed" + (status.lastError ? ": " + status.lastError : ""));
             }
 
             ctx.pending--;
@@ -749,206 +839,13 @@ DesktopPluginComponent {
         return itemId.slice(2);
     }
 
-    // T4/v2.4 §2.4: null Proc id on every Miniflux call -- PR #6 used fixed
-    // string ids ("miniflux:"+procTag+":fetchEntries", "markRead", "star:"+id)
-    // which share Proc's debounce-map key across overlapping calls; the
-    // second call in flight clobbers the first's callback exactly like the
-    // bug T4 already fixed once for RSS (see fetchFeed's comment above).
-    // A null id makes Proc generate a fresh id per call and self-clean.
-    //
-    // SECURITY (v2.4 §2.5): the API token is always its own argv element,
-    // never concatenated into a single string handed to a shell -- this
-    // file never invokes "sh -c"/"bash -c" anywhere, matching PR #6's
-    // original (correct) pattern. Curl hardening flags match fetchFeed's.
-    function minifluxApiCall(method, endpoint, body, callback) {
-        // Config may still be settling on startup (pluginData populates
-        // async); stay silent -- the empty state already prompts to
-        // configure Miniflux.
-        if (!root.minifluxUrl || !root.minifluxToken)
-            return;
-        var url = root.minifluxUrl + endpoint;
-        var args = [
-            "curl", "-sS",
-            "--connect-timeout", "5",
-            "--max-time", "25",
-            "--proto", "=http,https",
-            "--proto-redir", "=http,https",
-            "--max-redirs", "5",
-            "--max-filesize", "5000000",
-            "-X", method,
-            "-H", "X-Auth-Token: " + root.minifluxToken
-        ];
-        if (method !== "GET") {
-            args.push("-H", "Content-Type: application/json");
-            if (body)
-                args.push("-d", body);
-        }
-        args.push(url);
-        // Explicit timeoutMs: curl's own --max-time is 25s, longer than
-        // Proc's presumed default -- without this a slow-but-fine request
-        // races Proc's own timeout and gets killed early, surfacing a
-        // spurious failure toast (see PR #6's original comment).
-        Proc.runCommand(null, args, callback, undefined, 30000);
-    }
-
-    function fetchMinifluxEntries(gen) {
-        // Skip quietly until config is ready; the empty state already
-        // prompts the user to configure Miniflux in settings.
-        if (!root.minifluxUrl || !root.minifluxToken) {
-            root.allItems = [];
-            root.feedStatuses = [];
-            root.isLoading = false;
-            root.applyFilter();
-            root.saveFeedStatuses();
-            return;
-        }
-
-        // Only nag on failure when there's nothing on screen; a transient
-        // blip during a periodic refresh should keep the stale items on
-        // screen silently rather than spamming a toast every cycle.
-        var hadItems = root.allItems.length > 0;
-        root.isLoading = true;
-
-        // v2.4 §2.4: ONE synthetic feed-status entry, not per-category --
-        // Miniflux has no concept of this widget's per-feed list, just one
-        // logical stream. Keyed by root.minifluxUrl so any code that treats
-        // feedStatuses as url-keyed (statusForUrl in settings) still resolves
-        // it correctly if ever reused for Miniflux.
-        var status = {
-            url: root.minifluxUrl,
-            name: "Miniflux",
-            state: "loading",
-            lastFetched: 0,
-            lastSuccess: 0,
-            lastError: "",
-            itemCount: 0
-        };
-        root.feedStatuses = [status];
-
-        var endpoint = root.showStarred
-            ? "/v1/entries?starred=true&limit=" + root.maxItems + "&order=published_at&direction=desc"
-            : "/v1/entries?status=unread&limit=" + root.maxItems + "&order=published_at&direction=desc";
-
-        root.minifluxApiCall("GET", endpoint, null, function(output, exitCode) {
-            // Stale callback from a superseded fetch cycle: drop it entirely.
-            // This is the fetch-generation guard PR #6 never had (it predates
-            // CONTRACT 7) -- without it, a fast manual refresh firing while
-            // the periodic timer's fetch is still in flight could finalize
-            // out of order.
-            if (gen !== root.fetchGeneration)
-                return;
-
-            status.lastFetched = Date.now();
-
-            // SECURITY: same belt-and-suspenders re-check fetchFeed applies
-            // before handing the payload to a parser.
-            if (output && output.length > 5000000) {
-                status.state = "error";
-                status.lastError = "Response too large";
-                root.feedStatuses = [status];
-                if (!hadItems)
-                    root.toastError("Miniflux fetch failed: response too large");
-                root.isLoading = false;
-                root.saveFeedStatuses();
-                return;
-            }
-
-            var parsed = null;
-            var parseFailed = false;
-            if (exitCode === 0 && output && output.trim().length > 0) {
-                try {
-                    parsed = JSON.parse(output);
-                } catch (e) {
-                    parsed = null;
-                    parseFailed = true;
-                }
-            }
-
-            if (parsed && parsed.error_message) {
-                parsed = null;
-                parseFailed = true;
-                status.lastError = "Miniflux: " + parsed.error_message;
-            }
-
-            var result = (parsed && !parseFailed)
-                ? FeedParser.parseMinifluxEntries(parsed, root.minifluxUrl)
-                : { items: [], serverStatus: [] };
-
-            // classifyFetch still applies (v2.4 §2.4): a JSON parse failure
-            // is treated like RSS's parseFailed path, passing items.length
-            // === 0 through so it still resolves to "error".
-            var verdict = ReaderState.classifyFetch(exitCode, output, result.items.length);
-            status.state = verdict.state;
-            status.lastError = parseFailed ? (status.lastError || "Parse failed") : verdict.lastError;
-
-            if (verdict.state === "ok") {
-                status.lastSuccess = status.lastFetched;
-                status.itemCount = result.items.length;
-
-                // Server wins on fetch reconciliation (v2.4 §2.2/§2.3):
-                // reconcile server read/starred status into local readMap/
-                // bookmarkMap. This is the ONLY place this runs -- never on
-                // a local action -- so a local push has already had a
-                // chance to reach the server by the time this corrects any
-                // drift.
-                var reconciled = ReaderState.reconcileServerStatus(
-                    root.readOrder, root.bookmarkOrder, result.serverStatus, root.idHistoryCap);
-                if (reconciled.readChanged) {
-                    root.readOrder = reconciled.readOrder;
-                    root.readMap = ReaderState.buildIdMap(root.readOrder);
-                    root.saveReadState();
-                }
-                if (reconciled.bookmarkChanged) {
-                    root.bookmarkOrder = reconciled.bookmarkOrder;
-                    root.bookmarkMap = ReaderState.buildIdMap(root.bookmarkOrder);
-                    root.saveBookmarkState();
-                }
-            } else if (!hadItems) {
-                root.toastError("Miniflux fetch failed"
-                    + (status.lastError ? ": " + status.lastError : ""));
-            }
-
-            // Miniflux items flow through the EXACT same finalizeFetch as
-            // RSS -- same sort/cap/notify logic, no special case (v2.4 §5
-            // Risk #7). It only reads ctx.gen/collector/statuses, so this
-            // one-target ctx shape (no `pending` field needed) is valid.
-            root.finalizeFetch({
-                gen: gen,
-                collector: result.items,
-                statuses: [status]
-            });
-        });
-    }
-
-    // Pushes a local read/unread change to the server. Fire-and-forget: a
-    // failed push does NOT roll back local state (a transient network
-    // failure must not un-mark something the user just read) -- the next
-    // fetch's reconciliation corrects any drift (v2.4 §2.2).
-    function minifluxMarkRead(numericIds) {
-        var body = JSON.stringify({ entry_ids: numericIds, status: "read" });
-        root.minifluxApiCall("PUT", "/v1/entries", body, function(output, exitCode) {
-            if (exitCode !== 0)
-                root.toastError("Failed to mark as read");
-        });
-    }
-
-    function minifluxMarkUnread(numericIds) {
-        var body = JSON.stringify({ entry_ids: numericIds, status: "unread" });
-        root.minifluxApiCall("PUT", "/v1/entries", body, function(output, exitCode) {
-            if (exitCode !== 0)
-                root.toastError("Failed to mark as unread");
-        });
-    }
-
-    // PUT /v1/entries/{id}/bookmark toggles star state server-side with no
-    // body -- purely fire-and-forget here, since bookmarkMap is already the
-    // local source of truth and the next fetch reconciles any drift.
-    function minifluxToggleStar(numericId) {
-        root.minifluxApiCall("PUT", "/v1/entries/" + numericId + "/bookmark", null, function(output, exitCode) {
-            if (exitCode !== 0)
-                root.toastError("Failed to toggle bookmark");
-        });
-    }
+    // minifluxApiCall, fetchMinifluxEntries, minifluxMarkRead,
+    // minifluxMarkUnread and minifluxToggleStar (v2.4/PR #6) are gone --
+    // Backends.js's MinifluxBackend now builds their argv/parse descriptors,
+    // and runRequest/fetchAllFeeds/fetchDescriptor above and the mark/star
+    // call sites below run them uniformly with StandardBackend's, whose
+    // equivalents are no-ops (null descriptors). See Stage 0b addendum in
+    // docs/plans/2026-09-08-phase0-backend-interface-design.md.
 
     // --- View model ---
     function applyFilter() {
@@ -1486,10 +1383,12 @@ DesktopPluginComponent {
                             // the server only when the user opted in via
                             // "Mark as read on open" -- unlike the explicit
                             // mark-read button (below), which always syncs.
-                            if (root.sourceMode === "miniflux" && root.syncReadOnOpen) {
+                            if (root.syncReadOnOpen) {
                                 var numId = root.minifluxNumericId(id);
-                                if (numId)
-                                    root.minifluxMarkRead([numId]);
+                                root.runRequest(root.backend.markReadRequest(root.backendConfig, numId ? [numId] : []), function(output, code) {
+                                    if (code !== null && code !== 0)
+                                        root.toastError("Failed to mark as read");
+                                });
                             }
                             if (root.openInBrowser && model.link) {
                                 // T2 SECURITY: never hand an unsafe-scheme
@@ -1667,15 +1566,15 @@ DesktopPluginComponent {
                                 // button ALWAYS syncs to the server,
                                 // regardless of syncReadOnOpen (that setting
                                 // only gates the row-click "open" path above).
-                                if (root.sourceMode === "miniflux") {
-                                    var numId = root.minifluxNumericId(model.itemId);
-                                    if (numId) {
-                                        if (wasRead)
-                                            root.minifluxMarkUnread([numId]);
-                                        else
-                                            root.minifluxMarkRead([numId]);
-                                    }
-                                }
+                                var numId = root.minifluxNumericId(model.itemId);
+                                var ids = numId ? [numId] : [];
+                                var req = wasRead
+                                    ? root.backend.markUnreadRequest(root.backendConfig, ids)
+                                    : root.backend.markReadRequest(root.backendConfig, ids);
+                                root.runRequest(req, function(output, code) {
+                                    if (code !== null && code !== 0)
+                                        root.toastError(wasRead ? "Failed to mark as unread" : "Failed to mark as read");
+                                });
                             }
 
                             Behavior on opacity {
@@ -1721,18 +1620,22 @@ DesktopPluginComponent {
 
                 DankIcon {
                     name: {
-                        // v2.4 §2.6: mode-aware branch checked BEFORE the
-                        // RSS-specific ones -- Miniflux has no `feeds` list,
-                        // so the RSS branches below would misfire on it.
-                        if (root.sourceMode === "miniflux" && !root.minifluxUrl)
-                            return "sync";
+                        // v2.4 §2.6/Stage 0b: the widget asks the backend
+                        // whether its config is usable, never which backend
+                        // it is. `reason` is shared across backends
+                        // ("unconfigured"/"empty"/null) but the user-facing
+                        // wording differs, so capabilities.serverState picks
+                        // between them below.
+                        var cs = root.backend.configState(root.backendConfig);
+                        if (!cs.ok)
+                            return root.backend.capabilities.serverState ? "sync" : "rss_feed";
                         if (root.failedFeedCount > 0 && root.allItems.length === 0)
                             return "cloud_off";
                         if (root.allItems.length > 0 && root.searching)
                             return "search_off";
                         if (root.allItems.length > 0 && root.filterMode === "bookmarked")
                             return "bookmark_border";
-                        return root.sourceMode === "miniflux" ? "sync" : "rss_feed";
+                        return root.backend.capabilities.serverState ? "sync" : "rss_feed";
                     }
                     size: Theme.iconSize * 2
                     color: Theme.withAlpha(Theme.surfaceVariantText, 0.4)
@@ -1741,12 +1644,16 @@ DesktopPluginComponent {
 
                 StyledText {
                     text: {
-                        if (root.sourceMode === "miniflux" && !root.minifluxUrl)
-                            return "Configure Miniflux in settings";
-                        if (root.sourceMode === "standard" && root.feeds.length === 0)
-                            return "No feeds configured";
-                        if (root.sourceMode === "standard" && root.activeFeedCount === 0)
+                        var cs = root.backend.configState(root.backendConfig);
+                        if (!cs.ok) {
+                            if (cs.reason === "unconfigured")
+                                return root.backend.capabilities.serverState
+                                    ? "Configure Miniflux in settings"
+                                    : "No feeds configured";
+                            // reason === "empty": feeds exist but are all disabled
+                            // (only reachable for a non-server-backed backend).
                             return "All feeds disabled";
+                        }
                         if (root.allItems.length === 0 && root.failedFeedCount > 0)
                             return "All feeds failed to load";
                         // A search that matches nothing is distinct from an
@@ -1769,12 +1676,14 @@ DesktopPluginComponent {
                 StyledText {
                     visible: text !== ""
                     text: {
-                        if (root.sourceMode === "miniflux" && !root.minifluxUrl)
-                            return "Enter your server URL and API token";
-                        if (root.sourceMode === "standard" && root.feeds.length === 0)
-                            return "Add feeds in the widget settings";
-                        if (root.sourceMode === "standard" && root.activeFeedCount === 0)
+                        var cs = root.backend.configState(root.backendConfig);
+                        if (!cs.ok) {
+                            if (cs.reason === "unconfigured")
+                                return root.backend.capabilities.serverState
+                                    ? "Enter your server URL and API token"
+                                    : "Add feeds in the widget settings";
                             return "Re-enable a feed in settings";
+                        }
                         if (root.allItems.length === 0 && root.failedFeedCount > 0)
                             return "See per-feed errors in settings";
                         if (root.allItems.length > 0 && root.searching)
