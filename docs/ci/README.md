@@ -5,42 +5,51 @@ workflow-file writes. Proposed changes are staged here for a human to move:
 
     cp docs/ci/tests.yml.proposed .github/workflows/tests.yml
 
-## 2026-09-09 (second revision) — qmllint job
+## 2026-09-09 — QML checking: two failed attempts, then the right tool
 
-The first version of this job **passed locally and failed in CI**, which is
-worth understanding before touching it again.
+**qmllint does not work in this repo's CI, and cannot be made to.** It is a
+type checker, and the types it would check against live in the DMS shell,
+which is not installable on a GitHub runner. Recorded here so nobody spends a
+third round of CI minutes rediscovering it:
 
-qmllint cannot resolve `qs.Common`, `qs.Widgets`, `Quickshell` or anything
-reached through them, because the DMS shell is not installable in CI. Every
-semantic finding then cascades from that single missing dependency: `Theme` is
-unqualified, `StyledText` is an unknown type, and by extension even `Rectangle`
-appears not to support `color`. None of it says anything about the code.
+- **Attempt 1** passed locally (Qt 6.11 via Nix) and failed in CI. Not a code
+  difference — a version difference. Unresolved imports are warnings on 6.11
+  and fatal on Ubuntu's older Qt.
+- **Attempt 2** disabled the noisy categories and probed `--help` for support.
+  Still failed: the runner's `qt6-declarative-dev-tools` ships the binary
+  *without* the QML module tree, so qmllint cannot load its own builtins
+  (`Failed to find the following builtins: jsroot.qmltypes`) and the category
+  flags were not honoured anyway.
 
-The failure was a **version difference**, not a code difference. On Qt 6.11
-(the local Nix build) qmllint reports those as warnings and exits 0. On the
-older Qt that Ubuntu's runner installs, they are fatal.
+Every error in both runs traced to one missing dependency. `qs.Common`,
+`qs.Widgets` and `Quickshell` cannot resolve, after which `Theme` is
+unqualified, `StyledText` is an unknown type, and by cascade even `Rectangle`
+appears not to support `color`. None of it was about the code.
 
-So the job now:
+**The fix is `qmlformat`, not qmllint.** It parses without resolving anything,
+so it needs no module tree, and it ships in the same package. It proves
+exactly one thing — the file is syntactically valid QML — which is also the
+only thing qmllint could ever have proven in this environment.
 
-1. **Disables the categories that depend on the missing modules** — `import`,
-   `unqualified`, `missing-type`, `missing-property`, `unresolved-type`,
-   `unresolved-alias`, `missing-enum-entry`.
-2. **Probes `--help` first** and passes only the flags that binary actually
-   supports. These flags have come and gone across Qt releases, and an unknown
-   option is itself fatal — which would reproduce the same failure by a new
-   route.
+That is a small claim, and worth having anyway: a QML syntax error currently
+ships silently and breaks the widget at load, with no other tripwire in this
+repo.
 
-### What the check is actually worth
+The job **self-tests first**: it feeds qmlformat a deliberately malformed file
+and fails the build if that is *accepted*. A syntax checker that cannot fail
+is worse than no checker, and a broken tool would otherwise pass every file
+silently — which is exactly how the first two attempts would have gone
+unnoticed had they failed open instead of closed.
 
-Syntax validation, and nothing semantic. That is a smaller claim than the
-first version made, and it is still worth having: a QML syntax error currently
-ships silently and breaks the widget at load, with no other tripwire anywhere
-in this repo.
+Verified locally in both directions: clean on every `.qml` file, exit 1 on a
+malformed property and on a stray closing brace.
 
-Verified both directions locally — clean on every current `.qml` file, and
-**exit 255** on a deliberately malformed one. A check that cannot fail is
-worse than no check, so if you change the flag set, re-confirm both.
+**For real semantic checking, run qmllint locally**, where a full Qt and the
+DMS shell are present:
 
-**Do not mark `qmllint` a required context until it has reported green at
+    qmllint DankRssWidget.qml
+
+**Do not mark `qml-syntax` a required context until it has reported green at
 least once.** Branch protection lists contexts literally, and one that never
-reports blocks every PR with no visible cause.
+reports blocks every PR with no visible cause. Note the job is renamed from
+`qmllint` to `qml-syntax`, so the old context will never report again.

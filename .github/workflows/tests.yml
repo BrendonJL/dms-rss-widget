@@ -57,12 +57,22 @@ jobs:
             exit 1
           fi
 
-  # QML has had no automated checking at all -- a syntax error in ~3000 lines
-  # currently ships. qmllint cannot resolve the qs.* / Quickshell imports (the
-  # DMS shell is not present in CI), so it emits a wall of import and
-  # "unqualified access" warnings. Those are expected and NOT failures: qmllint
-  # exits 0 on warnings and nonzero only on a genuine parse error, which is
-  # exactly the signal worth gating on. Verified locally: both files exit 0.
+  # QML syntax check.
+  #
+  # SCOPE, honestly: this validates SYNTAX and little else. The DMS shell is
+  # not installable in CI, so qs.Common / qs.Widgets / Quickshell and every
+  # type reached through them (Theme, StyledText, DankActionButton, and by
+  # cascade even Rectangle's properties) are genuinely unresolvable. The
+  # resulting import / unqualified / missing-type / missing-property warnings
+  # are noise about a missing dependency, not findings about the code, and on
+  # older qmllint releases they are fatal -- which is why the first version of
+  # this job failed while passing locally on Qt 6.11.
+  #
+  # So those categories are disabled explicitly and the check is kept to what
+  # it can actually prove. That is still worth having: a QML syntax error
+  # currently ships silently and breaks the widget at load, with no other
+  # tripwire anywhere in this repo. Verified both ways -- clean on all current
+  # .qml files, and exit 255 on a deliberately malformed one.
   qmllint:
     name: qmllint
     runs-on: ubuntu-latest
@@ -79,7 +89,7 @@ jobs:
         run: |
           bin=$(command -v qmllint || true)
           [ -n "$bin" ] || bin=$(ls /usr/lib/qt6/bin/qmllint 2>/dev/null || true)
-          [ -n "$bin" ] || bin=$(find /usr -name qmllint -type f -perm -u+x 2>/dev/null | head -1)
+          [ -n "$bin" ] || bin=$(find /usr -name 'qmllint*' -type f -perm -u+x 2>/dev/null | head -1)
           if [ -z "$bin" ]; then
             echo "::error::qmllint not found after installing qt6-declarative-dev-tools"
             exit 1
@@ -87,15 +97,37 @@ jobs:
           echo "bin=$bin" >> "$GITHUB_OUTPUT"
           "$bin" --version
 
+      # Category flags have come and gone across Qt releases, and an unknown
+      # option is itself a fatal error -- so ask this binary what it supports
+      # rather than assuming, and pass only those.
+      - name: build the supported flag set
+        id: flags
+        run: |
+          bin='${{ steps.find.outputs.bin }}'
+          help=$("$bin" --help 2>&1 || true)
+          flags=""
+          for c in import unqualified missing-type missing-property \
+                   unresolved-type unresolved-alias missing-enum-entry; do
+            if printf '%s' "$help" | grep -q -- "--$c "; then
+              flags="$flags --$c disable"
+            else
+              echo "note: this qmllint has no --$c, skipping"
+            fi
+          done
+          echo "flags=$flags" >> "$GITHUB_OUTPUT"
+          echo "using:$flags"
+
       - name: lint QML
         run: |
+          bin='${{ steps.find.outputs.bin }}'
           status=0
           for f in *.qml tests/qml/*.qml; do
             [ -e "$f" ] || continue
-            if ! "${{ steps.find.outputs.bin }}" "$f" > /tmp/out.txt 2>&1; then
+            if ! "$bin" ${{ steps.flags.outputs.flags }} "$f" > /tmp/out.txt 2>&1; then
               echo "::error file=$f::qmllint failed"
               cat /tmp/out.txt
               status=1
             fi
           done
+          if [ "$status" = "0" ]; then echo "all .qml files parse cleanly"; fi
           exit $status
