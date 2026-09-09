@@ -399,3 +399,50 @@ describe("LIVE ollama (opt-in, self-skipping)", () => {
         assert.ok(result.text.length > 0, "expected a non-empty summary from the live model");
     });
 });
+
+// The argv tests above assert structure (method, url, body) but would not
+// notice a dropped hardening flag -- exactly the class of silent security
+// regression that has no other tripwire. Assert the set explicitly.
+describe("SECURITY: curl hardening flags", () => {
+    var provider = createAiProvider({
+        baseUrl: "http://localhost:11434/v1", model: "m"
+    });
+
+    function flagPairs(argv) {
+        var seen = {};
+        for (var i = 0; i < argv.length - 1; i++)
+            if (String(argv[i]).indexOf("--") === 0)
+                seen[argv[i]] = argv[i + 1];
+        return seen;
+    }
+
+    [
+        ["probe", function () { return provider.probeRequest(); }],
+        ["summarise", function () { return provider.summariseRequest({ title: "t", description: "d" }); }],
+        ["digest", function () { return provider.digestRequest([{ title: "t", description: "d" }]); }]
+    ].forEach(function (pair) {
+        test(pair[0] + " carries the hardening flags", () => {
+            var f = flagPairs(pair[1]().argv);
+            assert.equal(f["--connect-timeout"], "5");
+            assert.equal(f["--proto"], "=http,https");
+            assert.equal(f["--proto-redir"], "=http,https");
+            assert.equal(f["--max-filesize"], "5000000");
+            assert.ok(f["--max-time"], "--max-time must always be set");
+        });
+    });
+
+    // Redirects are deliberately NOT followed on an authenticated endpoint:
+    // curl re-sends an explicit -H across a cross-host redirect, which would
+    // hand the API key to whatever host the redirect names.
+    test("no -L on any request", () => {
+        [provider.probeRequest(), provider.summariseRequest({ title: "t", description: "d" })]
+            .forEach(function (req) {
+                assert.equal(req.argv.indexOf("-L"), -1, "-L would leak the apiKey across a redirect");
+            });
+    });
+
+    test("probe uses a short timeout, not the generation-sized default", () => {
+        var argv = provider.probeRequest().argv;
+        assert.equal(argv[argv.indexOf("--max-time") + 1], "8");
+    });
+});

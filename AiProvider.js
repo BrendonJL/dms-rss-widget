@@ -49,6 +49,11 @@
 // compared to Backends.js's fetch/Miniflux timeouts.
 var DEFAULT_TIMEOUT_MS = 60000;
 
+// A /models GET is not a generation workload -- it answers in well under a
+// second on a healthy runtime. Sharing the generation-sized default just made
+// an unreachable or firewalled host hang for a minute before saying so.
+var PROBE_TIMEOUT_MS = 8000;
+
 var SUMMARISE_SYSTEM_PROMPT =
     "Summarise the article the user gives you in two concise sentences. " +
     "Respond with only the summary -- no preamble, no headings.";
@@ -63,12 +68,14 @@ var DIGEST_SYSTEM_PROMPT =
 //
 // A table, not code paths. baseUrl already includes the OpenAI-compatible
 // "/v1" prefix each runtime serves it under, so callers append plain
-// "/models" and "/chat/completions". ollama and LM Studio's baseUrls are
-// measured/documented in the design doc; vLLM's is its own documented
-// default port. llama.cpp's default server port (8080) is llama.cpp's own
-// documented default, NOT measured against a live instance on this machine
-// -- flagged here because everything else in this table is one or the other
-// and that distinction matters.
+// "/models" and "/chat/completions".
+//
+// Provenance, stated honestly: **only ollama is measured** -- verified live
+// against this machine (GET /v1/models -> 200, OpenAI-shaped). vLLM,
+// llama.cpp and LM Studio are each that project's own documented default
+// port, taken on faith and not exercised against a running instance. Treat
+// a bug report about any of those three as plausibly a wrong default here.
+
 var PRESETS = {
     ollama: { label: "Ollama", baseUrl: "http://localhost:11434/v1" },
     vllm: { label: "vLLM", baseUrl: "http://localhost:8000/v1" },
@@ -93,7 +100,11 @@ function aiCurlArgv(method, url, apiKey, body, timeoutMs) {
         "--max-time", String(seconds),
         "--proto", "=http,https",
         "--proto-redir", "=http,https",
-        "--max-redirs", "5",
+        // No -L, deliberately -- and so no --max-redirs, which is a no-op
+        // without it and only reads as protection that is not there. curl
+        // re-sends an explicit -H header across a cross-host redirect, so
+        // following redirects on an authenticated endpoint would hand the
+        // API key to whatever host the redirect names.
         "--max-filesize", "5000000",
         "-X", method
     ];
@@ -206,8 +217,8 @@ function createAiProvider(config) {
 
             var url = config.baseUrl + "/models";
             return {
-                argv: aiCurlArgv("GET", url, config.apiKey, null, config.timeoutMs),
-                timeoutMs: config.timeoutMs || DEFAULT_TIMEOUT_MS,
+                argv: aiCurlArgv("GET", url, config.apiKey, null, PROBE_TIMEOUT_MS),
+                timeoutMs: PROBE_TIMEOUT_MS,
                 parse: function (stdout) { return parseModelsResponse(stdout, config.model); }
             };
         },
