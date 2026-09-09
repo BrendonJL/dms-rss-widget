@@ -36,18 +36,24 @@ Full designs live in [`docs/plans/`](docs/plans/). Contributors welcome on
 anything here — the **Phase 6** items are deliberately self-contained and are
 the best place to start.
 
+**Done, awaiting release**
+
+- Search focus and search-during-selection fixes — [design](docs/plans/2026-09-07-search-fixes-design.md) — merged
+- **Phase 0**, backend provider interface — [design](docs/plans/2026-09-08-phase0-backend-interface-design.md). Every `sourceMode` branch in the widget is gone (17 → 0), leaving one dispatch point. Backends are plain objects in `Backends.js` exposing `capabilities` and request descriptors; QML runs the process and owns nothing else.
+- **Phase 3a**, `AiProvider.js` — [design](docs/plans/2026-09-08-phase3-ai-provider-design.md). The client for any OpenAI-compatible runtime. No UI yet.
+
 **In progress**
 
-- Search focus and search-during-selection fixes — [design](docs/plans/2026-09-07-search-fixes-design.md)
+- Phase 1 (Google Reader) is next, blocked on standing up a FreshRSS instance to test against.
 
 **Planned** — [full roadmap design](docs/plans/2026-09-07-roadmap-design.md)
 
 | Phase | Work | Depends on |
 |---|---|---|
-| 0 | Backend provider interface — replaces the inline `sourceMode` branches | — |
+| 0 | ✅ Backend provider interface — replaces the inline `sourceMode` branches | — |
 | 1 | Google Reader API backend (FreshRSS, TT-RSS, Inoreader, TheOldReader, BazQux, Miniflux) | 0 |
 | 2 | Keyboard navigation (`j`/`k`/`o`/`m`/`s`, `/` to search) | search fixes |
-| 3 | Local AI via any OpenAI-compatible runtime (ollama, vLLM, llama.cpp, LM Studio): per-article TL;DR, daily digest, interest ranking | 0 |
+| 3 | 🟡 Local AI via any OpenAI-compatible runtime (ollama, vLLM, llama.cpp, LM Studio): per-article TL;DR, daily digest, interest ranking | 0 |
 | 4 | Notes/export provider: markdown directory, Obsidian, Neovim | — |
 | 5 | Reader + annotation app — a standalone window for reading, highlighting and note-taking | 3, 4 |
 | 6 | Independent smaller items — see below | — |
