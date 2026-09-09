@@ -10,6 +10,8 @@ import qs.Modules.Plugins
 import "FeedParser.js" as FeedParser
 import "ReaderState.js" as ReaderState
 import "Backends.js" as Backends
+import "GoogleReader.js" as GoogleReader
+import "ChainRunner.js" as ChainRunner
 
 DesktopPluginComponent {
     id: root
@@ -43,17 +45,31 @@ DesktopPluginComponent {
     property bool syncReadOnOpen: pluginData.syncReadOnOpen ?? true
     property bool showStarred: pluginData.showStarred ?? false
 
-    // --- Backend provider interface (Phase 0 / stage 0b) ---
+    // --- Google Reader settings (Phase 1 / stage 1b) ---
+    // No settings UI yet -- that's stage 1c. Reachable in 1b only by
+    // hand-editing settings.json, which is enough to verify the runner (see
+    // docs/plans/2026-09-09-phase1-google-reader-design.md, "Out of scope
+    // for 1b").
+    property string greaderUrl: (pluginData.greaderUrl ?? "").replace(/\/$/, "")
+    property string greaderUsername: pluginData.greaderUsername ?? ""
+    property string greaderPassword: pluginData.greaderPassword ?? ""
+
+    // --- Backend provider interface (Phase 0 / stage 0b, extended Phase 1 /
+    // stage 1b) ---
     // JS owns every backend-specific decision (which URL, method, headers,
     // body, how to parse a response, what the backend can do); QML owns only
     // the side effects (running Proc, showing toasts, assigning properties).
-    // See docs/plans/2026-09-08-phase0-backend-interface-design.md.
-    readonly property var backends: Backends.createBackends({ FeedParser: FeedParser, ReaderState: ReaderState })
+    // See docs/plans/2026-09-08-phase0-backend-interface-design.md and the
+    // Phase 1 doc's stage 1b addendum.
+    readonly property var backends: Backends.createBackends({ FeedParser: FeedParser, ReaderState: ReaderState, GoogleReader: GoogleReader })
     readonly property var backend: root.backends[root.sourceMode] || root.backends.standard
     readonly property var backendConfig: ({
         feeds: root.feeds,
         minifluxUrl: root.minifluxUrl,
         minifluxToken: root.minifluxToken,
+        greaderUrl: root.greaderUrl,
+        greaderUsername: root.greaderUsername,
+        greaderPassword: root.greaderPassword,
         maxItems: root.maxItems,
         showStarred: root.showStarred
     })
@@ -71,6 +87,15 @@ DesktopPluginComponent {
     property bool isLoading: true
     property var windowRef: null
     property int fetchGeneration: 0    // guards against overlapping refreshes (see below)
+    // Google Reader session cache (Phase 1 / stage 1b): { authToken,
+    // postToken }. Deliberately IN MEMORY ONLY -- never written to plugin
+    // state. It is re-derivable with one ClientLogin, and persisting a
+    // credential-bearing token to disk for that trade is a bad one. Updated
+    // from the `session` field ChainRunner's terminal (and "next") results
+    // carry back; every backend other than greader ignores it, but it is
+    // threaded through positionally to all of them regardless (Phase 0
+    // contract -- see tests/backend-interface.test.js).
+    property var backendSession: ({})
     property string filterMode: "all"  // "all", "unread" or "bookmarked"
     property string searchQuery: ""
     property bool searchActive: false   // whether the search field is revealed
@@ -375,6 +400,13 @@ DesktopPluginComponent {
         // so switching sourceMode naturally hides the other mode's
         // bookmarks from view (they simply aren't in allItems) without
         // deleting them.
+        // MUST be read BEFORE the local toggle below: Google Reader's
+        // edit-tag has no "set" endpoint, only explicit add/remove, so
+        // toggleStarRequest needs to know the PRIOR starred state to pick
+        // a=/r=. Reading it after the toggle would report the NEW state and
+        // send the wrong one (stage 1b design doc, "Call sites").
+        var wasBookmarked = !!root.bookmarkMap[itemId];
+
         root.bookmarkOrder = ReaderState.toggleBookmark(root.bookmarkOrder, itemId, root.idHistoryCap);
         root.bookmarkMap = ReaderState.buildIdMap(root.bookmarkOrder);
         root.saveBookmarkState();
@@ -382,7 +414,7 @@ DesktopPluginComponent {
         // Asking the backend directly (instead of branching on sourceMode)
         // means this is a no-op for free on any backend without server-side
         // star state: StandardBackend.toggleStarRequest always returns null.
-        var req = root.backend.toggleStarRequest(root.backendConfig, root.minifluxNumericId(itemId));
+        var req = root.backend.toggleStarRequest(root.backendConfig, root.backendSession, root.backendItemId(itemId), wasBookmarked);
         root.runRequest(req, function(output, code) {
             if (code !== null && code !== 0)
                 root.toastError("Failed to toggle bookmark");
@@ -423,11 +455,11 @@ DesktopPluginComponent {
         // backend without server-side read state, so no mode check is needed.
         var numIds = [];
         for (var i = 0; i < ids.length; i++) {
-            var numId = root.minifluxNumericId(ids[i]);
+            var numId = root.backendItemId(ids[i]);
             if (numId)
                 numIds.push(numId);
         }
-        root.runRequest(root.backend.markReadRequest(root.backendConfig, numIds), function(output, code) {
+        root.runRequest(root.backend.markReadRequest(root.backendConfig, root.backendSession, numIds), function(output, code) {
             if (code !== null && code !== 0)
                 root.toastError("Failed to mark as read");
         });
@@ -465,8 +497,11 @@ DesktopPluginComponent {
             var id = ids[j];
             if (alreadyBookmarked[id])
                 continue;
-            var numId = root.minifluxNumericId(id);
-            var req = root.backend.toggleStarRequest(root.backendConfig, numId);
+            // currentlyStarred is always false here: the loop already
+            // skipped every id alreadyBookmarked captured before the local
+            // toggle above (same "read before toggle" rule as toggleBookmark).
+            var numId = root.backendItemId(id);
+            var req = root.backend.toggleStarRequest(root.backendConfig, root.backendSession, numId, false);
             root.runRequest(req, function(output, code) {
                 if (code !== null && code !== 0)
                     root.toastError("Failed to toggle bookmark");
@@ -513,13 +548,13 @@ DesktopPluginComponent {
         // v2.4 §2.7: same batched-push pattern as bulkMarkReadSelected.
         var numIds = [];
         for (var i2 = 0; i2 < ids.length; i2++) {
-            var numId = root.minifluxNumericId(ids[i2]);
+            var numId = root.backendItemId(ids[i2]);
             if (numId)
                 numIds.push(numId);
         }
         var req = read
-            ? root.backend.markReadRequest(root.backendConfig, numIds)
-            : root.backend.markUnreadRequest(root.backendConfig, numIds);
+            ? root.backend.markReadRequest(root.backendConfig, root.backendSession, numIds)
+            : root.backend.markUnreadRequest(root.backendConfig, root.backendSession, numIds);
         root.runRequest(req, function(output, code) {
             if (code !== null && code !== 0)
                 root.toastError(read ? "Failed to mark as read" : "Failed to mark as unread");
@@ -580,7 +615,7 @@ DesktopPluginComponent {
 
         var backend = root.backend;
         var config = root.backendConfig;
-        var requests = backend.fetchRequests(config) || [];
+        var requests = backend.fetchRequests(config, root.backendSession) || [];
 
         // Per-feed status rows: only a LOCAL (non-server-backed) backend has
         // a feed list of its own here -- a server-backed backend (Miniflux)
@@ -688,9 +723,30 @@ DesktopPluginComponent {
         }
     }
 
+    // Standard/Miniflux descriptors never set `nextRequest`, so ChainRunner
+    // sees a single link and returns "done" (or "error") on the very first
+    // step() call -- their path through runChainLink below is therefore
+    // identical to the old single-shot fetchDescriptor in every observable
+    // way. Google Reader's descriptor may chain through several requests
+    // (ClientLogin -> token -> ids -> contents) before a step() call is
+    // terminal.
     function fetchDescriptor(req, status, ctx, hadItems) {
+        var chain = ChainRunner.createChain(req, ChainRunner.DEFAULT_MAX_LINKS);
+        root.runChainLink(req, status, ctx, hadItems, chain);
+    }
+
+    // Runs one link of `chain` and hands its parse result to
+    // ChainRunner.step(). THE PENDING COUNTER RULE (stage 1b design doc):
+    // ctx.pending is decremented exactly once per CHAIN, never once per
+    // request. action === "next" recurses to run the following link and
+    // must NOT touch ctx.pending; only "done" or "error" -- the chain's one
+    // terminal result -- decrements it, right where the old single-request
+    // fetchDescriptor used to.
+    function runChainLink(req, status, ctx, hadItems, chain) {
         root.runRequest(req, function(output, exitCode) {
-            // Stale callback from a superseded fetch cycle: drop it entirely.
+            // Stale callback from a superseded fetch cycle: drop the WHOLE
+            // chain, not just this link -- there is no next-link recursion
+            // and no pending decrement past this point.
             if (ctx.gen !== root.fetchGeneration)
                 return;
 
@@ -717,17 +773,58 @@ DesktopPluginComponent {
             if (exitCode === 0 && output && output.trim().length > 0)
                 parsed = req.parse(output);
 
-            // Proc synthesizes exit code 124 on its own timeout, which we
-            // surface separately from a generic failure.
-            var verdict = ReaderState.classifyFetch(exitCode, output, parsed.items.length);
+            // ChainRunner.step() throws ONLY when called after its chain
+            // already produced a terminal result -- deliberately, to
+            // surface a caller bug loudly rather than silently double-
+            // decrementing ctx.pending (ChainRunner.js's own header
+            // comment). That caller bug should be structurally impossible
+            // here (this function only ever calls step() once per link,
+            // and stops recursing the moment a terminal comes back), but an
+            // uncaught exception in a running widget would leave isLoading
+            // stuck true forever, so catch it anyway: treat it as a
+            // terminal error and decrement exactly once, same as any other
+            // chain error. Loud in development (console.warn), safe in
+            // production.
+            var result;
+            try {
+                result = chain.step(parsed);
+            } catch (e) {
+                console.warn("DankRssWidget: ChainRunner.step() threw:", e && e.message);
+                status.state = "error";
+                status.lastError = "Internal chain error";
+                ctx.pending--;
+                if (ctx.pending <= 0)
+                    root.finalizeFetch(ctx);
+                return;
+            }
+
+            // Cache the session (authToken/postToken) as soon as ChainRunner
+            // reports one -- on a "next" link as well as the terminal result
+            // -- so a chain that dies partway through (e.g. an error on the
+            // last link) still banks whatever it learned, rather than
+            // forcing the next cycle to restart from ClientLogin. In memory
+            // only -- see backendSession's own comment.
+            if (result.session)
+                root.backendSession = result.session;
+
+            if (result.action === "next") {
+                // Chain continues: ctx.pending is untouched here by design.
+                root.runChainLink(result.request, status, ctx, hadItems, chain);
+                return;
+            }
+
+            // action is "done" or "error" -- the chain's one terminal
+            // result. Proc synthesizes exit code 124 on its own timeout,
+            // which we surface separately from a generic failure.
+            var verdict = ReaderState.classifyFetch(exitCode, output, result.items.length);
             status.state = verdict.state;
-            status.lastError = parsed.error ? parsed.error : verdict.lastError;
+            status.lastError = result.error ? result.error : verdict.lastError;
 
             if (verdict.state === "ok") {
                 status.lastSuccess = status.lastFetched;
-                status.itemCount = parsed.items.length;
-                for (var j = 0; j < parsed.items.length; j++)
-                    ctx.collector.push(parsed.items[j]);
+                status.itemCount = result.items.length;
+                for (var j = 0; j < result.items.length; j++)
+                    ctx.collector.push(result.items[j]);
 
                 // Server wins on fetch reconciliation (v2.4 §2.2/§2.3):
                 // reconcile server read/starred status into local readMap/
@@ -740,7 +837,7 @@ DesktopPluginComponent {
                     readOrder: root.readOrder,
                     bookmarkOrder: root.bookmarkOrder,
                     cap: root.idHistoryCap
-                }, parsed.serverStatus);
+                }, result.serverStatus);
                 if (reconciled.readChanged) {
                     root.readOrder = reconciled.readOrder;
                     root.readMap = ReaderState.buildIdMap(root.readOrder);
@@ -831,16 +928,22 @@ DesktopPluginComponent {
             ToastService.showError(msg);
     }
 
-    // Strips the "m:" id prefix for the numeric id Miniflux's API expects.
-    // Returns "" for anything that isn't a Miniflux id (defensive: callers
-    // should already only reach here with "m:"-prefixed ids, but a filter
-    // that silently no-ops on a non-Miniflux id is cheap insurance against
-    // read-state corruption crossing between source modes -- v2.4 plan §5
-    // Risk #2).
-    function minifluxNumericId(itemId) {
-        if (typeof itemId !== "string" || itemId.indexOf("m:") !== 0)
+    // Strips the backend-specific id prefix ("m:" for Miniflux, "r:" for
+    // Google Reader) down to the raw id each backend's API expects. Returns
+    // "" for anything with neither prefix (defensive: callers should
+    // already only reach here with an id from the active backend, but a
+    // filter that silently no-ops on a foreign-mode id is cheap insurance
+    // against read-state corruption crossing between source modes -- v2.4
+    // plan §5 Risk #2, extended in Phase 1 to greader's "r:" ids). Only one
+    // source mode's items are ever in allItems/selectedMap/bookmarkMap at a
+    // time, so checking the prefix directly is enough -- no need to also
+    // check root.backend.id.
+    function backendItemId(itemId) {
+        if (typeof itemId !== "string")
             return "";
-        return itemId.slice(2);
+        if (itemId.indexOf("m:") === 0 || itemId.indexOf("r:") === 0)
+            return itemId.slice(2);
+        return "";
     }
 
     // Display name for a server-backed backend, used in status rows and error
@@ -1397,8 +1500,8 @@ DesktopPluginComponent {
                             // "Mark as read on open" -- unlike the explicit
                             // mark-read button (below), which always syncs.
                             if (root.syncReadOnOpen) {
-                                var numId = root.minifluxNumericId(id);
-                                root.runRequest(root.backend.markReadRequest(root.backendConfig, numId ? [numId] : []), function(output, code) {
+                                var numId = root.backendItemId(id);
+                                root.runRequest(root.backend.markReadRequest(root.backendConfig, root.backendSession, numId ? [numId] : []), function(output, code) {
                                     if (code !== null && code !== 0)
                                         root.toastError("Failed to mark as read");
                                 });
@@ -1579,11 +1682,11 @@ DesktopPluginComponent {
                                 // button ALWAYS syncs to the server,
                                 // regardless of syncReadOnOpen (that setting
                                 // only gates the row-click "open" path above).
-                                var numId = root.minifluxNumericId(model.itemId);
+                                var numId = root.backendItemId(model.itemId);
                                 var ids = numId ? [numId] : [];
                                 var req = wasRead
-                                    ? root.backend.markUnreadRequest(root.backendConfig, ids)
-                                    : root.backend.markReadRequest(root.backendConfig, ids);
+                                    ? root.backend.markUnreadRequest(root.backendConfig, root.backendSession, ids)
+                                    : root.backend.markReadRequest(root.backendConfig, root.backendSession, ids);
                                 root.runRequest(req, function(output, code) {
                                     if (code !== null && code !== 0)
                                         root.toastError(wasRead ? "Failed to mark as unread" : "Failed to mark as read");
