@@ -212,6 +212,7 @@ describe("MinifluxBackend.fetchRequests", () => {
         assert.equal(reqs.length, 1);
         assert.deepEqual(reqs[0].argv, [
             "curl", "-sS",
+            "--fail-with-body",
             "--connect-timeout", "5",
             "--max-time", "25",
             "--proto", "=http,https",
@@ -300,6 +301,7 @@ describe("MinifluxBackend mark read/unread", () => {
         var req = backend.markReadRequest(config, ["1", "2", "3"]);
         assert.deepEqual(req.argv, [
             "curl", "-sS",
+            "--fail-with-body",
             "--connect-timeout", "5",
             "--max-time", "25",
             "--proto", "=http,https",
@@ -309,7 +311,7 @@ describe("MinifluxBackend mark read/unread", () => {
             "-X", "PUT",
             "-H", "X-Auth-Token: SECRET_TOKEN_VALUE",
             "-H", "Content-Type: application/json",
-            "-d", JSON.stringify({ entry_ids: ["1", "2", "3"], status: "read" }),
+            "-d", JSON.stringify({ entry_ids: [1, 2, 3], status: "read" }),
             "https://miniflux.example.com/v1/entries"
         ]);
     });
@@ -317,7 +319,7 @@ describe("MinifluxBackend mark read/unread", () => {
     test("markUnreadRequest builds the same shape with status=unread", () => {
         var req = backend.markUnreadRequest(config, ["5"]);
         var body = req.argv[req.argv.indexOf("-d") + 1];
-        assert.deepEqual(JSON.parse(body), { entry_ids: ["5"], status: "unread" });
+        assert.deepEqual(JSON.parse(body), { entry_ids: [5], status: "unread" });
     });
 
     test("returns null (no-op) for an empty or missing id list", () => {
@@ -346,6 +348,7 @@ describe("MinifluxBackend.toggleStarRequest", () => {
         var req = backend.toggleStarRequest(config, "42");
         assert.deepEqual(req.argv, [
             "curl", "-sS",
+            "--fail-with-body",
             "--connect-timeout", "5",
             "--max-time", "25",
             "--proto", "=http,https",

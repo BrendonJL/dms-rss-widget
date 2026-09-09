@@ -50,6 +50,12 @@ function minifluxCurlArgv(method, minifluxUrl, endpoint, token, body) {
     var url = minifluxUrl + endpoint;
     var args = [
         "curl", "-sS",
+        // --fail-with-body: curl exits 0 on an HTTP 400, so every Miniflux API
+        // error was silently discarded -- the caller only reacts to a nonzero
+        // exit. This makes a 4xx/5xx exit 22 while still returning the body,
+        // so the existing error path fires. Without it, mark-as-read failed
+        // server-side through 2.3.3 with no toast, no log, nothing.
+        "--fail-with-body",
         "--connect-timeout", "5",
         "--max-time", "25",
         "--proto", "=http,https",
@@ -285,10 +291,25 @@ function createMinifluxBackend(deps) {
 }
 
 function minifluxMarkRequest(config, ids, status) {
-    if (!minifluxConfigReady(config) || !ids || ids.length === 0)
+    if (!minifluxConfigReady(config))
         return null;
 
-    var body = JSON.stringify({ entry_ids: ids, status: status });
+    // Miniflux types entry_ids as int64 and rejects the whole request with
+    // HTTP 400 if any element is a string. The widget's ids arrive as strings
+    // (minifluxNumericId returns itemId.slice(2)), so coerce here rather than
+    // at every call site. This shipped broken through 2.3.3: mark-as-read
+    // never reached the server, and curl exits 0 on a 400, so nothing ever
+    // surfaced it. Verified against a live Miniflux 2.x instance.
+    var numeric = [];
+    for (var i = 0; i < (ids || []).length; i++) {
+        var n = parseInt(ids[i], 10);
+        if (!isNaN(n))
+            numeric.push(n);
+    }
+    if (numeric.length === 0)
+        return null;
+
+    var body = JSON.stringify({ entry_ids: numeric, status: status });
 
     return {
         argv: minifluxCurlArgv("PUT", config.minifluxUrl, "/v1/entries", config.minifluxToken, body),
