@@ -47,14 +47,19 @@ describe("capabilities", () => {
     });
 });
 
-// ─── StandardBackend.fetchRequest ───
+// ─── StandardBackend.fetchRequests ───
 
-describe("StandardBackend.fetchRequest", () => {
+describe("StandardBackend.fetchRequests", () => {
     var backend = createStandardBackend(deps);
 
+    function feed(overrides) {
+        return Object.assign({ url: "https://example.com/feed.xml", name: "Example" }, overrides || {});
+    }
+
     test("builds the exact argv fetchFeed uses today (DankRssWidget.qml fetchFeed)", () => {
-        var req = backend.fetchRequest({ url: "https://example.com/feed.xml", name: "Example" });
-        assert.deepEqual(req.argv, [
+        var reqs = backend.fetchRequests({ feeds: [feed()] });
+        assert.equal(reqs.length, 1);
+        assert.deepEqual(reqs[0].argv, [
             "curl", "-sS",
             "--connect-timeout", "5",
             "--max-time", "10",
@@ -68,15 +73,41 @@ describe("StandardBackend.fetchRequest", () => {
         ]);
     });
 
-    test("returns null when config has no url (no-op)", () => {
-        assert.equal(backend.fetchRequest({}), null);
-        assert.equal(backend.fetchRequest(null), null);
+    test("returns [] when config has no feeds / is missing (no-op)", () => {
+        assert.deepEqual(backend.fetchRequests({ feeds: [] }), []);
+        assert.deepEqual(backend.fetchRequests({}), []);
+        assert.deepEqual(backend.fetchRequests(null), []);
     });
 
-    test("parse delegates to FeedParser.parseFeed with the config's name/url", () => {
+    test("one descriptor per ELIGIBLE feed, in iteration order; disabled and urlless feeds produce none", () => {
+        var feeds = [
+            feed({ url: "https://a.com/f.xml", name: "A" }),
+            feed({ url: "https://b.com/f.xml", name: "B", enabled: false }),
+            feed({ url: "", name: "NoUrl" }),
+            feed({ url: "https://c.com/f.xml", name: "C" })
+        ];
+        var reqs = backend.fetchRequests({ feeds: feeds });
+        assert.equal(reqs.length, 2);
+        assert.deepEqual(reqs.map(function (r) { return r.meta; }), [
+            { url: "https://a.com/f.xml", name: "A" },
+            { url: "https://c.com/f.xml", name: "C" }
+        ]);
+    });
+
+    test("meta.name falls back to the url when name is absent", () => {
+        var reqs = backend.fetchRequests({ feeds: [feed({ url: "https://x.com/f.xml", name: undefined })] });
+        assert.deepEqual(reqs[0].meta, { url: "https://x.com/f.xml", name: "https://x.com/f.xml" });
+    });
+
+    test("timeoutMs is null (Proc's default), matching fetchFeed today", () => {
+        var reqs = backend.fetchRequests({ feeds: [feed()] });
+        assert.equal(reqs[0].timeoutMs, null);
+    });
+
+    test("parse delegates to FeedParser.parseFeed with the feed's name/url", () => {
         var rss = "<rss><channel><item><title>Hello</title><link>https://x.com/1</link></item></channel></rss>";
-        var req = backend.fetchRequest({ url: "https://x.com/feed.xml", name: "Example" });
-        var result = req.parse(rss);
+        var reqs = backend.fetchRequests({ feeds: [feed({ url: "https://x.com/feed.xml", name: "Example" })] });
+        var result = reqs[0].parse(rss);
         var expected = FeedParser.parseFeed(rss, "Example", "https://x.com/feed.xml");
         assert.deepEqual(result.items, expected);
         assert.deepEqual(result.serverStatus, []);
@@ -84,10 +115,38 @@ describe("StandardBackend.fetchRequest", () => {
     });
 
     test("parse never throws on malformed/empty input (FeedParser.parseFeed itself is robust to it)", () => {
-        var req = backend.fetchRequest({ url: "https://x.com/feed.xml", name: "Example" });
-        var result = req.parse(null);
+        var reqs = backend.fetchRequests({ feeds: [feed({ url: "https://x.com/feed.xml", name: "Example" })] });
+        var result = reqs[0].parse(null);
         assert.deepEqual(result.items, []);
         assert.equal(result.error, null);
+    });
+});
+
+// ─── StandardBackend.configState ───
+
+describe("StandardBackend.configState", () => {
+    var backend = createStandardBackend(deps);
+
+    test("no feeds configured -> unconfigured", () => {
+        assert.deepEqual(backend.configState({ feeds: [] }), { ok: false, reason: "unconfigured" });
+        assert.deepEqual(backend.configState({}), { ok: false, reason: "unconfigured" });
+        assert.deepEqual(backend.configState(null), { ok: false, reason: "unconfigured" });
+    });
+
+    test("feeds configured but none enabled -> empty", () => {
+        var feeds = [
+            { url: "https://a.com/f.xml", name: "A", enabled: false },
+            { url: "https://b.com/f.xml", name: "B", enabled: false }
+        ];
+        assert.deepEqual(backend.configState({ feeds: feeds }), { ok: false, reason: "empty" });
+    });
+
+    test("at least one enabled feed with a url -> ok", () => {
+        var feeds = [
+            { url: "https://a.com/f.xml", name: "A", enabled: false },
+            { url: "https://b.com/f.xml", name: "B" }
+        ];
+        assert.deepEqual(backend.configState({ feeds: feeds }), { ok: true, reason: null });
     });
 });
 
@@ -118,9 +177,9 @@ describe("StandardBackend server-state no-ops", () => {
     });
 });
 
-// ─── MinifluxBackend.fetchRequest ───
+// ─── MinifluxBackend.fetchRequests ───
 
-describe("MinifluxBackend.fetchRequest", () => {
+describe("MinifluxBackend.fetchRequests", () => {
     var backend = createMinifluxBackend(deps);
 
     function baseConfig(overrides) {
@@ -132,9 +191,10 @@ describe("MinifluxBackend.fetchRequest", () => {
         }, overrides || {});
     }
 
-    test("builds the exact argv minifluxApiCall uses today for GET /v1/entries (unread)", () => {
-        var req = backend.fetchRequest(baseConfig());
-        assert.deepEqual(req.argv, [
+    test("builds the exact argv minifluxApiCall uses today for GET /v1/entries (unread), as a single-element array", () => {
+        var reqs = backend.fetchRequests(baseConfig());
+        assert.equal(reqs.length, 1);
+        assert.deepEqual(reqs[0].argv, [
             "curl", "-sS",
             "--connect-timeout", "5",
             "--max-time", "25",
@@ -148,22 +208,32 @@ describe("MinifluxBackend.fetchRequest", () => {
         ]);
     });
 
+    test("meta is null for miniflux descriptors", () => {
+        var reqs = backend.fetchRequests(baseConfig());
+        assert.equal(reqs[0].meta, null);
+    });
+
+    test("timeoutMs is the deliberately-longer Miniflux Proc timeout", () => {
+        var reqs = backend.fetchRequests(baseConfig());
+        assert.equal(reqs[0].timeoutMs, 30000);
+    });
+
     test("showStarred switches the endpoint to starred=true", () => {
-        var req = backend.fetchRequest(baseConfig({ showStarred: true }));
-        var url = req.argv[req.argv.length - 1];
+        var reqs = backend.fetchRequests(baseConfig({ showStarred: true }));
+        var url = reqs[0].argv[reqs[0].argv.length - 1];
         assert.equal(url, "https://miniflux.example.com/v1/entries?starred=true&limit=20&order=published_at&direction=desc");
     });
 
-    test("returns null when minifluxUrl or minifluxToken is missing/empty (config-not-ready no-op)", () => {
-        assert.equal(backend.fetchRequest(baseConfig({ minifluxUrl: "" })), null);
-        assert.equal(backend.fetchRequest(baseConfig({ minifluxToken: "" })), null);
-        assert.equal(backend.fetchRequest(null), null);
+    test("returns [] when minifluxUrl or minifluxToken is missing/empty (config-not-usable no-op)", () => {
+        assert.deepEqual(backend.fetchRequests(baseConfig({ minifluxUrl: "" })), []);
+        assert.deepEqual(backend.fetchRequests(baseConfig({ minifluxToken: "" })), []);
+        assert.deepEqual(backend.fetchRequests(null), []);
     });
 
     test("parse: valid entries payload maps through FeedParser.parseMinifluxEntries", () => {
-        var req = backend.fetchRequest(baseConfig());
+        var reqs = backend.fetchRequests(baseConfig());
         var json = JSON.stringify({ entries: [{ id: 42, title: "Hello", url: "https://x.com/1" }] });
-        var result = req.parse(json);
+        var result = reqs[0].parse(json);
         var expected = FeedParser.parseMinifluxEntries(JSON.parse(json), "https://miniflux.example.com");
         assert.deepEqual(result.items, expected.items);
         assert.deepEqual(result.serverStatus, expected.serverStatus);
@@ -171,19 +241,36 @@ describe("MinifluxBackend.fetchRequest", () => {
     });
 
     test("parse: invalid JSON reports an error and empty items/serverStatus", () => {
-        var req = backend.fetchRequest(baseConfig());
-        var result = req.parse("not json");
+        var reqs = backend.fetchRequests(baseConfig());
+        var result = reqs[0].parse("not json");
         assert.deepEqual(result.items, []);
         assert.deepEqual(result.serverStatus, []);
         assert.equal(typeof result.error, "string");
     });
 
     test("parse: a Miniflux error_message payload reports the error and empty items", () => {
-        var req = backend.fetchRequest(baseConfig());
-        var result = req.parse(JSON.stringify({ error_message: "Invalid credentials" }));
+        var reqs = backend.fetchRequests(baseConfig());
+        var result = reqs[0].parse(JSON.stringify({ error_message: "Invalid credentials" }));
         assert.deepEqual(result.items, []);
         assert.deepEqual(result.serverStatus, []);
         assert.equal(result.error, "Miniflux: Invalid credentials");
+    });
+});
+
+// ─── MinifluxBackend.configState ───
+
+describe("MinifluxBackend.configState", () => {
+    var backend = createMinifluxBackend(deps);
+
+    test("no minifluxUrl -> unconfigured (matches the UI's !root.minifluxUrl branch)", () => {
+        assert.deepEqual(backend.configState({ minifluxUrl: "", minifluxToken: "tok" }), { ok: false, reason: "unconfigured" });
+        assert.deepEqual(backend.configState({}), { ok: false, reason: "unconfigured" });
+        assert.deepEqual(backend.configState(null), { ok: false, reason: "unconfigured" });
+    });
+
+    test("minifluxUrl set -> ok (the UI does not distinguish a missing token as its own empty state)", () => {
+        assert.deepEqual(backend.configState({ minifluxUrl: "https://mf.example.com", minifluxToken: "" }), { ok: true, reason: null });
+        assert.deepEqual(backend.configState({ minifluxUrl: "https://mf.example.com", minifluxToken: "tok" }), { ok: true, reason: null });
     });
 });
 
@@ -321,8 +408,8 @@ describe("SECURITY: token isolation in argv", () => {
         }
     }
 
-    test("fetchRequest isolates the token", () => {
-        assertTokenIsolated(backend.fetchRequest(config).argv);
+    test("fetchRequests isolates the token", () => {
+        assertTokenIsolated(backend.fetchRequests(config)[0].argv);
     });
 
     test("markReadRequest isolates the token", () => {
@@ -340,7 +427,7 @@ describe("SECURITY: token isolation in argv", () => {
     test("a token containing shell metacharacters is still a single opaque argv element", () => {
         var nasty = "abc$(rm -rf /);`echo pwned`;\" ' &";
         var nastyConfig = { minifluxUrl: "https://miniflux.example.com", minifluxToken: nasty, showStarred: false, maxItems: 20 };
-        var argv = backend.fetchRequest(nastyConfig).argv;
+        var argv = backend.fetchRequests(nastyConfig)[0].argv;
         assert.ok(Array.isArray(argv));
         assert.ok(argv.indexOf("X-Auth-Token: " + nasty) !== -1);
     });

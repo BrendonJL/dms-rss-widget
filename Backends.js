@@ -10,12 +10,14 @@
 // backend-interface-design.md.
 //
 // Everything here stays PURE: no Qt APIs, no I/O, no Date.now(), no
-// randomness. Request-descriptor functions (fetchRequest/markReadRequest/
-// markUnreadRequest/toggleStarRequest) never run curl themselves — they
-// return { argv, parse } (a full curl argv vector plus a pure function to
-// turn stdout into normalised items) or null when the call is a no-op for
-// that backend. QML alone is responsible for actually spawning `argv` and
-// handing the result to `parse`.
+// randomness. Request-descriptor functions never run curl themselves — they
+// return { argv, parse, meta, timeoutMs } (a full curl argv vector plus a
+// pure function to turn stdout into normalised items) or null/[] when the
+// call is a no-op for that backend. fetchRequests(config) returns an ARRAY
+// of descriptors (one per eligible feed for standard, at most one for
+// Miniflux); markReadRequest/markUnreadRequest/toggleStarRequest each still
+// return a single descriptor or null. QML alone is responsible for actually
+// spawning `argv` and handing the result to `parse`.
 //
 // DEPENDENCY INJECTION: this file has no way to `import`/`require` its
 // sibling shared modules (FeedParser.js, ReaderState.js) in a form both QML
@@ -75,8 +77,38 @@ function minifluxConfigReady(config) {
 // Direct feed fetching, local-only state. capabilities.serverState is
 // false and reconcile() is the identity function — there is no server to
 // reconcile against.
+function buildStandardFetchRequest(feed, FeedParser) {
+    var url = feed.url;
+    var name = feed.name || url;
+
+    return {
+        argv: [
+            "curl", "-sS",
+            "--connect-timeout", "5",
+            "--max-time", "10",
+            "-L",
+            "--proto", "=http,https",
+            "--proto-redir", "=http,https",
+            "--max-redirs", "5",
+            "--max-filesize", "5000000",
+            "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0",
+            url
+        ],
+        timeoutMs: null,
+        meta: { url: url, name: name },
+        parse: function (stdout) {
+            try {
+                return { items: FeedParser.parseFeed(stdout, name, url), serverStatus: [], error: null };
+            } catch (e) {
+                return { items: [], serverStatus: [], error: "Parse failed" };
+            }
+        }
+    };
+}
+
 function createStandardBackend(deps) {
     var FeedParser = deps && deps.FeedParser;
+    var ReaderState = deps && deps.ReaderState;
 
     return {
         id: "standard",
@@ -89,37 +121,30 @@ function createStandardBackend(deps) {
             fullText: false
         },
 
-        // config: { url, name } — one call per feed, matching fetchFeed's
-        // per-target Proc.runCommand invocation (DankRssWidget.qml:608-618).
-        fetchRequest: function (config) {
-            if (!config || !config.url)
-                return null;
+        // config: { feeds }. One descriptor per ELIGIBLE feed -- enabled
+        // (ReaderState.isFeedEnabled) and with a url -- in the same order
+        // fetchAllFeeds iterates today (DankRssWidget.qml:514-568).
+        // ReaderState.activeFeeds applies exactly that filter and preserves
+        // order, so it is reused rather than re-derived here.
+        fetchRequests: function (config) {
+            var feeds = (config && config.feeds) || [];
+            var active = ReaderState.activeFeeds(feeds);
+            var out = [];
+            for (var i = 0; i < active.length; i++)
+                out.push(buildStandardFetchRequest(active[i], FeedParser));
+            return out;
+        },
 
-            var url = config.url;
-            var name = config.name || url;
-
-            return {
-                argv: [
-                    "curl", "-sS",
-                    "--connect-timeout", "5",
-                    "--max-time", "10",
-                    "-L",
-                    "--proto", "=http,https",
-                    "--proto-redir", "=http,https",
-                    "--max-redirs", "5",
-                    "--max-filesize", "5000000",
-                    "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0",
-                    url
-                ],
-                timeoutMs: null,
-                parse: function (stdout) {
-                    try {
-                        return { items: FeedParser.parseFeed(stdout, name, url), serverStatus: [], error: null };
-                    } catch (e) {
-                        return { items: [], serverStatus: [], error: "Parse failed" };
-                    }
-                }
-            };
+        // config: { feeds }. Mirrors the empty-state branches
+        // (DankRssWidget.qml ~1727-1790): no feeds at all is distinct from
+        // feeds that exist but are all disabled (activeFeedCount === 0).
+        configState: function (config) {
+            var feeds = (config && config.feeds) || [];
+            if (feeds.length === 0)
+                return { ok: false, reason: "unconfigured" };
+            if (ReaderState.activeFeeds(feeds).length === 0)
+                return { ok: false, reason: "empty" };
+            return { ok: true, reason: null };
         },
 
         // No server-backed state in standard mode: read/unread/star are
@@ -163,10 +188,12 @@ function createMinifluxBackend(deps) {
 
         // config: { minifluxUrl, minifluxToken, showStarred, maxItems }.
         // Mirrors fetchMinifluxEntries's endpoint choice
-        // (DankRssWidget.qml:828-830) and minifluxApiCall's GET argv.
-        fetchRequest: function (config) {
+        // (DankRssWidget.qml:828-830) and minifluxApiCall's GET argv. Always
+        // a single-element array (one server, one request) or [] when the
+        // config isn't usable yet -- see the Stage 0b addendum.
+        fetchRequests: function (config) {
             if (!minifluxConfigReady(config))
-                return null;
+                return [];
 
             var endpoint = config.showStarred
                 ? "/v1/entries?starred=true&limit=" + config.maxItems + "&order=published_at&direction=desc"
@@ -174,9 +201,10 @@ function createMinifluxBackend(deps) {
 
             var minifluxUrl = config.minifluxUrl;
 
-            return {
+            return [{
                 argv: minifluxCurlArgv("GET", minifluxUrl, endpoint, config.minifluxToken, null),
                 timeoutMs: MINIFLUX_PROC_TIMEOUT_MS,
+                meta: null,
                 parse: function (stdout) {
                     var parsed = null;
                     var error = null;
@@ -199,7 +227,17 @@ function createMinifluxBackend(deps) {
 
                     return { items: result.items, serverStatus: result.serverStatus, error: error };
                 }
-            };
+            }];
+        },
+
+        // config: { minifluxUrl, ... }. Mirrors the UI's empty-state branch
+        // (DankRssWidget.qml ~1727-1790), which checks only !root.minifluxUrl
+        // -- a missing token is not its own distinct empty state today, so
+        // this deliberately does not invent one.
+        configState: function (config) {
+            if (!config || !config.minifluxUrl)
+                return { ok: false, reason: "unconfigured" };
+            return { ok: true, reason: null };
         },
 
         // Batched PUT /v1/entries, mirroring minifluxMarkRead/
