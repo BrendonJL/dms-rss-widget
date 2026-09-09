@@ -148,3 +148,86 @@ Both modes still work end to end: standard mode fetches and renders; Miniflux
 mode fetches, and mark-read / star round-trip to the server and survive a
 refresh. Switching modes still clears the other mode's view state
 (`DankRssWidget.qml:221`).
+
+---
+
+# Stage 0b addendum — wiring QML
+
+Written after 0a landed and the fetch orchestration was read properly.
+
+## Interface change: `fetchRequests` is plural
+
+`fetchRequest(config)` returning one descriptor does not survive contact with
+`fetchAllFeeds` (`DankRssWidget.qml:514-536`): standard mode issues **one request
+per enabled feed**, Miniflux issues **one total**. Singular forces QML to keep a
+`sourceMode` branch just to decide whether to loop — the exact branch this phase
+exists to delete.
+
+Replace it with `fetchRequests(config) -> [descriptor]`. Standard maps its
+enabled feeds to N descriptors; Miniflux returns a single-element array. QML
+loops over whatever it gets and never asks which backend it has.
+
+Each descriptor grows a `meta` field so the caller can attribute a response
+without knowing the backend: `meta: { url, name }` for standard (needed for the
+per-feed status rows), and `meta: null` for Miniflux.
+
+## What moves, and what deliberately stays in QML
+
+**Moves into `Backends.js`:** which URL, which method, which headers, which
+body, how to parse a response, what the backend can do, whether the current
+config is usable.
+
+**Stays in QML — orchestration and side effects, not backend decisions:**
+
+- `fetchGeneration` and the in-flight invalidation
+  (`DankRssWidget.qml:523-527`). Note the existing comment: the counter is
+  incremented *above* the mode branch on purpose so both paths share one
+  generation when the mode is toggled mid-flight. Preserve that ordering.
+- Per-feed status collection, sorting, `maxItems` capping, toasts,
+  notifications, and all `Proc` invocation.
+
+## New QML surface
+
+```qml
+readonly property var backends: Backends.createBackends({
+    FeedParser: FeedParser, ReaderState: ReaderState
+})
+readonly property var backend: root.backends[root.sourceMode] || root.backends.standard
+readonly property var backendConfig: ({ /* feeds, minifluxUrl, minifluxToken, maxItems, showStarred */ })
+
+// The ONLY place a descriptor becomes a process.
+function runRequest(req, cb) {
+    if (!req) { cb(null, null); return; }
+    Proc.runCommand(null, req.argv, function (out, code) { cb(out, code); },
+                    undefined, req.timeoutMs || undefined);
+}
+```
+
+`req.timeoutMs` must be honoured. Miniflux carries 30000 deliberately — longer
+than curl's own 25s `--max-time`, because otherwise a slow-but-fine request
+races Proc's default and surfaces a spurious failure toast.
+
+## Config validity replaces six more branches
+
+The empty-state branches (`DankRssWidget.qml` ~1727-1776) ask things like
+`sourceMode === "miniflux" && !minifluxUrl` or `sourceMode === "standard" &&
+feeds.length === 0`. Both are one question — "is this backend usable right
+now?" — so add to each backend:
+
+```js
+configState: function (config) { return { ok: bool, reason: "unconfigured" | "empty" | null }; }
+```
+
+The UI switches on `reason`, never on the backend id.
+
+## Verification
+
+- `node --test tests/*.test.js` — existing 308 plus new `fetchRequests` and
+  `configState` cases. Must stay green.
+- `tests/qml/run.sh` — extend `backends-di.qml`, or add a sibling, to exercise
+  `fetchRequests` and `runRequest`'s descriptor handling under a real engine.
+- `qmllint` parses `DankRssWidget.qml`.
+- Manual (Brendon): both modes fetch and render; Miniflux mark-read and star
+  still round-trip to the server and survive a refresh; switching modes still
+  clears the other mode's view state (`DankRssWidget.qml:221`); a feed that
+  fails still shows its per-feed error row.
