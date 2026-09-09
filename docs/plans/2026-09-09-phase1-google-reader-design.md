@@ -122,3 +122,59 @@ FreshRSS remains worth adding later as the independent check that this
 implementation is not accidentally Miniflux-specific — `stream/contents`
 returning `[]` is exactly the kind of per-server deviation that a single test
 server hides.
+
+---
+
+# Stage 1b addendum — the QML runner
+
+## Make the dangerous part testable instead of careful
+
+The chain arithmetic is the one place a mistake finalises a fetch on partial
+results, and it would live in `DankRssWidget.qml`, which cannot be executed.
+So do not put it there. Extract it into a pure module, `ChainRunner.js`,
+covered by `node --test` like everything else:
+
+```js
+createChain(descriptor, maxLinks)          -> chain
+chain.step(parsed)                         -> { action, request, items, serverStatus, error, session }
+```
+
+`action` is one of:
+
+- `"next"` — run `request`; the caller must NOT decrement its pending counter.
+- `"done"` — the chain produced `items`; decrement exactly once.
+- `"error"` — terminate with `error`; decrement exactly once.
+
+The invariant, stated so it can be tested: **`step` returns exactly one
+terminal result (`done` or `error`) per chain**, and a chain that exceeds
+`maxLinks` returns `error`, never `next`. QML then holds no arithmetic at all
+— it runs a request, hands the parse result to `step`, and does what it says.
+
+Tests must include: a 1-link chain; a 4-link chain (Google Reader's cold
+start); a chain that errors mid-way; a chain that exceeds the cap; and the
+property that no chain ever yields two terminal results.
+
+## Session lives in memory, not in plugin state
+
+Hold `{ authToken, postToken }` in a plain root property, **not** persisted.
+It is re-derivable with one `ClientLogin`, and persisting it would write a
+credential to disk for no benefit. Re-authenticating once per shell start is
+the correct trade.
+
+The session is threaded through as the second argument to every backend call,
+which is why all three backends now share that signature
+(`tests/backend-interface.test.js` enforces it).
+
+## Call sites
+
+`toggleStarRequest` now takes `currentlyStarred`. The widget already knows it:
+`root.bookmarkMap[id]`, read **before** the local toggle is applied, since
+after the toggle it reports the new state and Google Reader would send the
+wrong one of `a=` / `r=`.
+
+## Out of scope for 1b
+
+The settings UI. `DankRssWidgetSettings.qml` still offers only two source
+modes, so Google Reader is reachable in 1b only by hand-editing settings —
+which is enough to verify the runner. The third mode, its URL/username/password
+fields, and the capability-driven visibility rewrite are stage 1c.
