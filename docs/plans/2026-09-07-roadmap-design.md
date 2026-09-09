@@ -214,12 +214,46 @@ much stronger feature set than it would alone.
 
 Phase 6 runs in parallel throughout — it is the contributor on-ramp.
 
-## Open questions
+## Decisions (2026-09-08)
 
-Listed in the handoff; recorded here so the doc stands alone.
+1. **The reader app ships in this repo, as a second connected plugin.** Shares
+   `ExportProvider.js`/`FeedParser.js` directly rather than duplicating them, and
+   one registry listing covers both.
 
-1. Reader app as a second plugin in this repo, or a separate repo?
-2. Where do annotations live — plugin state, or markdown files in the vault as
-   the source of truth?
-3. Is Phase 1 worth building without a non-Miniflux server to test against?
-4. Does the AI config belong per-widget-instance or global?
+2. **Opening an article: a default plus a permanent escape hatch, not a toggle.**
+   A setting picks what a plain click does (reader app / browser), but the other
+   is always reachable on the item — middle-click and a context action. A pure
+   either/or setting fails badly on the cases the reader cannot serve: paywalls,
+   heavy JS, video, anything needing a logged-in session. Users would have to
+   visit settings to escape, so they would leave it on "browser" and the reader
+   would go unused.
+
+3. **Annotations live in plugin state; markdown is an export, not the store.**
+   Anchors are structured (`exactQuote`, `prefixContext`, `suffixContext`) and
+   round-tripping them through a user-editable markdown file means parsing our
+   own bookkeeping back out of prose someone may have reflowed. Plugin state is
+   the source of truth; Phase 4 writes a derived note. A hand-edited exported
+   note is a copy, and we never read it back.
+
+4. **Phase 1 gets a real FreshRSS instance to test against.** Brendon has no
+   non-Miniflux server today and will stand one up. Google Reader support tested
+   only against Miniflux is a coin flip on every other backend, so this is a
+   prerequisite for Phase 1, not a nice-to-have.
+
+5. **AI config splits by kind: connection global, features per-instance.**
+   Base URL, model and API key are set once — nobody wants to retype the ollama
+   endpoint into three widget instances, and a typo in one is a confusing
+   partial failure. Which *features* are on (summaries, digest, ranking) is
+   per-instance, so a small ticker widget can stay dumb while a large one
+   summarises. This was raised as "per widget"; the split is the refinement.
+
+6. **`ollama.service` exists** (user unit, enabled, `library=CUDA compute=7.5`
+   verified). It runs the `~/.local/bin/ollama` **wrapper**, not the Nix binary
+   — the wrapper is the CUDA `LD_LIBRARY_PATH` fix and ollama falls back to CPU
+   silently without it.
+
+7. **Phase 0 (backend interface) is next**, ahead of keyboard navigation.
+
+8. **Evernote and Fever stay "not planned"** as written. Revisit only if someone
+   asks.
+
