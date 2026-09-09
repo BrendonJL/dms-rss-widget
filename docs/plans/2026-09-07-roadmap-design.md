@@ -220,13 +220,24 @@ Phase 6 runs in parallel throughout — it is the contributor on-ramp.
    `ExportProvider.js`/`FeedParser.js` directly rather than duplicating them, and
    one registry listing covers both.
 
-2. **Opening an article: a default plus a permanent escape hatch, not a toggle.**
-   A setting picks what a plain click does (reader app / browser), but the other
-   is always reachable on the item — middle-click and a context action. A pure
-   either/or setting fails badly on the cases the reader cannot serve: paywalls,
-   heavy JS, video, anything needing a logged-in session. Users would have to
-   visit settings to escape, so they would leave it on "browser" and the reader
-   would go unused.
+2. **Opening an article: a default plus a right-click escape hatch.**
+   A setting picks what a plain click does (reader app / browser); **right-click
+   opens a small context menu** offering the other, plus related per-item actions
+   (copy link, mark unread, send to notes). Not a bare toggle: that fails on
+   exactly the articles the reader cannot serve — paywalls, heavy JS, video,
+   anything needing a logged-in session — and if escaping means a trip to
+   settings, people leave it on "browser" and the reader goes unused.
+
+   **Implementation note (verified 2026-09-08):** DMS ships **no reusable
+   context-menu component**. `DankCommon/Widgets/` has 44 components and none is
+   a menu; every context menu in the shell (`Modals/Clipboard/`,
+   `Modals/FileBrowser/`, `Modules/ProcessList/`) is bespoke and lives outside
+   the `qs.Widgets` / `qs.Common` / `qs.Services` import surface a plugin gets.
+   So this must be hand-rolled. On a layer-shell surface a menu also cannot
+   overflow the widget's own bounds without becoming its own surface — budget
+   for "menu drawn inside the widget, flipped to stay in bounds," not a free
+   floating popup. Item rows currently set no `acceptedButtons`, so they take
+   left-click only and will need widening.
 
 3. **Annotations live in plugin state; markdown is an export, not the store.**
    Anchors are structured (`exactQuote`, `prefixContext`, `suffixContext`) and
