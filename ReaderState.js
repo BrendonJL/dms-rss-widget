@@ -388,8 +388,25 @@ function countSelected(selectedMap) {
     return Object.keys(selectedMap).filter(function (k) { return selectedMap[k]; }).length;
 }
 
-// Drop any selected id whose item is no longer in `items` (S10) — keeps
-// selectedCount from ever exceeding what's currently visible.
+// Count how many selected ids are present in `items` (the intersection).
+// Used to render the "N hidden" portion of the selection count once
+// selection is allowed to exceed the visible/filtered set.
+function countSelectedIn(selectedMap, items) {
+    if (!selectedMap) return 0;
+    var present = buildIdMap((items || []).map(function (i) { return i ? i.id : ""; }));
+    var count = 0;
+    for (var k in selectedMap) {
+        if (selectedMap[k] && present[k]) {
+            count++;
+        }
+    }
+    return count;
+}
+
+// Drop any selected id whose item has left the dataset entirely (S10). The
+// caller passes the full dataset, not the filtered/visible view — selection
+// is intentionally allowed to exceed what's on screen (search, filter chips)
+// and is only cleared for an id when a refresh evicts it from `items`.
 function pruneSelected(selectedMap, items) {
     if (!selectedMap) return {};
     var present = buildIdMap((items || []).map(function (i) { return i ? i.id : ""; }));
@@ -532,6 +549,7 @@ if (typeof module !== "undefined" && module.exports) {
         toggleSelected: toggleSelected,
         clearSelection: clearSelection,
         countSelected: countSelected,
+        countSelectedIn: countSelectedIn,
         pruneSelected: pruneSelected,
         addAllBookmarked: addAllBookmarked,
         reconcileServerStatus: reconcileServerStatus

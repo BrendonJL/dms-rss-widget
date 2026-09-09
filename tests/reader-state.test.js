@@ -520,6 +520,54 @@ describe("selection", () => {
         assert.deepStrictEqual(R.pruneSelected({}, [{ id: "a" }]), {});
         assert.deepStrictEqual(R.pruneSelected(null, [{ id: "a" }]), {});
     });
+
+    test("pruneSelected keeps an id present in the dataset but absent from a filtered view", () => {
+        const allItems = [{ id: "a" }, { id: "b" }, { id: "c" }];
+        const filteredView = [{ id: "b" }];
+        const out = R.pruneSelected({ a: true, b: true, c: true }, allItems);
+        assert.deepStrictEqual(out, { a: true, b: true, c: true });
+        // Sanity check: the same ids would have been dropped against the filtered view.
+        assert.deepStrictEqual(R.pruneSelected({ a: true, b: true, c: true }, filteredView), { b: true });
+    });
+
+    test("pruneSelected still drops an id absent from the dataset entirely", () => {
+        const allItems = [{ id: "a" }, { id: "c" }];
+        const out = R.pruneSelected({ a: true, b: true, c: true }, allItems);
+        assert.deepStrictEqual(out, { a: true, c: true });
+    });
+
+    test("countSelectedIn returns the size of the intersection", () => {
+        const items = [{ id: "a" }, { id: "b" }, { id: "c" }];
+        assert.strictEqual(R.countSelectedIn({ a: true, b: true }, items), 2);
+        assert.strictEqual(R.countSelectedIn({ a: true, z: true }, items), 1);
+    });
+
+    test("countSelectedIn returns 0 for an empty or null map", () => {
+        const items = [{ id: "a" }];
+        assert.strictEqual(R.countSelectedIn({}, items), 0);
+        assert.strictEqual(R.countSelectedIn(null, items), 0);
+    });
+
+    test("countSelectedIn ignores keys whose value is falsy", () => {
+        const items = [{ id: "a" }, { id: "b" }];
+        assert.strictEqual(R.countSelectedIn({ a: true, b: false }, items), 1);
+    });
+
+    test("selection survives a filter round-trip: select, filter down, restore", () => {
+        const allItems = [{ id: "a" }, { id: "b" }, { id: "c" }];
+        let selectedMap = {};
+        selectedMap = R.toggleSelected(selectedMap, "a");
+        selectedMap = R.toggleSelected(selectedMap, "b");
+        selectedMap = R.toggleSelected(selectedMap, "c");
+
+        const filteredView = [{ id: "b" }];
+        selectedMap = R.pruneSelected(selectedMap, allItems);
+        assert.strictEqual(R.countSelectedIn(selectedMap, filteredView), 1);
+        assert.strictEqual(R.countSelected(selectedMap), 3);
+
+        selectedMap = R.pruneSelected(selectedMap, allItems);
+        assert.strictEqual(R.countSelected(selectedMap), 3);
+    });
 });
 
 describe("addAllBookmarked", () => {
