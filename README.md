@@ -41,20 +41,23 @@ the best place to start.
 - Search focus and search-during-selection fixes — [design](docs/plans/2026-09-07-search-fixes-design.md) — merged
 - **Phase 0**, backend provider interface — [design](docs/plans/2026-09-08-phase0-backend-interface-design.md). Every `sourceMode` branch in the widget is gone (17 → 0), leaving one dispatch point. Backends are plain objects in `Backends.js` exposing `capabilities` and request descriptors; QML runs the process and owns nothing else.
 - **Phase 3a**, `AiProvider.js` — [design](docs/plans/2026-09-08-phase3-ai-provider-design.md). The client for any OpenAI-compatible runtime. No UI yet.
+- **Phase 4a**, `ExportProvider.js` — [design](docs/plans/2026-09-08-phase4-export-provider-design.md). Builds the note path and markdown for the notes providers. No UI yet.
+- Two real Miniflux bugs, both shipped in 2.3.3: mark-as-read never reached the server (`entry_ids` must be `int64`, the widget sent strings), and every API error was silently discarded because `curl` exits 0 on an HTTP 400.
 
 **In progress**
 
-- Phase 1 (Google Reader) is next, blocked on standing up a FreshRSS instance to test against.
+- **Phase 1**, Google Reader API — [design](docs/plans/2026-09-09-phase1-google-reader-design.md). Protocol probed against a live server; needs an additive interface change, since the fetch is a chain rather than a set of independent requests.
+
 
 **Planned** — [full roadmap design](docs/plans/2026-09-07-roadmap-design.md)
 
 | Phase | Work | Depends on |
 |---|---|---|
 | 0 | ✅ Backend provider interface — replaces the inline `sourceMode` branches | — |
-| 1 | Google Reader API backend (FreshRSS, TT-RSS, Inoreader, TheOldReader, BazQux, Miniflux) | 0 |
+| 1 | 🟡 Google Reader API backend (FreshRSS, TT-RSS, Inoreader, TheOldReader, BazQux, Miniflux) | 0 |
 | 2 | Keyboard navigation (`j`/`k`/`o`/`m`/`s`, `/` to search) | search fixes |
 | 3 | 🟡 Local AI via any OpenAI-compatible runtime (ollama, vLLM, llama.cpp, LM Studio): per-article TL;DR, daily digest, interest ranking | 0 |
-| 4 | Notes/export provider: markdown directory, Obsidian, Neovim | — |
+| 4 | 🟡 Notes/export provider: markdown directory, Obsidian, Neovim | — |
 | 5 | Reader + annotation app — a standalone window for reading, highlighting and note-taking | 3, 4 |
 | 6 | Independent smaller items — see below | — |
 
@@ -214,6 +217,28 @@ Splitting `ReaderState.js` out is what makes the trickiest rules testable withou
 These files deliberately have **no `.pragma library` line**. That directive is required for QML-only JS modules in some contexts, but it is not valid JavaScript, and `require()` in Node fails on it immediately. Do not add it back — doing so breaks the test suite without breaking the widget, which makes the failure easy to miss.
 
 Exports are guarded with `if (typeof module !== "undefined" && module.exports) { ... }`, so the same file behaves as a plain QML-imported script inside DMS and as a CommonJS module under Node.
+
+## Local development
+
+`install.sh` symlinks the repo into `~/.config/DankMaterialShell/plugins/`, so
+**the branch you have checked out is the widget DMS loads**. `dms restart` picks
+up changes; there is no plugin hot-reload.
+
+Tests:
+
+    node --test tests/*.test.js     # the shared JS modules
+    ./tests/qml/run.sh              # QML smoke tests, headless
+
+`tests/qml/run.sh` needs `QT_QPA_PLATFORM=offscreen` **and** `QML2_IMPORT_PATH`;
+without the latter the `qml` tool prints only "Did not load any objects" and no
+error, which is why this project long assumed QML could not be tested at all.
+
+`tests/live-miniflux.js` and `tests/live-greader.js` are **not** `*.test.js` on
+purpose — they need a real Miniflux server and would fail in CI. Run them by
+hand against a local instance. They exist because they catch what unit tests
+structurally cannot: a request whose argv is perfectly well-formed and which
+the *server* rejects. Both Miniflux bugs fixed in this cycle were found that
+way and were invisible to 400 passing unit tests.
 
 ## Testing
 
