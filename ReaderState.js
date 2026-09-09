@@ -304,12 +304,42 @@ function filterItems(items, options) {
 
 // Classify one finished curl attempt into a CONTRACT 6 state.
 // `exitCode` 124 is what Proc.runCommand synthesizes on its own timeout.
+
+// Human-readable curl failures. "curl exit 6" is accurate and useless to the
+// person reading it in the settings panel; every one of these is a thing the
+// user can act on (fix a typo, start the server, check the certificate).
+// The numeric code is kept in parentheses so a bug report is still diagnosable.
+//
+// Codes are curl's documented exit statuses. 22 arrives via --fail-with-body,
+// which is what makes an HTTP 4xx/5xx a nonzero exit at all -- without it
+// those returned 0 and were silently treated as success.
+var CURL_EXIT_MESSAGES = {
+    1: "Unsupported protocol",
+    3: "Malformed URL",
+    5: "Could not resolve proxy",
+    6: "Could not resolve host",
+    7: "Could not connect to server",
+    22: "Server returned an error",
+    23: "Write error",
+    28: "Timed out",
+    35: "TLS handshake failed",
+    47: "Too many redirects",
+    52: "Empty reply from server",
+    56: "Connection lost while receiving",
+    60: "Certificate could not be verified",
+    63: "Response exceeded the size limit"
+};
+
+function curlExitMessage(exitCode) {
+    var known = CURL_EXIT_MESSAGES[exitCode];
+    return known ? known + " (curl " + exitCode + ")" : "Fetch failed (curl " + exitCode + ")";
+}
 function classifyFetch(exitCode, output, parsedCount) {
     if (exitCode === 124) {
         return { state: "timeout", lastError: "Timed out" };
     }
     if (exitCode !== 0) {
-        return { state: "error", lastError: "curl exit " + exitCode };
+        return { state: "error", lastError: curlExitMessage(exitCode) };
     }
     if (!output || output.trim().length === 0) {
         return { state: "error", lastError: "Empty response" };
@@ -542,6 +572,7 @@ if (typeof module !== "undefined" && module.exports) {
         matchesQuery: matchesQuery,
         filterItems: filterItems,
         classifyFetch: classifyFetch,
+        curlExitMessage: curlExitMessage,
         isFeedEnabled: isFeedEnabled,
         activeFeeds: activeFeeds,
         feedOrderMap: feedOrderMap,

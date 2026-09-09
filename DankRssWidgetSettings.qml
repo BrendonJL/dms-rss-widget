@@ -108,6 +108,24 @@ PluginSettings {
         }
     }
 
+
+    // The status list is a SNAPSHOT read from the state tier, and the widget
+    // writes that tier from a different component whenever a fetch finalises.
+    // Refreshing only on open meant a feed added while this panel was already
+    // open kept reading "Not fetched yet" forever, even after the widget had
+    // fetched it and recorded a real error -- the status row existed on disk,
+    // this copy just never re-read it.
+    //
+    // Polling rather than reacting because the state tier offers no change
+    // notification. Cheap: one small JSON read, and only while visible.
+    Timer {
+        id: statusPoll
+        interval: 3000
+        repeat: true
+        running: root.visible
+        onTriggered: root.refreshFeedStatuses()
+    }
+
     // --- Header ---
     StyledText {
         width: parent.width
