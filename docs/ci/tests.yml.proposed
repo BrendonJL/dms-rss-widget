@@ -1,0 +1,101 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # Note the glob: `node --test tests/` (directory form) fails on Node 24.
+      - run: node --test tests/*.test.js
+
+  manifest:
+    name: manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: plugin.json is valid JSON with the required fields
+        run: |
+          jq -e '.id and .name and .version and .component and .type' plugin.json > /dev/null
+
+      # The DMS registry crawls version/author straight out of plugin.json, so a
+      # bumped manifest with no changelog entry ships a version nobody can read
+      # about -- and an unbumped manifest ships changes the registry never shows.
+      - name: version has a changelog entry
+        run: |
+          v=$(jq -r .version plugin.json)
+          echo "plugin.json version: $v"
+          grep -qF "### $v" README.md || {
+            echo "::error file=README.md::No '### $v' section in the README changelog"
+            exit 1
+          }
+
+      # The shared JS modules are require()d by the Node tests, so a stray
+      # .pragma library line breaks the suite without breaking the widget.
+      # GLOB, not a filename list: this check silently stopped covering
+      # Backends.js the day that file was added.
+      - name: no .pragma library in the shared JS modules
+        run: |
+          if grep -n '^\s*\.pragma' ./*.js; then
+            echo "::error::.pragma library breaks require() in the test suite"
+            exit 1
+          fi
+
+  # QML has had no automated checking at all -- a syntax error in ~3000 lines
+  # currently ships. qmllint cannot resolve the qs.* / Quickshell imports (the
+  # DMS shell is not present in CI), so it emits a wall of import and
+  # "unqualified access" warnings. Those are expected and NOT failures: qmllint
+  # exits 0 on warnings and nonzero only on a genuine parse error, which is
+  # exactly the signal worth gating on. Verified locally: both files exit 0.
+  qmllint:
+    name: qmllint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install qmllint
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qt6-declarative-dev-tools
+
+      - name: locate qmllint
+        id: find
+        run: |
+          bin=$(command -v qmllint || true)
+          [ -n "$bin" ] || bin=$(ls /usr/lib/qt6/bin/qmllint 2>/dev/null || true)
+          [ -n "$bin" ] || bin=$(find /usr -name qmllint -type f -perm -u+x 2>/dev/null | head -1)
+          if [ -z "$bin" ]; then
+            echo "::error::qmllint not found after installing qt6-declarative-dev-tools"
+            exit 1
+          fi
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
+          "$bin" --version
+
+      - name: lint QML
+        run: |
+          status=0
+          for f in *.qml tests/qml/*.qml; do
+            [ -e "$f" ] || continue
+            if ! "${{ steps.find.outputs.bin }}" "$f" > /tmp/out.txt 2>&1; then
+              echo "::error file=$f::qmllint failed"
+              cat /tmp/out.txt
+              status=1
+            fi
+          done
+          exit $status
