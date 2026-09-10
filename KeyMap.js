@@ -26,6 +26,7 @@ var Key_M = 0x4d;
 var Key_S = 0x53;
 var Key_Space = 0x20;
 var Key_Slash = 0x2f;
+var Key_Question = 0x3f;
 var Key_Escape = 0x01000000;
 var Key_Return = 0x01000004;
 var Key_Enter = 0x01000005;
@@ -134,6 +135,12 @@ function resolveKey(event, state) {
 
     // --- cursor-independent actions: valid even with no cursor ---
 
+    // "?" (Shift+/) opens the bindings help overlay. Checked before the plain
+    // "/" case below, since some platforms report Shift+/ as Key_Slash with
+    // the shift modifier set rather than a distinct Key_Question.
+    if (key === Key_Question || (key === Key_Slash && shift))
+        return act("toggleHelp", index);
+
     if (key === Key_Slash)
         return act("focusSearch", index);
 
@@ -180,6 +187,7 @@ if (typeof module !== "undefined" && module.exports) {
         Key_S: Key_S,
         Key_Space: Key_Space,
         Key_Slash: Key_Slash,
+        Key_Question: Key_Question,
         Key_Escape: Key_Escape,
         Key_Return: Key_Return,
         Key_Enter: Key_Enter,

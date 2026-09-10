@@ -259,6 +259,16 @@ describe("search focus swallows printable keys", () => {
         var r = resolveKey(evt(KeyMap.Key_Slash), baseState({ searchActive: true, index: 1 }));
         assert.equal(r.action, null);
     });
+
+    test("? while search is active is unhandled -- must insert a literal character", () => {
+        var r = resolveKey(evt(KeyMap.Key_Question), baseState({ searchActive: true, index: 1 }));
+        assert.equal(r.action, null);
+    });
+
+    test("Shift+/ while search is active is unhandled -- must insert a literal character", () => {
+        var r = resolveKey(evt(KeyMap.Key_Slash, KeyMap.ShiftModifier), baseState({ searchActive: true, index: 1 }));
+        assert.equal(r.action, null);
+    });
 });
 
 // ─── Simple one-shot bindings ───
@@ -288,6 +298,26 @@ describe("one-shot bindings", () => {
     test("a without shift does nothing -- only capital A is bound", () => {
         var r = resolveKey(evt(KeyMap.Key_A), baseState({ index: 1 }));
         assert.equal(r.action, null);
+    });
+
+    test("? (Key_Question) toggles the help overlay", () => {
+        var r = resolveKey(evt(KeyMap.Key_Question), baseState({ index: 1 }));
+        assert.equal(r.action, "toggleHelp");
+    });
+
+    test("Shift+/ also toggles the help overlay", () => {
+        var r = resolveKey(evt(KeyMap.Key_Slash, KeyMap.ShiftModifier), baseState({ index: 1 }));
+        assert.equal(r.action, "toggleHelp");
+    });
+
+    test("? toggles help at rest -- cursor-independent", () => {
+        var r = resolveKey(evt(KeyMap.Key_Question), baseState({ index: -1 }));
+        assert.equal(r.action, "toggleHelp");
+    });
+
+    test("? toggles help on an empty list", () => {
+        var r = resolveKey(evt(KeyMap.Key_Question), baseState({ index: -1, count: 0 }));
+        assert.equal(r.action, "toggleHelp");
     });
 
     test("m toggles read", () => {

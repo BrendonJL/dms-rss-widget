@@ -163,6 +163,9 @@ DesktopPluginComponent {
     property var pending: null
     property var pendingAt: 0
 
+    // Bindings help overlay, toggled by "?" (KeyMap's "toggleHelp" action).
+    property bool helpVisible: false
+
     // Read tracking, keyed by stable item id. `readMap` is replaced (not mutated)
     // so QML property-change notification fires; `readOrder` keeps newest-first
     // insertion order so the persisted list can be bounded predictably.
@@ -183,6 +186,20 @@ DesktopPluginComponent {
     // is irrelevant.
     property var selectedMap: ({})
     readonly property int selectedCount: ReaderState.countSelected(root.selectedMap)
+
+    // Mirrors markAllRect.allRead: drives the selection bar's mark-read
+    // button flipping to "Mark unread" once every selected item is already
+    // read, same as the header does for the whole feed.
+    readonly property bool selectedAllRead: {
+        var ids = Object.keys(root.selectedMap);
+        if (ids.length === 0)
+            return false;
+        for (var i = 0; i < ids.length; i++) {
+            if (!root.readMap[ids[i]])
+                return false;
+        }
+        return true;
+    }
 
     // The visible set applyFilter last built, cached so the selection bar can
     // ask "how many selected items are off-screen right now?" without redoing
@@ -520,6 +537,17 @@ DesktopPluginComponent {
     }
 
     function handleKeyEvent(event) {
+        // The help overlay is QML-only state that KeyMap knows nothing
+        // about, so plain Esc closing it has to be handled here, ahead of
+        // resolveKey's own search/selection/cursor layering. "?" itself
+        // still reaches resolveKey below, since toggling it back closed is
+        // just another "toggleHelp".
+        if (root.helpVisible && event.key === KeyMap.Key_Escape) {
+            root.helpVisible = false;
+            event.accepted = true;
+            return;
+        }
+
         var result = KeyMap.resolveKey(event, root.buildKeyState());
 
         // resolveKey cannot stamp its own timestamp (see KeyMap.js's header
@@ -587,6 +615,9 @@ DesktopPluginComponent {
             if (root.filterMode === "unread")
                 root.applyFilter();
             break;
+        case "toggleHelp":
+            root.helpVisible = !root.helpVisible;
+            break;
         }
     }
 
@@ -624,6 +655,32 @@ DesktopPluginComponent {
         root.runRequest(root.backend.markReadRequest(root.backendConfig, root.backendSession, numIds), function (output, code) {
             if (code !== null && code !== 0)
                 root.toastError("Failed to mark as read");
+        });
+
+        root.clearSelection();
+        if (root.filterMode === "unread")
+            root.applyFilter();
+    }
+
+    function bulkMarkUnreadSelected() {
+        var ids = Object.keys(root.selectedMap);
+        if (ids.length === 0)
+            return;
+        root.readOrder = ReaderState.removeAllRead(root.readOrder, ids);
+        root.readMap = ReaderState.buildIdMap(root.readOrder);
+        root.saveReadState();
+
+        // Same batched-push pattern as bulkMarkReadSelected, mirrored for
+        // the unread direction.
+        var numIds = [];
+        for (var i = 0; i < ids.length; i++) {
+            var numId = root.backendItemId(ids[i]);
+            if (numId)
+                numIds.push(numId);
+        }
+        root.runRequest(root.backend.markUnreadRequest(root.backendConfig, root.backendSession, numIds), function (output, code) {
+            if (code !== null && code !== 0)
+                root.toastError("Failed to mark as unread");
         });
 
         root.clearSelection();
@@ -1479,8 +1536,12 @@ DesktopPluginComponent {
                     }
                 }
 
-                // Mark read -- additive only, never marks unread.
+                // Mark read/unread -- flips label and action based on
+                // whether every selected item is already read, same as
+                // markAllRect does for the whole feed.
                 Rectangle {
+                    id: markReadRect
+
                     Layout.preferredWidth: markReadRow.implicitWidth + Theme.spacingS * 2
                     Layout.minimumWidth: 22 + Theme.spacingS * 2
                     height: 22
@@ -1493,14 +1554,14 @@ DesktopPluginComponent {
                         spacing: Theme.spacingXS
 
                         DankIcon {
-                            name: "mark_email_read"
+                            name: root.selectedAllRead ? "mark_email_unread" : "mark_email_read"
                             size: 14
                             color: markReadArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
                         }
 
                         StyledText {
                             visible: root.widgetWidth >= 300
-                            text: "Mark read"
+                            text: root.selectedAllRead ? "Mark unread" : "Mark read"
                             font.pixelSize: root.fontSize - 2
                             color: markReadArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
                         }
@@ -1511,7 +1572,7 @@ DesktopPluginComponent {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: root.bulkMarkReadSelected()
+                        onClicked: root.selectedAllRead ? root.bulkMarkUnreadSelected() : root.bulkMarkReadSelected()
                     }
                 }
 
@@ -1571,6 +1632,17 @@ DesktopPluginComponent {
                         forceActiveFocus();
                         Qt.callLater(forceActiveFocus);
                     }
+                }
+
+                // While this field has Qt focus, key events go to it, not to
+                // keyboardScope's Keys.onPressed -- so KeyMap's Esc-while-
+                // searching handling never gets the chance to run. Handle Esc
+                // here instead, reusing the same closeSearch() the keyboard
+                // path calls, and hand focus back so j/k work immediately
+                // without another click.
+                Keys.onEscapePressed: {
+                    root.closeSearch();
+                    keyboardScope.forceActiveFocus();
                 }
             }
 
@@ -2009,6 +2081,154 @@ DesktopPluginComponent {
 
                 Item {
                     Layout.fillHeight: true
+                }
+            }
+        }
+
+        // --- Keyboard bindings help overlay ---
+        // Discoverability only, for j/k/o/Enter/m/s/etc, none of which are
+        // shown anywhere else in the UI. Toggled by KeyMap's "toggleHelp"
+        // action ("?" or Shift+/); closing on plain Esc is handled directly
+        // in handleKeyEvent since KeyMap's own Esc layering (search/
+        // selection/cursor) knows nothing about this QML-only flag. Sits
+        // on top of everything else but never takes focus -- keyboardScope
+        // keeps activeFocus, so every other binding keeps working while
+        // this is open.
+        Rectangle {
+            anchors.fill: parent
+            visible: root.helpVisible
+            color: Theme.withAlpha(Theme.surfaceContainer, 0.96)
+            radius: Theme.cornerRadius
+            z: 100
+
+            MouseArea {
+                // Absorbs clicks so they don't fall through to the list
+                // underneath; does not take keyboard focus.
+                anchors.fill: parent
+                onClicked: root.helpVisible = false
+            }
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: Theme.spacingM
+                spacing: Theme.spacingS
+
+                RowLayout {
+                    Layout.fillWidth: true
+
+                    StyledText {
+                        text: "Keyboard shortcuts"
+                        font.pixelSize: root.fontSize
+                        font.bold: true
+                        color: Theme.surfaceText
+                        Layout.fillWidth: true
+                    }
+
+                    DankActionButton {
+                        iconName: "close"
+                        iconSize: 14
+                        buttonSize: 22
+                        Layout.preferredWidth: 22
+                        Layout.preferredHeight: 22
+                        onClicked: root.helpVisible = false
+                    }
+                }
+
+                // Scrollable rather than relying on the overlay always
+                // having room: a small widget height must not clip the
+                // bottom rows off-screen with no way to reach them.
+                Flickable {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    contentWidth: width
+                    contentHeight: helpColumn.implicitHeight
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    ColumnLayout {
+                        id: helpColumn
+                        width: parent.width
+                        spacing: Theme.spacingXS
+
+                        Repeater {
+                            model: [
+                                {
+                                    keys: ["j", "k"],
+                                    desc: "Move cursor down / up"
+                                },
+                                {
+                                    keys: ["o", "Enter"],
+                                    desc: "Open item"
+                                },
+                                {
+                                    keys: ["m"],
+                                    desc: "Toggle read / unread"
+                                },
+                                {
+                                    keys: ["s"],
+                                    desc: "Toggle star"
+                                },
+                                {
+                                    keys: ["Space"],
+                                    desc: "Toggle selection"
+                                },
+                                {
+                                    keys: ["g", "g"],
+                                    desc: "Jump to first item"
+                                },
+                                {
+                                    keys: ["G"],
+                                    desc: "Jump to last item"
+                                },
+                                {
+                                    keys: ["/"],
+                                    desc: "Focus search"
+                                },
+                                {
+                                    keys: ["Esc"],
+                                    desc: "Close search, clear selection, or clear cursor"
+                                },
+                                {
+                                    keys: ["r"],
+                                    desc: "Refresh feeds"
+                                },
+                                {
+                                    keys: ["A"],
+                                    desc: "Mark all read / unread"
+                                },
+                                {
+                                    keys: ["?"],
+                                    desc: "Toggle this help"
+                                }
+                            ]
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Theme.spacingXS
+
+                                RowLayout {
+                                    spacing: 2
+                                    Layout.preferredWidth: 64
+
+                                    Repeater {
+                                        model: modelData.keys
+
+                                        DankKeycap {
+                                            text: modelData
+                                        }
+                                    }
+                                }
+
+                                StyledText {
+                                    text: modelData.desc
+                                    font.pixelSize: root.fontSize - 2
+                                    color: Theme.surfaceVariantText
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
