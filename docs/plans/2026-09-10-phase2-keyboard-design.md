@@ -62,8 +62,12 @@ A `currentIndex` on the ListView, `-1` when nothing is focused (the state after
 `Esc`, and the initial state — the widget must not open an article because the
 user pressed Enter at a freshly-clicked widget).
 
-Keys act on `currentIndex`; when it is `-1`, `j` moves to 0 and every other
-action is a no-op rather than acting on an arbitrary row.
+Keys act on `currentIndex`. When it is `-1`, only **row** actions are blocked --
+open, toggle read, toggle star, toggle select -- since those would otherwise act
+on an arbitrary item. `j` moves to 0, `G` and `g g` place the cursor (blocking
+them would leave no keyboard route into the list at all), and the
+cursor-independent actions `/`, `r` and `A` work normally. Gating everything
+would mean a widget you just clicked ignores almost every key.
 
 `positionViewAtIndex(currentIndex, ListView.Contain)` after every move, so the
 cursor never leaves the viewport.
