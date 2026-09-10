@@ -26,7 +26,7 @@ work, since ClientLogin succeeding only proves the *server* is reachable.
 
 ### 2. The visibility checks become capability-driven
 
-`DankRssWidgetSettings.qml` carries roughly 40 comparisons of the form
+`DankRssWidgetSettings.qml` carries 17 comparisons of the form
 `sourceModeSetting.value === "miniflux"` / `=== "standard"`. That is the same
 pattern Phase 0 removed from the widget, still living here because settings
 was scoped out. A third mode makes it actively wrong: every
@@ -47,7 +47,6 @@ Then:
 | Section | Was | Becomes |
 |---|---|---|
 | Feed Management, OPML Import, Quick Add | `=== "standard"` | `!currentBackend.capabilities.serverState` |
-| Sort/group by feed | `=== "standard"` | `!currentBackend.capabilities.serverState` |
 | Subscription list (read-only) | `=== "miniflux"` | `currentBackend.capabilities.serverState` |
 
 **Connection sections stay keyed on the mode**, and that is correct rather
@@ -87,3 +86,16 @@ verified by:
 Per-instance AI feature toggles (Phase 3) and the notes-export settings
 (Phase 4) both want settings UI too. They are separate stages; this one adds
 a source mode and stops.
+
+---
+
+> **Implemented 2026-09-09.** 17 comparisons → 13. The 13 survivors are all
+> Connection-section fields, which is the intended end state.
+>
+> Two corrections to this doc, made after the fact: the "~40 comparisons"
+> figure above was an estimate and wrong — `grep` said 17. And the table
+> originally listed a "sort/group by feed" row that does not exist; the only
+> sort-related visibility check keys on `sortModeSetting`, not on the source
+> mode. Both are recorded rather than quietly edited, because a design doc
+> that silently acquires accuracy it never had is worse than one with a
+> correction on it.

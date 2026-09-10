@@ -7,6 +7,8 @@ import qs.Widgets
 import qs.Modules.Plugins
 import "FeedParser.js" as FeedParser
 import "ReaderState.js" as ReaderState
+import "Backends.js" as Backends
+import "GoogleReader.js" as GoogleReader
 
 PluginSettings {
     id: root
@@ -50,6 +52,56 @@ PluginSettings {
         );
     }
 
+    // ClientLogin succeeding only proves the server is reachable and the
+    // request was well-formed -- it says nothing about whether the
+    // username/password are actually valid Google Reader integration
+    // credentials, since Miniflux's own ClientLogin implementation accepts
+    // and rejects those independently of the /reader/api/0/* endpoints. So
+    // this runs the real two-step chain: ClientLogin for an auth token, then
+    // an authenticated user-info call, and only a 200 there counts as
+    // success. Built from GoogleReader.js's own chain-link builder and curl
+    // argv helper rather than a bare reachability ping, so a wrong password
+    // fails here instead of surfacing as a silent empty feed list later.
+    function testGreaderConnection(url, username, password) {
+        if (!url || !username || !password) {
+            if (typeof ToastService !== "undefined")
+                ToastService.showError("Enter URL, username, and password first");
+            return;
+        }
+        var config = { greaderUrl: url, greaderUsername: username, greaderPassword: password };
+        var loginRequest = GoogleReader.buildClientLoginRequest(config, { linkIndex: 1, reauthAttempted: false }, FeedParser);
+        if (!loginRequest) {
+            if (typeof ToastService !== "undefined")
+                ToastService.showError("Connection failed: could not build request");
+            return;
+        }
+        Proc.runCommand(null, loginRequest.argv,
+            function(output, exitCode) {
+                var loginResult = loginRequest.parse(output || "");
+                if (!loginResult || loginResult.error || !loginResult.session || !loginResult.session.authToken) {
+                    // Never include the URL/password in this message -- describe
+                    // the failure only (same rule as the Miniflux button above).
+                    if (typeof ToastService !== "undefined")
+                        ToastService.showError("Connection failed: check the Google Reader integration username and password (Miniflux Settings → Integrations, not your web login)");
+                    return;
+                }
+                var userInfoArgv = GoogleReader.greaderCurlArgv("GET", url, "/reader/api/0/user-info", loginResult.session.authToken, null);
+                Proc.runCommand(null, userInfoArgv,
+                    function(userInfoOutput, userInfoExitCode) {
+                        var split = GoogleReader.splitHttpStatus(userInfoOutput || "");
+                        if (split.status === 200) {
+                            if (typeof ToastService !== "undefined")
+                                ToastService.showInfo("Google Reader connection successful!");
+                        } else {
+                            if (typeof ToastService !== "undefined")
+                                ToastService.showError("Connection failed: server rejected the authenticated request");
+                        }
+                    }, undefined, 30000
+                );
+            }, undefined, 30000
+        );
+    }
+
     // The injected pluginService is NOT always the real PluginService: a
     // desktop-widget instance gets a reduced shim with no load/savePluginState.
     // Feature-detect and fall back rather than throwing (which would abort this
@@ -57,6 +109,16 @@ PluginSettings {
     readonly property var stateService: ReaderState.resolveStateService(
         typeof PluginService !== "undefined" ? PluginService : null,
         root.pluginService)
+
+    // Asked, never string-matched, for every question that is really about
+    // backend behaviour rather than which backend is selected -- see the
+    // sourceModeSetting.value comparisons below. sourceMode is persisted, so
+    // a stored mode from a build that predates a given backend (e.g. a user
+    // who downgrades past "greader") must not bind this to undefined.
+    readonly property var backends: Backends.createBackends({
+        FeedParser: FeedParser, ReaderState: ReaderState, GoogleReader: GoogleReader
+    })
+    readonly property var currentBackend: backends[sourceModeSetting.value] || backends.standard
 
     function refreshFeedStatuses() {
         if (!root.stateService || !root.pluginId) {
@@ -162,10 +224,11 @@ PluginSettings {
         id: sourceModeSetting
         settingKey: "sourceMode"
         label: "Source Mode"
-        description: "Standard fetches RSS/Atom feeds directly. Miniflux syncs with your Miniflux server."
+        description: "Standard fetches RSS/Atom feeds directly. Miniflux and Google Reader sync with a server."
         options: [
             { label: "Standard", value: "standard" },
-            { label: "Miniflux", value: "miniflux" }
+            { label: "Miniflux", value: "miniflux" },
+            { label: "Google Reader", value: "greader" }
         ]
         defaultValue: "standard"
     }
@@ -299,22 +362,157 @@ PluginSettings {
         }
     }
 
-    // ─── Miniflux Feeds (read-only list, miniflux mode only) ───
+    // ─── Google Reader Connection (greader mode only) ───
+    // Kept keyed on the mode string rather than a capability, deliberately:
+    // a credential form is inherently backend-specific (Miniflux takes a
+    // token, Google Reader takes a username and password), so there is
+    // nothing generic to ask a capability flag here.
 
     StyledRect {
         width: parent.width
         height: 1
         color: Theme.outlineVariant
-        visible: sourceModeSetting.value === "miniflux"
+        visible: sourceModeSetting.value === "greader"
     }
 
     StyledText {
         width: parent.width
-        text: "Miniflux Feeds"
+        text: "Google Reader Connection"
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
         color: Theme.surfaceText
-        visible: sourceModeSetting.value === "miniflux"
+        visible: sourceModeSetting.value === "greader"
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+        visible: sourceModeSetting.value === "greader"
+
+        StyledText {
+            text: "Server URL"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        DankTextField {
+            id: greaderUrlField
+            width: parent.width
+            placeholderText: "https://miniflux.example.com"
+            text: root.loadValue("greaderUrl", "")
+            onTextChanged: root.saveValue("greaderUrl", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(greaderUrlField);
+            }
+        }
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+        visible: sourceModeSetting.value === "greader"
+
+        StyledText {
+            text: "Username"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        // On Miniflux this is NOT the web login: Google Reader integration
+        // credentials are a separate username/password set under
+        // Settings -> Integrations. Entering the web username here gets a
+        // bare 401 from ClientLogin with nothing to explain why.
+        StyledText {
+            width: parent.width
+            text: "Separate from your web login -- set under Settings → Integrations on Miniflux."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        DankTextField {
+            id: greaderUsernameField
+            width: parent.width
+            placeholderText: "Google Reader integration username"
+            text: root.loadValue("greaderUsername", "")
+            onTextChanged: root.saveValue("greaderUsername", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(greaderUsernameField);
+            }
+        }
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+        visible: sourceModeSetting.value === "greader"
+
+        StyledText {
+            text: "Password"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "Also separate from your web password -- same Settings → Integrations page on Miniflux."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        // Never logged and never appears in a toast -- it is only ever read
+        // back into a curl --data-urlencode argv element (see
+        // testGreaderConnection below), matching the token's own handling.
+        DankTextField {
+            id: greaderPasswordField
+            width: parent.width
+            placeholderText: "Google Reader integration password"
+            text: root.loadValue("greaderPassword", "")
+            onTextChanged: root.saveValue("greaderPassword", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(greaderPasswordField);
+            }
+        }
+    }
+
+    Row {
+        visible: sourceModeSetting.value === "greader"
+        spacing: Theme.spacingM
+
+        DankButton {
+            text: "Test Connection"
+            iconName: "wifi_tethering"
+            onClicked: root.testGreaderConnection(
+                greaderUrlField.text.trim().replace(/\/$/, ""),
+                greaderUsernameField.text.trim(),
+                greaderPasswordField.text.trim()
+            )
+        }
+    }
+
+    // ─── Subscription List (read-only) ───
+    // Shown for any backend that keeps subscriptions on the server rather
+    // than in this plugin's own settings -- there is nothing local to add,
+    // edit, or reorder, only a snapshot of what the server already has.
+    // The list itself is still populated only by fetchMinifluxFeeds()
+    // (Miniflux's /v1/feeds); Google Reader shows this section empty until
+    // it gets its own feed-listing call.
+
+    StyledRect {
+        width: parent.width
+        height: 1
+        color: Theme.outlineVariant
+        visible: currentBackend.capabilities.serverState
+    }
+
+    StyledText {
+        width: parent.width
+        text: "Subscription List"
+        font.pixelSize: Theme.fontSizeMedium
+        font.weight: Font.Medium
+        color: Theme.surfaceText
+        visible: currentBackend.capabilities.serverState
     }
 
     StyledRect {
@@ -322,7 +520,7 @@ PluginSettings {
         height: Math.max(80, minifluxFeedsColumn.implicitHeight + Theme.spacingL * 2)
         radius: Theme.cornerRadius
         color: Theme.surfaceContainerHigh
-        visible: sourceModeSetting.value === "miniflux"
+        visible: currentBackend.capabilities.serverState
 
         Column {
             id: minifluxFeedsColumn
@@ -478,10 +676,13 @@ PluginSettings {
         width: parent.width
         height: 1
         color: Theme.outlineVariant
-        visible: sourceModeSetting.value === "standard"
+        visible: !currentBackend.capabilities.serverState
     }
 
-    // ─── Feed Management (standard mode only) ───
+    // ─── Feed Management ───
+    // Only meaningful for a backend with no server-side subscription list of
+    // its own -- adding, editing, and reordering feeds here is exactly what
+    // a serverState backend's own subscription management already covers.
 
     StyledText {
         width: parent.width
@@ -489,7 +690,7 @@ PluginSettings {
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
         color: Theme.surfaceText
-        visible: sourceModeSetting.value === "standard"
+        visible: !currentBackend.capabilities.serverState
     }
 
     StyledRect {
@@ -497,7 +698,7 @@ PluginSettings {
         height: addFeedColumn.implicitHeight + Theme.spacingL * 2
         radius: Theme.cornerRadius
         color: Theme.surfaceContainerHigh
-        visible: sourceModeSetting.value === "standard"
+        visible: !currentBackend.capabilities.serverState
 
         Column {
             id: addFeedColumn
@@ -620,7 +821,7 @@ PluginSettings {
         height: Math.max(120, feedsListColumn.implicitHeight + Theme.spacingL * 2)
         radius: Theme.cornerRadius
         color: Theme.surfaceContainerHigh
-        visible: sourceModeSetting.value === "standard"
+        visible: !currentBackend.capabilities.serverState
 
         Column {
             id: feedsListColumn
@@ -892,13 +1093,14 @@ PluginSettings {
         }
     }
 
-    // OPML Import (standard mode only)
+    // OPML Import: feeds live locally only when the backend has no server
+    // subscription list of its own to import into instead.
     StyledRect {
         width: parent.width
         height: opmlColumn.implicitHeight + Theme.spacingL * 2
         radius: Theme.cornerRadius
         color: Theme.surfaceContainerHigh
-        visible: sourceModeSetting.value === "standard"
+        visible: !currentBackend.capabilities.serverState
 
         Column {
             id: opmlColumn
@@ -971,16 +1173,18 @@ PluginSettings {
         width: parent.width
         height: 1
         color: Theme.outlineVariant
-        visible: sourceModeSetting.value === "standard"
+        visible: !currentBackend.capabilities.serverState
     }
 
-    // ─── Preset Feeds (standard mode only) ───
+    // ─── Preset Feeds (Quick Add) ───
     // Wrapped in one Column with a single `visible` binding rather than
-    // repeating it on every child below -- there are a lot of them.
+    // repeating it on every child below -- there are a lot of them. Adding a
+    // preset writes straight into local `feeds`, so it only makes sense for
+    // a backend with no server-side subscription list of its own.
     Column {
         width: parent.width
         spacing: Theme.spacingM
-        visible: sourceModeSetting.value === "standard"
+        visible: !currentBackend.capabilities.serverState
 
     StyledText {
         width: parent.width

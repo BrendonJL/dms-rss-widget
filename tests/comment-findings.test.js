@@ -88,3 +88,44 @@ describe("hard-won findings survive in the source", () => {
         });
     });
 });
+
+// QML imports a .js module as a namespace of its TOP-LEVEL functions, which
+// is a wider surface than module.exports. DankRssWidgetSettings.qml calls
+// three GoogleReader.js functions that are top-level but NOT exported, so the
+// Node suite never touches them: rename one, or wrap it in a closure during a
+// refactor, and Test Connection breaks at runtime with every test still green.
+//
+// This asserts the QML-visible surface exists. It reads the source rather than
+// require()ing, precisely because require() only sees module.exports and would
+// therefore miss the very thing at risk.
+describe("functions QML calls but Node never imports", () => {
+    var qmlCallers = {
+        "DankRssWidgetSettings.qml": {
+            module: "GoogleReader.js",
+            functions: ["buildClientLoginRequest", "greaderCurlArgv", "splitHttpStatus"]
+        }
+    };
+
+    Object.keys(qmlCallers).forEach(function (qmlFile) {
+        var spec = qmlCallers[qmlFile];
+        var src = fs.readFileSync(path.join(ROOT, spec.module), "utf8");
+        var qml = fs.readFileSync(path.join(ROOT, qmlFile), "utf8");
+
+        spec.functions.forEach(function (fn) {
+            test(spec.module + " declares " + fn + "() for " + qmlFile, () => {
+                assert.ok(new RegExp("^function\\s+" + fn + "\\s*\\(", "m").test(src),
+                    fn + " must stay a top-level function declaration in " +
+                    spec.module + " -- " + qmlFile + " calls it through the QML " +
+                    "import namespace, and no Node test would notice it going away.");
+            });
+        });
+
+        test(qmlFile + " still calls all of them", () => {
+            spec.functions.forEach(function (fn) {
+                assert.ok(qml.indexOf(fn) !== -1,
+                    fn + " is no longer called; drop it from this list rather " +
+                    "than leaving a guard for a dependency that ended.");
+            });
+        });
+    });
+});
