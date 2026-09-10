@@ -351,6 +351,40 @@ describe("one-shot bindings", () => {
     });
 });
 
+// ─── "m"/"s" act on the whole selection when one exists ───
+
+describe("m/s with a selection act on the selection, not the cursor", () => {
+    test("m acts on the selection, not the cursor row", () => {
+        var r = resolveKey(evt(KeyMap.Key_M), baseState({ index: 1, hasSelection: true }));
+        assert.equal(r.action, "markSelectedRead");
+    });
+
+    test("s acts on the selection, not the cursor row", () => {
+        var r = resolveKey(evt(KeyMap.Key_S), baseState({ index: 1, hasSelection: true }));
+        assert.equal(r.action, "saveSelected");
+    });
+
+    test("m acts on the selection even with no cursor (index -1)", () => {
+        var r = resolveKey(evt(KeyMap.Key_M), baseState({ index: -1, hasSelection: true }));
+        assert.equal(r.action, "markSelectedRead");
+    });
+
+    test("s acts on the selection even with no cursor (index -1)", () => {
+        var r = resolveKey(evt(KeyMap.Key_S), baseState({ index: -1, hasSelection: true }));
+        assert.equal(r.action, "saveSelected");
+    });
+
+    test("m falls back to toggleRead on the cursor row once the selection is gone", () => {
+        var r = resolveKey(evt(KeyMap.Key_M), baseState({ index: 1, hasSelection: false }));
+        assert.equal(r.action, "toggleRead");
+    });
+
+    test("s falls back to toggleStar on the cursor row once the selection is gone", () => {
+        var r = resolveKey(evt(KeyMap.Key_S), baseState({ index: 1, hasSelection: false }));
+        assert.equal(r.action, "toggleStar");
+    });
+});
+
 // ─── The -1 "nothing focused" rule ───
 
 describe("currentIndex === -1: row actions blocked, cursor-independent ones not", () => {

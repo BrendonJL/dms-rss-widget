@@ -150,6 +150,27 @@ function resolveKey(event, state) {
     if (key === Key_A && shift)
         return act("markAllRead", index);
 
+    // "m" and "s" act on the WHOLE selection when one exists, regardless of
+    // the cursor -- selection is independent of keyboardIndex, so these two
+    // must bypass the atRest gate below rather than requiring a cursor too.
+    // With no selection they fall through to the cursor-based row actions,
+    // same as before this existed.
+    if (key === Key_M) {
+        if (hasSelection)
+            return act("markSelectedRead", index);
+        if (atRest)
+            return noop(-1);
+        return act("toggleRead", index);
+    }
+
+    if (key === Key_S) {
+        if (hasSelection)
+            return act("saveSelected", index);
+        if (atRest)
+            return noop(-1);
+        return act("toggleStar", index);
+    }
+
     // --- row actions: these need a cursor, or they act on an arbitrary item ---
 
     if (atRest)
@@ -163,12 +184,6 @@ function resolveKey(event, state) {
 
     if (key === Key_O && !shift)
         return act("open", index);
-
-    if (key === Key_M)
-        return act("toggleRead", index);
-
-    if (key === Key_S)
-        return act("toggleStar", index);
 
     return noop(index);
 }

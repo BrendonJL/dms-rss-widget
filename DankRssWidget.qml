@@ -583,12 +583,24 @@ DesktopPluginComponent {
                 root.toggleReadSynced(readRow.itemId, root.readMap[readRow.itemId] === true);
                 break;
             }
+        case "markSelectedRead":
+            // Mirrors markReadRect's own state-awareness: once every
+            // selected item is already read, the action flips to unread,
+            // same as the selection bar's button does.
+            if (root.selectedAllRead)
+                root.bulkMarkUnreadSelected();
+            else
+                root.bulkMarkReadSelected();
+            break;
         case "toggleStar":
             {
                 var starRow = feedModel.get(result.index);
                 root.toggleBookmark(starRow.itemId);
                 break;
             }
+        case "saveSelected":
+            root.bulkSaveSelected();
+            break;
         case "toggleSelect":
             {
                 var selectRow = feedModel.get(result.index);
@@ -1255,6 +1267,29 @@ DesktopPluginComponent {
             id: widgetHover
         }
 
+        // Grants keyboard focus on ANY click inside the widget -- clicking
+        // the header, a filter chip, or empty space used to leave
+        // keyboardScope unfocused, so "?" and "/" did nothing until a row
+        // was clicked. A TapHandler (not a MouseArea) is used because it
+        // observes clicks passing through child Items/MouseAreas rather than
+        // competing with them for the event -- it fires for chip clicks, the
+        // mark-all button, empty space, everything.
+        //
+        // MUST NOT steal focus from searchField. onTapped fires on release,
+        // by which point a click that landed in searchField has already
+        // granted it Qt focus on the preceding press (TextInput grabs focus
+        // on press, not release) -- so checking searchField.activeFocus here
+        // reliably tells us the click was search's, not a race. Skipping the
+        // call in that case is what keeps typing in search from ever being
+        // interrupted by this handler.
+        TapHandler {
+            id: focusGrantTap
+            onTapped: {
+                if (!searchField.activeFocus)
+                    keyboardScope.forceActiveFocus();
+            }
+        }
+
         ColumnLayout {
             anchors.fill: parent
             anchors.margins: Theme.spacingM
@@ -1788,6 +1823,10 @@ DesktopPluginComponent {
                                 Layout.alignment: Qt.AlignVCenter
                                 opacity: (rowHover.hovered || itemDelegate.isSelected) ? 1.0 : 0.45
                                 enabled: true
+                                // Tab must never land here -- see the
+                                // activeFocusOnTab comment on the two
+                                // trailing buttons below for why.
+                                activeFocusOnTab: false
                                 onClicked: {
                                     if (root._clickFromOverview())
                                         return;
@@ -1917,6 +1956,28 @@ DesktopPluginComponent {
                                 Layout.alignment: Qt.AlignVCenter
                                 opacity: (rowHover.hovered || itemDelegate.isRead) ? 1.0 : 0.45
                                 enabled: true
+                                // activeFocusOnTab: false (here and on the
+                                // other two row controls) is a deliberate
+                                // fallback, not an oversight. DankActionButton
+                                // defaults activeFocusOnTab to true and also
+                                // consumes Space/Return/Enter itself
+                                // (DankCommon/Widgets/DankActionButton.qml),
+                                // so letting Tab land on these would create a
+                                // second, DIFFERENT cursor concept from
+                                // keyboardIndex/j-k -- and Tab's focus chain
+                                // is not fenced by keyboardScope's FocusScope,
+                                // so it can walk right out of the list into
+                                // the header/filter controls. Once focus is
+                                // out there, keyboardScope.Keys.onPressed
+                                // receives nothing and j/k look dead with no
+                                // way back in except another click. That
+                                // can't be verified safe by reading alone, so
+                                // rows keep exactly one cursor (keyboardIndex)
+                                // and Tab simply skips over row controls
+                                // entirely; they stay reachable by mouse and
+                                // by their own key ("m"/"s"/Space) on the
+                                // cursor row.
+                                activeFocusOnTab: false
                                 onClicked: {
                                     if (root._clickFromOverview())
                                         return;
@@ -1943,6 +2004,8 @@ DesktopPluginComponent {
                                 Layout.alignment: Qt.AlignVCenter
                                 opacity: (rowHover.hovered || itemDelegate.isBookmarked) ? 1.0 : 0.45
                                 enabled: true
+                                // See the mark-read button's comment above.
+                                activeFocusOnTab: false
                                 onClicked: {
                                     if (root._clickFromOverview())
                                         return;
@@ -2162,11 +2225,11 @@ DesktopPluginComponent {
                                 },
                                 {
                                     keys: ["m"],
-                                    desc: "Toggle read / unread"
+                                    desc: "Toggle read / unread (whole selection, if any)"
                                 },
                                 {
                                     keys: ["s"],
-                                    desc: "Toggle star"
+                                    desc: "Toggle star (whole selection, if any)"
                                 },
                                 {
                                     keys: ["Space"],
