@@ -12,6 +12,7 @@ import "ReaderState.js" as ReaderState
 import "Backends.js" as Backends
 import "GoogleReader.js" as GoogleReader
 import "ChainRunner.js" as ChainRunner
+import "KeyMap.js" as KeyMap
 
 DesktopPluginComponent {
     id: root
@@ -138,7 +139,29 @@ DesktopPluginComponent {
     // pointer merely hovers, keys still go to niri untouched. This must
     // already be true before the click that opens search, or that very
     // click grants no focus and typing is a no-op until a second click.
-    property bool acceptsKeyboardFocus: root.searchActive || widgetHover.hovered
+    //
+    // Hover alone was enough for search -- the pointer stays over the widget
+    // while typing -- but keyboard list navigation breaks that assumption:
+    // click a row, move the mouse away to read, and hovered goes false right
+    // as the user starts pressing j/k. keyboardScope.activeFocus latches on
+    // once a click grants focus, so the flag stays true while the user is
+    // driving the list and only drops when the compositor focuses something
+    // else -- it does not add any new way to grab focus, so the OnDemand
+    // reasoning above still holds.
+    property bool acceptsKeyboardFocus: root.searchActive || widgetHover.hovered || keyboardScope.activeFocus
+
+    // Keyboard cursor over feedModel; -1 means no cursor (the state after
+    // Esc, and the initial state -- so Enter on a freshly-clicked widget
+    // cannot open an arbitrary item). Resolved purely by KeyMap.resolveKey;
+    // this file only performs the action it names.
+    property int keyboardIndex: -1
+
+    // Pending "g" (first half of "g g") and when it was armed. KeyMap.js is
+    // pure and has no clock of its own -- see its header comment -- so QML
+    // stamps pendingAt with Date.now() whenever resolveKey reports a pending
+    // state, and passes both back in on the next keystroke.
+    property var pending: null
+    property var pendingAt: 0
 
     // Read tracking, keyed by stable item id. `readMap` is replaced (not mutated)
     // so QML property-change notification fires; `readOrder` keeps newest-first
