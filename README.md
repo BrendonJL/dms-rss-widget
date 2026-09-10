@@ -214,6 +214,67 @@ as did the parser bugs fixed in 2.3.1 and 2.3.2
 
 ## Changelog
 
+### 2.4.0
+
+**New: Google Reader API support.** Adds FreshRSS, Tiny Tiny RSS (via its
+plugin), Inoreader, TheOldReader and BazQux as sources — one protocol rather
+than one integration each. Select **Google Reader** as the source mode and
+enter your server URL, username and password. On Miniflux and FreshRSS these
+are the API credentials from the server's integration settings, not your web
+login. Verified end to end against both.
+
+**New: keyboard navigation.** Click the widget once, then drive it: `j`/`k` to
+move, `o` or `Enter` to open, `m` to toggle read, `s` to save, `Space` to
+select, `g g`/`G` for top and bottom, `/` to search, `r` to refresh, `A` to
+mark all read. Press `?` for the full list. `Esc` unwinds one layer at a time —
+it closes the help, then search, then a selection, then the cursor, so it never
+destroys a selection you were part-way through building.
+
+**Fixed: mark-as-read never reached Miniflux.** Every read you made in Miniflux
+mode stayed local. The API types `entry_ids` as `int64` and the widget sent
+strings, so the server rejected the whole request with HTTP 400. Starring was
+unaffected, because it puts the id in the URL path where the type is never
+checked — which is why the bug survived: half the feature worked.
+
+**Fixed: Miniflux API errors were silently discarded.** `curl` exits 0 on an
+HTTP 400, and the widget only reacted to a non-zero exit, so every API failure
+vanished without a toast, a log line or any other trace. This is what hid the
+bug above. Requests now use `--fail-with-body`.
+
+**Fixed: the settings panel showed stale feed status.** It re-read the status
+list only when the panel opened, so a feed added while it was already open read
+"Not fetched yet" indefinitely — even after the widget had fetched it and
+recorded a real result. It now refreshes while visible.
+
+**Fixed: search could not be typed into until you clicked it twice.** DMS maps
+a plugin's `acceptsKeyboardFocus` onto layer-shell `OnDemand`, which grants
+keyboard focus only on a click landing while the surface is *already*
+focus-eligible — which it was not at the moment the search toggle was clicked.
+
+**Fixed: the search button disappeared while items were selected**, and
+**selecting items then searching silently dropped the selection.** Selection is
+now pruned against the whole dataset rather than the visible list, so it
+survives a filter change; the count reports how many of the selected items are
+currently hidden.
+
+**Fixed: two feeds sharing a URL rendered each other's names.** Fetch results
+were matched to feeds by URL; they are matched by position now.
+
+**Improved: readable fetch errors.** "Could not resolve host" rather than
+"curl exit 6", keeping the code in parentheses for bug reports.
+
+**Improved: bulk mark-read is state-aware**, flipping to "Mark unread" when
+every selected item is already read.
+
+**Internal.** The widget no longer branches on the source mode anywhere: 17
+`sourceMode ===` checks became one dispatch point, with backends exposing
+capabilities and returning request descriptors that the QML layer executes.
+This is what made a third backend a new file rather than a new branch in
+twenty places. Test suite grew from 240 to 610, including live suites that run
+the widget's own generated requests against real Miniflux and FreshRSS
+servers — both Miniflux bugs above were invisible to the unit tests, because
+the requests were well-formed and the *server* rejected them.
+
 **1.0.0 is the only version previously published to the DMS registry.** The 2.0.0
 through 2.2.0 entries below were developed but never released — this is the first
 published update since 1.0.0, so if you're upgrading from 1.0.0, every entry from
