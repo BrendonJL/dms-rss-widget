@@ -57,18 +57,22 @@ DesktopPluginComponent {
     // JS owns every backend-specific decision (URL, method, headers, body,
     // response parsing, capabilities); QML owns only the side effects
     // (running Proc, showing toasts, assigning properties).
-    readonly property var backends: Backends.createBackends({ FeedParser: FeedParser, ReaderState: ReaderState, GoogleReader: GoogleReader })
+    readonly property var backends: Backends.createBackends({
+        FeedParser: FeedParser,
+        ReaderState: ReaderState,
+        GoogleReader: GoogleReader
+    })
     readonly property var backend: root.backends[root.sourceMode] || root.backends.standard
     readonly property var backendConfig: ({
-        feeds: root.feeds,
-        minifluxUrl: root.minifluxUrl,
-        minifluxToken: root.minifluxToken,
-        greaderUrl: root.greaderUrl,
-        greaderUsername: root.greaderUsername,
-        greaderPassword: root.greaderPassword,
-        maxItems: root.maxItems,
-        showStarred: root.showStarred
-    })
+            feeds: root.feeds,
+            minifluxUrl: root.minifluxUrl,
+            minifluxToken: root.minifluxToken,
+            greaderUrl: root.greaderUrl,
+            greaderUsername: root.greaderUsername,
+            greaderPassword: root.greaderPassword,
+            maxItems: root.maxItems,
+            showStarred: root.showStarred
+        })
 
     // --- Internal state ---
     property var allItems: []          // full sorted/capped result set
@@ -109,11 +113,7 @@ DesktopPluginComponent {
     property bool _overviewGuard: false
 
     function _clickFromOverview() {
-        return (typeof CompositorService !== "undefined"
-            && typeof NiriService !== "undefined"
-            && CompositorService.isNiri)
-            ? (NiriService.inOverview || root._overviewGuard)
-            : false;
+        return (typeof CompositorService !== "undefined" && typeof NiriService !== "undefined" && CompositorService.isNiri) ? (NiriService.inOverview || root._overviewGuard) : false;
     }
 
     Connections {
@@ -221,9 +221,12 @@ DesktopPluginComponent {
 
     property color resolvedBorderColor: {
         switch (borderColor) {
-            case "secondary": return Theme.secondary;
-            case "surface": return Theme.surfaceText;
-            default: return Theme.primary;
+        case "secondary":
+            return Theme.secondary;
+        case "surface":
+            return Theme.surfaceText;
+        default:
+            return Theme.primary;
         }
     }
 
@@ -343,9 +346,7 @@ DesktopPluginComponent {
     // fetchAllFeeds() before a single feed was requested (stuck on "No items
     // loaded"). So: prefer the real singleton, feature-detect it, and never
     // let a persistence failure take the fetch path down with it.
-    readonly property var stateService: ReaderState.resolveStateService(
-        typeof PluginService !== "undefined" ? PluginService : null,
-        root.pluginService)
+    readonly property var stateService: ReaderState.resolveStateService(typeof PluginService !== "undefined" ? PluginService : null, root.pluginService)
 
     function statePersistenceAvailable() {
         return root.stateService !== null && !!root.pluginId;
@@ -426,7 +427,7 @@ DesktopPluginComponent {
         // means this is a no-op for free on any backend without server-side
         // star state: StandardBackend.toggleStarRequest always returns null.
         var req = root.backend.toggleStarRequest(root.backendConfig, root.backendSession, root.backendItemId(itemId), wasBookmarked);
-        root.runRequest(req, function(output, code) {
+        root.runRequest(req, function (output, code) {
             if (code !== null && code !== 0)
                 root.toastError("Failed to toggle bookmark");
         });
@@ -441,8 +442,157 @@ DesktopPluginComponent {
         root.writeState("feedStatus", root.feedStatuses);
     }
 
+    // Shared by the row click and the "o"/Enter keyboard action so neither
+    // path can drift from the other. Row click ALWAYS opens + marks read,
+    // same as the mouse comment below explains; the overview-guard check
+    // stays with the mouse handler since it only ever applies to a stray
+    // pointer click, never a keypress.
+    function openItem(itemId, link) {
+        if (!itemId)
+            return;
+        root.markRead(itemId);
+        // Opening an item syncs read state to the server only when the user
+        // opted in via "Mark as read on open" -- unlike the explicit
+        // mark-read button/key, which always syncs.
+        if (root.syncReadOnOpen) {
+            var numId = root.backendItemId(itemId);
+            root.runRequest(root.backend.markReadRequest(root.backendConfig, root.backendSession, numId ? [numId] : []), function (output, code) {
+                if (code !== null && code !== 0)
+                    root.toastError("Failed to mark as read");
+            });
+        }
+        if (root.openInBrowser && link) {
+            // SECURITY: never hand an unsafe-scheme link (javascript:, file:,
+            // data:, ...) to Qt.openUrlExternally -- surface it instead so
+            // the user knows the feed gave a bad link, rather than silently
+            // swallowing it.
+            if (!FeedParser.isSafeUrl(link)) {
+                ToastService.showWarning("Blocked unsafe link from feed", link);
+            } else if (!Qt.openUrlExternally(link)) {
+                ToastService.showError("Could not open link", link);
+            }
+        }
+    }
+
+    // Shared by the mark-read button and the "m" keyboard action. An
+    // explicit toggle here ALWAYS syncs to the server, regardless of
+    // syncReadOnOpen (that setting only gates openItem's "open" path above).
+    function toggleReadSynced(itemId, wasRead) {
+        if (wasRead)
+            root.markUnread(itemId);
+        else
+            root.markRead(itemId);
+        var numId = root.backendItemId(itemId);
+        var ids = numId ? [numId] : [];
+        var req = wasRead ? root.backend.markUnreadRequest(root.backendConfig, root.backendSession, ids) : root.backend.markReadRequest(root.backendConfig, root.backendSession, ids);
+        root.runRequest(req, function (output, code) {
+            if (code !== null && code !== 0)
+                root.toastError(wasRead ? "Failed to mark as unread" : "Failed to mark as read");
+        });
+    }
+
+    // Shared by the search toggle button and the "Esc"/"/" keyboard actions.
+    // Closing search must not leave an invisible query silently filtering
+    // the list.
+    function closeSearch() {
+        root.searchActive = false;
+        if (root.searchQuery !== "") {
+            searchField.clear();
+            root.searchQuery = "";
+            root.applyFilter();
+        }
+    }
+
+    // --- Keyboard navigation ---
+    // KeyMap.resolveKey is pure; this is the only place its named actions
+    // turn into side effects. Every action below reuses a function the mouse
+    // path already calls -- see docs/plans/2026-09-10-phase2-keyboard-design.md.
+    function buildKeyState() {
+        return {
+            index: root.keyboardIndex,
+            count: feedModel.count,
+            searchActive: root.searchActive,
+            hasSelection: root.selectedCount > 0,
+            pending: root.pending,
+            pendingAt: root.pendingAt,
+            now: Date.now()
+        };
+    }
+
+    function handleKeyEvent(event) {
+        var result = KeyMap.resolveKey(event, root.buildKeyState());
+
+        // resolveKey cannot stamp its own timestamp (see KeyMap.js's header
+        // comment) -- QML records when a "g" pending state was armed so the
+        // next keystroke can judge the 800ms timeout.
+        root.pending = result.pending;
+        if (result.pending)
+            root.pendingAt = Date.now();
+
+        if (result.action === null) {
+            event.accepted = false;
+            return;
+        }
+
+        event.accepted = true;
+
+        switch (result.action) {
+        case "move":
+            root.keyboardIndex = result.index;
+            // Keeps the cursor from ever leaving the viewport, same as
+            // scrolling to a search hit would.
+            feedListView.positionViewAtIndex(result.index, ListView.Contain);
+            break;
+        case "open":
+            {
+                var openRow = feedModel.get(result.index);
+                root.openItem(openRow.itemId, openRow.link);
+                break;
+            }
+        case "toggleRead":
+            {
+                var readRow = feedModel.get(result.index);
+                root.toggleReadSynced(readRow.itemId, root.readMap[readRow.itemId] === true);
+                break;
+            }
+        case "toggleStar":
+            {
+                var starRow = feedModel.get(result.index);
+                root.toggleBookmark(starRow.itemId);
+                break;
+            }
+        case "toggleSelect":
+            {
+                var selectRow = feedModel.get(result.index);
+                root.toggleSelected(selectRow.itemId);
+                break;
+            }
+        case "focusSearch":
+            root.searchActive = true;
+            break;
+        case "closeSearch":
+            root.closeSearch();
+            break;
+        case "clearSelection":
+            root.clearSelection();
+            break;
+        case "clearCursor":
+            root.keyboardIndex = -1;
+            break;
+        case "refresh":
+            root.refreshNow();
+            break;
+        case "markAllRead":
+            root.setAllRead(true);
+            if (root.filterMode === "unread")
+                root.applyFilter();
+            break;
+        }
+    }
+
     function toggleSelected(itemId) {
-        if (!itemId) return;
+        if (!itemId)
+            return;
         root.selectedMap = ReaderState.toggleSelected(root.selectedMap, itemId);
     }
 
@@ -452,7 +602,8 @@ DesktopPluginComponent {
 
     function bulkMarkReadSelected() {
         var ids = Object.keys(root.selectedMap);
-        if (ids.length === 0) return;
+        if (ids.length === 0)
+            return;
         root.readOrder = ReaderState.addAllRead(root.readOrder, ids, root.idHistoryCap);
         root.readMap = ReaderState.buildIdMap(root.readOrder);
         root.saveReadState();
@@ -470,18 +621,20 @@ DesktopPluginComponent {
             if (numId)
                 numIds.push(numId);
         }
-        root.runRequest(root.backend.markReadRequest(root.backendConfig, root.backendSession, numIds), function(output, code) {
+        root.runRequest(root.backend.markReadRequest(root.backendConfig, root.backendSession, numIds), function (output, code) {
             if (code !== null && code !== 0)
                 root.toastError("Failed to mark as read");
         });
 
         root.clearSelection();
-        if (root.filterMode === "unread") root.applyFilter();
+        if (root.filterMode === "unread")
+            root.applyFilter();
     }
 
     function bulkSaveSelected() {
         var ids = Object.keys(root.selectedMap);
-        if (ids.length === 0) return;
+        if (ids.length === 0)
+            return;
 
         // Capture "already bookmarked" BEFORE the local additive update
         // below, since addAllBookmarked marks every selected id as
@@ -512,7 +665,7 @@ DesktopPluginComponent {
             // wasBookmarked).
             var numId = root.backendItemId(id);
             var req = root.backend.toggleStarRequest(root.backendConfig, root.backendSession, numId, false);
-            root.runRequest(req, function(output, code) {
+            root.runRequest(req, function (output, code) {
                 if (code !== null && code !== 0)
                     root.toastError("Failed to toggle bookmark");
             });
@@ -549,9 +702,7 @@ DesktopPluginComponent {
                 ids.push(root.allItems[i].id);
         }
 
-        root.readOrder = read
-            ? ReaderState.addAllRead(root.readOrder, ids, root.idHistoryCap)
-            : ReaderState.removeAllRead(root.readOrder, ids);
+        root.readOrder = read ? ReaderState.addAllRead(root.readOrder, ids, root.idHistoryCap) : ReaderState.removeAllRead(root.readOrder, ids);
         root.readMap = ReaderState.buildIdMap(root.readOrder);
         root.saveReadState();
 
@@ -562,10 +713,8 @@ DesktopPluginComponent {
             if (numId)
                 numIds.push(numId);
         }
-        var req = read
-            ? root.backend.markReadRequest(root.backendConfig, root.backendSession, numIds)
-            : root.backend.markUnreadRequest(root.backendConfig, root.backendSession, numIds);
-        root.runRequest(req, function(output, code) {
+        var req = read ? root.backend.markReadRequest(root.backendConfig, root.backendSession, numIds) : root.backend.markUnreadRequest(root.backendConfig, root.backendSession, numIds);
+        root.runRequest(req, function (output, code) {
             if (code !== null && code !== 0)
                 root.toastError(read ? "Failed to mark as read" : "Failed to mark as unread");
         });
@@ -599,7 +748,7 @@ DesktopPluginComponent {
         // firing while a periodic one is still in flight), so the second
         // call would clobber the first's callback before it exits. A null
         // id makes Proc generate a fresh id per call and self-clean.
-        Proc.runCommand(null, req.argv, function(out, code) {
+        Proc.runCommand(null, req.argv, function (out, code) {
             cb(out, code);
         }, undefined, req.timeoutMs || undefined);
     }
@@ -677,7 +826,10 @@ DesktopPluginComponent {
                 statuses.push(status);
                 var matched = byIndex[i];
                 if (matched)
-                    descriptors.push({ req: matched, statusIndex: statuses.length - 1 });
+                    descriptors.push({
+                        req: matched,
+                        statusIndex: statuses.length - 1
+                    });
             }
         } else {
             // Server-backed backend: one synthetic status row per descriptor
@@ -697,7 +849,10 @@ DesktopPluginComponent {
                     itemCount: 0
                 };
                 statuses.push(status2);
-                descriptors.push({ req: req, statusIndex: statuses.length - 1 });
+                descriptors.push({
+                    req: req,
+                    statusIndex: statuses.length - 1
+                });
             }
         }
 
@@ -752,7 +907,7 @@ DesktopPluginComponent {
     // result -- decrements it, right where the old single-request
     // fetchDescriptor used to.
     function runChainLink(req, status, ctx, hadItems, chain) {
-        root.runRequest(req, function(output, exitCode) {
+        root.runRequest(req, function (output, exitCode) {
             // Stale callback from a superseded fetch cycle: drop the WHOLE
             // chain, not just this link -- there is no next-link recursion
             // and no pending decrement past this point.
@@ -778,7 +933,11 @@ DesktopPluginComponent {
                 return;
             }
 
-            var parsed = { items: [], serverStatus: [], error: null };
+            var parsed = {
+                items: [],
+                serverStatus: [],
+                error: null
+            };
             if (exitCode === 0 && output && output.trim().length > 0)
                 parsed = req.parse(output);
 
@@ -872,12 +1031,16 @@ DesktopPluginComponent {
         var items = FeedParser.dedupeItems(ctx.collector);
 
         if (root.sortMode === "oldest") {
-            items.sort(function(a, b) { return a.timestamp - b.timestamp; });
+            items.sort(function (a, b) {
+                return a.timestamp - b.timestamp;
+            });
         } else if (root.sortMode === "byFeed") {
             // Newest within each feed first, then apply the per-feed cap
-            items.sort(function(a, b) { return b.timestamp - a.timestamp; });
+            items.sort(function (a, b) {
+                return b.timestamp - a.timestamp;
+            });
             var feedCounts = {};
-            items = items.filter(function(item) {
+            items = items.filter(function (item) {
                 var src = item.source || "";
                 feedCounts[src] = (feedCounts[src] || 0) + 1;
                 return feedCounts[src] <= root.maxPerFeed;
@@ -885,12 +1048,14 @@ DesktopPluginComponent {
             // Then group in the order the feeds are arranged in settings, so
             // the move-up/move-down buttons actually affect what you see.
             var orderMap = ReaderState.feedOrderMap(root.feeds);
-            items.sort(function(a, b) {
+            items.sort(function (a, b) {
                 return ReaderState.compareByFeedOrder(a, b, orderMap);
             });
         } else {
             // "newest" — default
-            items.sort(function(a, b) { return b.timestamp - a.timestamp; });
+            items.sort(function (a, b) {
+                return b.timestamp - a.timestamp;
+            });
         }
 
         if (items.length > root.maxItems) {
@@ -917,10 +1082,8 @@ DesktopPluginComponent {
 
         var result = ReaderState.evaluateSeen(currentIds, root.seenIds, root.idHistoryCap);
 
-        if (!result.firstRun && root.notifyNewItems && result.newCount > 0
-            && typeof ToastService !== "undefined") {
-            ToastService.showInfo(result.newCount + " new item"
-                + (result.newCount > 1 ? "s" : "") + " in RSS Feeds");
+        if (!result.firstRun && root.notifyNewItems && result.newCount > 0 && typeof ToastService !== "undefined") {
+            ToastService.showInfo(result.newCount + " new item" + (result.newCount > 1 ? "s" : "") + " in RSS Feeds");
         }
 
         root.seenIds = result.mergedSeen;
@@ -1000,6 +1163,13 @@ DesktopPluginComponent {
         // selection-bar label below surfaces the hidden portion explicitly.
         root.selectedMap = ReaderState.pruneSelected(root.selectedMap, root.allItems);
         root.visibleItems = visible;
+
+        // feedModel was just rebuilt from scratch -- the cursor must never
+        // point past its new end (search/filter changes can shrink the list
+        // out from under it). Clamp to the new last row, or drop to -1 if
+        // nothing is left.
+        if (root.keyboardIndex >= feedModel.count)
+            root.keyboardIndex = feedModel.count > 0 ? feedModel.count - 1 : -1;
     }
 
     onFilterModeChanged: root.applyFilter()
@@ -1126,14 +1296,10 @@ DesktopPluginComponent {
                     buttonSize: root.searchToggleSize
                     iconColor: (root.searchActive || root.searching) ? Theme.primary : Theme.surfaceVariantText
                     onClicked: {
-                        root.searchActive = !root.searchActive;
-                        // Closing search must not leave an invisible query
-                        // silently filtering the list.
-                        if (!root.searchActive && root.searchQuery !== "") {
-                            searchField.clear();
-                            root.searchQuery = "";
-                            root.applyFilter();
-                        }
+                        if (root.searchActive)
+                            root.closeSearch();
+                        else
+                            root.searchActive = true;
                     }
                 }
             }
@@ -1146,9 +1312,18 @@ DesktopPluginComponent {
 
                 Repeater {
                     model: [
-                        { key: "all", label: "All" },
-                        { key: "unread", label: "Unread" },
-                        { key: "bookmarked", label: "Saved" }
+                        {
+                            key: "all",
+                            label: "All"
+                        },
+                        {
+                            key: "unread",
+                            label: "Unread"
+                        },
+                        {
+                            key: "bookmarked",
+                            label: "Saved"
+                        }
                     ]
 
                     delegate: Rectangle {
@@ -1158,9 +1333,7 @@ DesktopPluginComponent {
                         Layout.preferredWidth: filterLabel.implicitWidth + Theme.spacingS
                         height: 22
                         radius: Theme.cornerRadius
-                        color: active
-                            ? Theme.withAlpha(Theme.primary, 0.18)
-                            : (filterArea.containsMouse ? Theme.withAlpha(Theme.primary, 0.08) : "transparent")
+                        color: active ? Theme.withAlpha(Theme.primary, 0.18) : (filterArea.containsMouse ? Theme.withAlpha(Theme.primary, 0.08) : "transparent")
 
                         StyledText {
                             id: filterLabel
@@ -1187,7 +1360,9 @@ DesktopPluginComponent {
                     }
                 }
 
-                Item { Layout.fillWidth: true }
+                Item {
+                    Layout.fillWidth: true
+                }
 
                 // Search toggle. Search gets its own row when revealed so the
                 // filter chips stay readable at narrow widget widths.
@@ -1261,8 +1436,7 @@ DesktopPluginComponent {
                 readonly property int hiddenSelected: root.selectedCount - ReaderState.countSelectedIn(root.selectedMap, root.visibleItems)
 
                 StyledText {
-                    text: root.selectedCount + " selected"
-                        + (selectionActionsRow.hiddenSelected > 0 ? " (" + selectionActionsRow.hiddenSelected + " hidden)" : "")
+                    text: root.selectedCount + " selected" + (selectionActionsRow.hiddenSelected > 0 ? " (" + selectionActionsRow.hiddenSelected + " hidden)" : "")
                     font.pixelSize: root.fontSize - 2
                     color: Theme.surfaceVariantText
                     Layout.fillWidth: true
@@ -1410,316 +1584,304 @@ DesktopPluginComponent {
             }
 
             // --- Feed list ---
-            ListView {
-                id: feedListView
+            // FocusScope, not a plain Item: it is the thing whose
+            // activeFocus feeds acceptsKeyboardFocus above, and Keys.onPressed
+            // needs an Item somewhere in the focus chain to receive events at
+            // all. keyboardScope.forceActiveFocus() (row click, above) is
+            // what actually puts focus here.
+            FocusScope {
+                id: keyboardScope
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                clip: true
-                spacing: root.viewMode === "compact" ? 1 : Theme.spacingXS
-                model: feedModel
-                visible: feedModel.count > 0
 
-                delegate: Rectangle {
-                    id: itemDelegate
-                    readonly property bool isRead: root.readMap[model.itemId] === true
-                    readonly property bool isBookmarked: ReaderState.isBookmarked(root.bookmarkMap, model.itemId)
-                    readonly property bool isSelected: root.selectedMap[model.itemId] === true
+                Keys.onPressed: event => root.handleKeyEvent(event)
 
-                    // Sizing contract for the leading checkbox and the two
-                    // trailing DankActionButtons, shared by the row
-                    // MouseArea's leftMargin/rightMargin.
-                    readonly property int controlSize: 22
-                    // Gap between the leading checkbox and the text column,
-                    // and between the two trailing buttons -- both equal
-                    // itemColumn.spacing, a FIXED Theme.spacingS regardless
-                    // of viewMode (only itemColumn's outer anchors.margins
-                    // vary by viewMode, not its internal spacing).
-                    readonly property int leadingControlWidth: controlSize + Theme.spacingS
-                    readonly property int controlsRowWidth: controlSize * 2 + Theme.spacingS
+                ListView {
+                    id: feedListView
+                    anchors.fill: parent
+                    clip: true
+                    spacing: root.viewMode === "compact" ? 1 : Theme.spacingXS
+                    model: feedModel
+                    visible: feedModel.count > 0
 
-                    width: feedListView.width
-                    height: itemColumn.implicitHeight + Theme.spacingS * 2
-                    radius: root.viewMode === "compact" ? 0 : Theme.cornerRadius
-                    opacity: isRead ? 0.5 : 1.0
-                    color: itemDelegate.isSelected
-                        ? Theme.withAlpha(Theme.primary, 0.12)
-                        : (rowHover.hovered ? Theme.withAlpha(Theme.primary, 0.08) : "transparent")
+                    delegate: Rectangle {
+                        id: itemDelegate
+                        readonly property bool isRead: root.readMap[model.itemId] === true
+                        readonly property bool isBookmarked: ReaderState.isBookmarked(root.bookmarkMap, model.itemId)
+                        readonly property bool isSelected: root.selectedMap[model.itemId] === true
+                        // Keyboard cursor, keyed on index rather than any Qt
+                        // focus state -- see acceptsKeyboardFocus's comment for
+                        // why per-item activeFocus is the wrong model here.
+                        readonly property bool isCursor: index === root.keyboardIndex
 
-                    Behavior on color {
-                        ColorAnimation { duration: Theme.shortDuration }
-                    }
-                    Behavior on opacity {
-                        NumberAnimation { duration: Theme.shortDuration }
-                    }
+                        // Sizing contract for the leading checkbox and the two
+                        // trailing DankActionButtons, shared by the row
+                        // MouseArea's leftMargin/rightMargin.
+                        readonly property int controlSize: 22
+                        // Gap between the leading checkbox and the text column,
+                        // and between the two trailing buttons -- both equal
+                        // itemColumn.spacing, a FIXED Theme.spacingS regardless
+                        // of viewMode (only itemColumn's outer anchors.margins
+                        // vary by viewMode, not its internal spacing).
+                        readonly property int leadingControlWidth: controlSize + Theme.spacingS
+                        readonly property int controlsRowWidth: controlSize * 2 + Theme.spacingS
 
-                    // Tracks hover across the WHOLE row, including the two
-                    // trailing control buttons. The row MouseArea below is
-                    // shrunk to exclude those buttons (so they can receive
-                    // their own clicks), so its own containsMouse would go
-                    // false the moment the pointer reaches a control --
-                    // fading the controls out just as the user reaches for
-                    // them. HoverHandler tracks hover independently of any
-                    // MouseArea's hit-testing, so it stays true over the
-                    // whole delegate including the buttons on top.
-                    HoverHandler {
-                        id: rowHover
-                    }
+                        width: feedListView.width
+                        height: itemColumn.implicitHeight + Theme.spacingS * 2
+                        radius: root.viewMode === "compact" ? 0 : Theme.cornerRadius
+                        opacity: isRead ? 0.5 : 1.0
+                        color: itemDelegate.isSelected ? Theme.withAlpha(Theme.primary, 0.12) : (rowHover.hovered ? Theme.withAlpha(Theme.primary, 0.08) : "transparent")
+                        // Cursor indicator is a border, deliberately not another
+                        // fill -- hover and selection are both background tints,
+                        // and a third tint would be indistinguishable from them.
+                        border.width: itemDelegate.isCursor ? 2 : 0
+                        border.color: Theme.primary
 
-                    // Whole-row MouseArea declared FIRST: later children (the
-                    // leading checkbox and two trailing DankActionButtons)
-                    // are visually on top and get their own clicks; this
-                    // MouseArea's hit area is shrunk on both edges so it
-                    // never overlaps them.
-                    MouseArea {
-                        id: itemMouseArea
-                        anchors.fill: parent
-                        anchors.leftMargin: (root.viewMode === "compact" ? Theme.spacingXS : Theme.spacingS)
-                            + itemDelegate.leadingControlWidth
-                        anchors.rightMargin: (root.viewMode === "compact" ? Theme.spacingXS : Theme.spacingS)
-                            + itemDelegate.controlsRowWidth
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            // A click that lands here while the niri
-                            // overview is open is a stray overview-navigation
-                            // click, not user intent to open/mark this item.
-                            if (root._clickFromOverview())
-                                return;
-
-                            // Row click ALWAYS opens + marks read. Never
-                            // un-reads -- that regressed link-opening once an
-                            // item had been read before. None of the three
-                            // controls (selection, mark-read, bookmark) ever
-                            // open a link.
-                            var id = model.itemId;
-                            if (!id)
-                                return;
-                            root.markRead(id);
-                            // Opening an item syncs read state to the server
-                            // only when the user opted in via "Mark as read
-                            // on open" -- unlike the explicit mark-read
-                            // button (below), which always syncs.
-                            if (root.syncReadOnOpen) {
-                                var numId = root.backendItemId(id);
-                                root.runRequest(root.backend.markReadRequest(root.backendConfig, root.backendSession, numId ? [numId] : []), function(output, code) {
-                                    if (code !== null && code !== 0)
-                                        root.toastError("Failed to mark as read");
-                                });
-                            }
-                            if (root.openInBrowser && model.link) {
-                                // SECURITY: never hand an unsafe-scheme link
-                                // (javascript:, file:, data:, ...) to
-                                // Qt.openUrlExternally -- surface it instead
-                                // so the user knows the feed gave a bad link,
-                                // rather than silently swallowing it.
-                                if (!FeedParser.isSafeUrl(model.link)) {
-                                    ToastService.showWarning("Blocked unsafe link from feed", model.link);
-                                } else if (!Qt.openUrlExternally(model.link)) {
-                                    ToastService.showError("Could not open link", model.link);
-                                }
+                        Behavior on color {
+                            ColorAnimation {
+                                duration: Theme.shortDuration
                             }
                         }
-                    }
+                        Behavior on opacity {
+                            NumberAnimation {
+                                duration: Theme.shortDuration
+                            }
+                        }
 
-                    RowLayout {
-                        id: itemColumn
-                        // No z needed: the MouseArea above is declared first,
-                        // so this paints on top naturally, and its
-                        // rightMargin excludes the two buttons below.
-                        anchors.fill: parent
-                        anchors.margins: root.viewMode === "compact" ? Theme.spacingXS : Theme.spacingS
-                        spacing: Theme.spacingS
+                        // Tracks hover across the WHOLE row, including the two
+                        // trailing control buttons. The row MouseArea below is
+                        // shrunk to exclude those buttons (so they can receive
+                        // their own clicks), so its own containsMouse would go
+                        // false the moment the pointer reaches a control --
+                        // fading the controls out just as the user reaches for
+                        // them. HoverHandler tracks hover independently of any
+                        // MouseArea's hit-testing, so it stays true over the
+                        // whole delegate including the buttons on top.
+                        HoverHandler {
+                            id: rowHover
+                        }
 
-                        // Leading: selection checkbox. Never opens a link,
-                        // never touches read state.
-                        DankActionButton {
-                            iconName: itemDelegate.isSelected ? "check_box" : "check_box_outline_blank"
-                            iconSize: 14
-                            buttonSize: itemDelegate.controlSize
-                            iconColor: itemDelegate.isSelected ? Theme.primary : Theme.surfaceVariantText
-                            Layout.alignment: Qt.AlignVCenter
-                            opacity: (rowHover.hovered || itemDelegate.isSelected) ? 1.0 : 0.45
-                            enabled: true
+                        // Whole-row MouseArea declared FIRST: later children (the
+                        // leading checkbox and two trailing DankActionButtons)
+                        // are visually on top and get their own clicks; this
+                        // MouseArea's hit area is shrunk on both edges so it
+                        // never overlaps them.
+                        MouseArea {
+                            id: itemMouseArea
+                            anchors.fill: parent
+                            anchors.leftMargin: (root.viewMode === "compact" ? Theme.spacingXS : Theme.spacingS) + itemDelegate.leadingControlWidth
+                            anchors.rightMargin: (root.viewMode === "compact" ? Theme.spacingXS : Theme.spacingS) + itemDelegate.controlsRowWidth
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
                             onClicked: {
+                                // A click that lands here while the niri
+                                // overview is open is a stray overview-navigation
+                                // click, not user intent to open/mark this item.
                                 if (root._clickFromOverview())
                                     return;
-                                root.toggleSelected(model.itemId);
-                            }
 
-                            Behavior on opacity {
-                                NumberAnimation { duration: Theme.shortDuration }
+                                // A click both grants keyboard focus to the list
+                                // (see keyboardScope/acceptsKeyboardFocus) and
+                                // moves the cursor to the row that was clicked,
+                                // so j/k continue from where the mouse left off
+                                // rather than jumping to the top of the list.
+                                keyboardScope.forceActiveFocus();
+                                root.keyboardIndex = index;
+
+                                // Row click ALWAYS opens + marks read. Never
+                                // un-reads -- that regressed link-opening once an
+                                // item had been read before. None of the three
+                                // controls (selection, mark-read, bookmark) ever
+                                // open a link.
+                                root.openItem(model.itemId, model.link);
                             }
                         }
 
-                        // Text content
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: root.viewMode === "compact" ? 0 : 2
+                        RowLayout {
+                            id: itemColumn
+                            // No z needed: the MouseArea above is declared first,
+                            // so this paints on top naturally, and its
+                            // rightMargin excludes the two buttons below.
+                            anchors.fill: parent
+                            anchors.margins: root.viewMode === "compact" ? Theme.spacingXS : Theme.spacingS
+                            spacing: Theme.spacingS
 
-                            // Source + Title row
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: Theme.spacingXS
-
-                                StyledText {
-                                    visible: root.showFeedName
-                                    text: model.source || ""
-                                    font.pixelSize: root.fontSize
-                                    font.weight: Font.Medium
-                                    color: itemDelegate.isRead ? Theme.surfaceVariantText : Theme.primary
-                                    Layout.maximumWidth: 120
-                                    elide: Text.ElideRight
+                            // Leading: selection checkbox. Never opens a link,
+                            // never touches read state.
+                            DankActionButton {
+                                iconName: itemDelegate.isSelected ? "check_box" : "check_box_outline_blank"
+                                iconSize: 14
+                                buttonSize: itemDelegate.controlSize
+                                iconColor: itemDelegate.isSelected ? Theme.primary : Theme.surfaceVariantText
+                                Layout.alignment: Qt.AlignVCenter
+                                opacity: (rowHover.hovered || itemDelegate.isSelected) ? 1.0 : 0.45
+                                enabled: true
+                                onClicked: {
+                                    if (root._clickFromOverview())
+                                        return;
+                                    root.toggleSelected(model.itemId);
                                 }
 
+                                Behavior on opacity {
+                                    NumberAnimation {
+                                        duration: Theme.shortDuration
+                                    }
+                                }
+                            }
+
+                            // Text content
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: root.viewMode === "compact" ? 0 : 2
+
+                                // Source + Title row
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Theme.spacingXS
+
+                                    StyledText {
+                                        visible: root.showFeedName
+                                        text: model.source || ""
+                                        font.pixelSize: root.fontSize
+                                        font.weight: Font.Medium
+                                        color: itemDelegate.isRead ? Theme.surfaceVariantText : Theme.primary
+                                        Layout.maximumWidth: 120
+                                        elide: Text.ElideRight
+                                    }
+
+                                    StyledText {
+                                        visible: root.showFeedName
+                                        text: "·"
+                                        font.pixelSize: root.fontSize
+                                        color: Theme.surfaceVariantText
+                                    }
+
+                                    StyledText {
+                                        text: model.title || ""
+                                        font.pixelSize: root.fontSize
+                                        font.weight: Font.Medium
+                                        color: itemDelegate.isRead ? Theme.surfaceVariantText : Theme.surfaceText
+                                        Layout.fillWidth: true
+                                        elide: Text.ElideRight
+                                        maximumLineCount: 1
+                                        wrapMode: Text.NoWrap
+                                    }
+
+                                    // Compact mode: inline date
+                                    StyledText {
+                                        visible: root.viewMode === "compact" && text !== ""
+                                        text: {
+                                            root.timeTick;  // dependency: forces re-evaluation on the 60s tick
+                                            return model.timestamp > 0 ? FeedParser.getRelativeTime(new Date(model.timestamp)) : "";
+                                        }
+                                        font.pixelSize: root.fontSize - 2
+                                        color: Theme.withAlpha(Theme.surfaceVariantText, 0.7)
+                                    }
+                                }
+
+                                // Description (hidden in compact mode)
                                 StyledText {
-                                    visible: root.showFeedName
-                                    text: "·"
+                                    visible: root.viewMode !== "compact" && (model.description || "") !== ""
+                                    text: model.description || ""
                                     font.pixelSize: root.fontSize
                                     color: Theme.surfaceVariantText
-                                }
-
-                                StyledText {
-                                    text: model.title || ""
-                                    font.pixelSize: root.fontSize
-                                    font.weight: Font.Medium
-                                    color: itemDelegate.isRead ? Theme.surfaceVariantText : Theme.surfaceText
                                     Layout.fillWidth: true
                                     elide: Text.ElideRight
-                                    maximumLineCount: 1
-                                    wrapMode: Text.NoWrap
+                                    maximumLineCount: 2
+                                    wrapMode: Text.WordWrap
                                 }
 
-                                // Compact mode: inline date
+                                // Date (hidden in compact mode — shown inline instead)
                                 StyledText {
-                                    visible: root.viewMode === "compact" && text !== ""
+                                    visible: root.viewMode !== "compact" && text !== ""
                                     text: {
                                         root.timeTick;  // dependency: forces re-evaluation on the 60s tick
-                                        return model.timestamp > 0
-                                            ? FeedParser.getRelativeTime(new Date(model.timestamp))
-                                            : "";
+                                        return model.timestamp > 0 ? FeedParser.getRelativeTime(new Date(model.timestamp)) : "";
                                     }
                                     font.pixelSize: root.fontSize - 2
                                     color: Theme.withAlpha(Theme.surfaceVariantText, 0.7)
                                 }
                             }
 
-                            // Description (hidden in compact mode)
-                            StyledText {
-                                visible: root.viewMode !== "compact" && (model.description || "") !== ""
-                                text: model.description || ""
-                                font.pixelSize: root.fontSize
-                                color: Theme.surfaceVariantText
-                                Layout.fillWidth: true
-                                elide: Text.ElideRight
-                                maximumLineCount: 2
-                                wrapMode: Text.WordWrap
-                            }
+                            // Thumbnail (hidden in compact mode). SECURITY:
+                            // gated on FeedParser.isSafeUrl as defense in depth
+                            // -- FeedParser already blanks unsafe imageUrl
+                            // values at parse time, but a QML Image must never
+                            // be pointed at an unvetted URL even if that first
+                            // line of defense were somehow bypassed.
+                            Rectangle {
+                                id: thumbRect
+                                visible: root.viewMode !== "compact" && root.showImages && FeedParser.isSafeUrl(model.imageUrl) && thumbImage.status !== Image.Error
+                                Layout.preferredWidth: 48
+                                Layout.preferredHeight: 48
+                                Layout.alignment: Qt.AlignVCenter
+                                radius: Theme.cornerRadius
+                                color: Theme.surfaceContainerHigh
+                                clip: true
 
-                            // Date (hidden in compact mode — shown inline instead)
-                            StyledText {
-                                visible: root.viewMode !== "compact" && text !== ""
-                                text: {
-                                    root.timeTick;  // dependency: forces re-evaluation on the 60s tick
-                                    return model.timestamp > 0
-                                        ? FeedParser.getRelativeTime(new Date(model.timestamp))
-                                        : "";
+                                Image {
+                                    id: thumbImage
+                                    anchors.fill: parent
+                                    source: (root.showImages && FeedParser.isSafeUrl(model.imageUrl)) ? model.imageUrl : ""
+                                    fillMode: Image.PreserveAspectCrop
+                                    asynchronous: true
+                                    cache: true
                                 }
-                                font.pixelSize: root.fontSize - 2
-                                color: Theme.withAlpha(Theme.surfaceVariantText, 0.7)
-                            }
-                        }
-
-                        // Thumbnail (hidden in compact mode). SECURITY:
-                        // gated on FeedParser.isSafeUrl as defense in depth
-                        // -- FeedParser already blanks unsafe imageUrl
-                        // values at parse time, but a QML Image must never
-                        // be pointed at an unvetted URL even if that first
-                        // line of defense were somehow bypassed.
-                        Rectangle {
-                            id: thumbRect
-                            visible: root.viewMode !== "compact" && root.showImages && FeedParser.isSafeUrl(model.imageUrl) && thumbImage.status !== Image.Error
-                            Layout.preferredWidth: 48
-                            Layout.preferredHeight: 48
-                            Layout.alignment: Qt.AlignVCenter
-                            radius: Theme.cornerRadius
-                            color: Theme.surfaceContainerHigh
-                            clip: true
-
-                            Image {
-                                id: thumbImage
-                                anchors.fill: parent
-                                source: (root.showImages && FeedParser.isSafeUrl(model.imageUrl)) ? model.imageUrl : ""
-                                fillMode: Image.PreserveAspectCrop
-                                asynchronous: true
-                                cache: true
-                            }
-                        }
-
-                        // Trailing #1: mark-read toggle. Takes over the
-                        // read-toggle behavior the checkbox used to have
-                        // before selection was added, moved here with a
-                        // distinct icon so it isn't confused with the
-                        // leading selection checkbox. Always enabled, always
-                        // hittable -- never disable the subtree via
-                        // `enabled: <opacity expr>`, that's what broke the
-                        // bookmark button before.
-                        DankActionButton {
-                            iconName: itemDelegate.isRead ? "mark_email_read" : "mark_email_unread"
-                            iconSize: 14
-                            buttonSize: itemDelegate.controlSize
-                            iconColor: itemDelegate.isRead ? Theme.primary : Theme.surfaceVariantText
-                            Layout.alignment: Qt.AlignVCenter
-                            opacity: (rowHover.hovered || itemDelegate.isRead) ? 1.0 : 0.45
-                            enabled: true
-                            onClicked: {
-                                if (root._clickFromOverview())
-                                    return;
-                                var wasRead = itemDelegate.isRead;
-                                if (wasRead)
-                                    root.markUnread(model.itemId);
-                                else
-                                    root.markRead(model.itemId);
-                                // An explicit toggle via this button ALWAYS
-                                // syncs to the server, regardless of
-                                // syncReadOnOpen (that setting only gates
-                                // the row-click "open" path above).
-                                var numId = root.backendItemId(model.itemId);
-                                var ids = numId ? [numId] : [];
-                                var req = wasRead
-                                    ? root.backend.markUnreadRequest(root.backendConfig, root.backendSession, ids)
-                                    : root.backend.markReadRequest(root.backendConfig, root.backendSession, ids);
-                                root.runRequest(req, function(output, code) {
-                                    if (code !== null && code !== 0)
-                                        root.toastError(wasRead ? "Failed to mark as unread" : "Failed to mark as read");
-                                });
                             }
 
-                            Behavior on opacity {
-                                NumberAnimation { duration: Theme.shortDuration }
-                            }
-                        }
+                            // Trailing #1: mark-read toggle. Takes over the
+                            // read-toggle behavior the checkbox used to have
+                            // before selection was added, moved here with a
+                            // distinct icon so it isn't confused with the
+                            // leading selection checkbox. Always enabled, always
+                            // hittable -- never disable the subtree via
+                            // `enabled: <opacity expr>`, that's what broke the
+                            // bookmark button before.
+                            DankActionButton {
+                                iconName: itemDelegate.isRead ? "mark_email_read" : "mark_email_unread"
+                                iconSize: 14
+                                buttonSize: itemDelegate.controlSize
+                                iconColor: itemDelegate.isRead ? Theme.primary : Theme.surfaceVariantText
+                                Layout.alignment: Qt.AlignVCenter
+                                opacity: (rowHover.hovered || itemDelegate.isRead) ? 1.0 : 0.45
+                                enabled: true
+                                onClicked: {
+                                    if (root._clickFromOverview())
+                                        return;
+                                    root.toggleReadSynced(model.itemId, itemDelegate.isRead);
+                                }
 
-                        // Bookmark toggle. `enabled` stays true always --
-                        // binding it to the opacity expression disabled the
-                        // whole subtree for input whenever idle, which is
-                        // why it used to be unclickable without hovering
-                        // first.
-                        DankActionButton {
-                            iconName: itemDelegate.isBookmarked ? "bookmark" : "bookmark_border"
-                            iconSize: 14
-                            buttonSize: itemDelegate.controlSize
-                            iconColor: itemDelegate.isBookmarked ? Theme.primary : Theme.surfaceVariantText
-                            Layout.alignment: Qt.AlignVCenter
-                            opacity: (rowHover.hovered || itemDelegate.isBookmarked) ? 1.0 : 0.45
-                            enabled: true
-                            onClicked: {
-                                if (root._clickFromOverview())
-                                    return;
-                                root.toggleBookmark(model.itemId);
+                                Behavior on opacity {
+                                    NumberAnimation {
+                                        duration: Theme.shortDuration
+                                    }
+                                }
                             }
 
-                            Behavior on opacity {
-                                NumberAnimation { duration: Theme.shortDuration }
+                            // Bookmark toggle. `enabled` stays true always --
+                            // binding it to the opacity expression disabled the
+                            // whole subtree for input whenever idle, which is
+                            // why it used to be unclickable without hovering
+                            // first.
+                            DankActionButton {
+                                iconName: itemDelegate.isBookmarked ? "bookmark" : "bookmark_border"
+                                iconSize: 14
+                                buttonSize: itemDelegate.controlSize
+                                iconColor: itemDelegate.isBookmarked ? Theme.primary : Theme.surfaceVariantText
+                                Layout.alignment: Qt.AlignVCenter
+                                opacity: (rowHover.hovered || itemDelegate.isBookmarked) ? 1.0 : 0.45
+                                enabled: true
+                                onClicked: {
+                                    if (root._clickFromOverview())
+                                        return;
+                                    root.toggleBookmark(model.itemId);
+                                }
+
+                                Behavior on opacity {
+                                    NumberAnimation {
+                                        duration: Theme.shortDuration
+                                    }
+                                }
                             }
                         }
                     }
@@ -1733,7 +1895,9 @@ DesktopPluginComponent {
                 visible: feedModel.count === 0 && !root.isLoading
                 spacing: Theme.spacingS
 
-                Item { Layout.fillHeight: true }
+                Item {
+                    Layout.fillHeight: true
+                }
 
                 DankIcon {
                     name: {
@@ -1763,9 +1927,7 @@ DesktopPluginComponent {
                         var cs = root.backend.configState(root.backendConfig);
                         if (!cs.ok) {
                             if (cs.reason === "unconfigured")
-                                return root.backend.capabilities.serverState
-                                    ? "Configure Miniflux in settings"
-                                    : "No feeds configured";
+                                return root.backend.capabilities.serverState ? "Configure Miniflux in settings" : "No feeds configured";
                             // reason === "empty": feeds exist but are all disabled
                             // (only reachable for a non-server-backed backend).
                             return "All feeds disabled";
@@ -1795,9 +1957,7 @@ DesktopPluginComponent {
                         var cs = root.backend.configState(root.backendConfig);
                         if (!cs.ok) {
                             if (cs.reason === "unconfigured")
-                                return root.backend.capabilities.serverState
-                                    ? "Enter your server URL and API token"
-                                    : "Add feeds in the widget settings";
+                                return root.backend.capabilities.serverState ? "Enter your server URL and API token" : "Add feeds in the widget settings";
                             return "Re-enable a feed in settings";
                         }
                         if (root.allItems.length === 0 && root.failedFeedCount > 0)
@@ -1815,7 +1975,9 @@ DesktopPluginComponent {
                     horizontalAlignment: Text.AlignHCenter
                 }
 
-                Item { Layout.fillHeight: true }
+                Item {
+                    Layout.fillHeight: true
+                }
             }
 
             // --- Loading state ---
@@ -1825,7 +1987,9 @@ DesktopPluginComponent {
                 visible: feedModel.count === 0 && root.isLoading
                 spacing: Theme.spacingS
 
-                Item { Layout.fillHeight: true }
+                Item {
+                    Layout.fillHeight: true
+                }
 
                 DankSpinner {
                     running: root.isLoading
@@ -1843,7 +2007,9 @@ DesktopPluginComponent {
                     Layout.alignment: Qt.AlignHCenter
                 }
 
-                Item { Layout.fillHeight: true }
+                Item {
+                    Layout.fillHeight: true
+                }
             }
         }
     }

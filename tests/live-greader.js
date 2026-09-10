@@ -21,19 +21,52 @@ const FeedParser = require(REPO + "/FeedParser.js");
 const ReaderState = require(REPO + "/ReaderState.js");
 const { createGoogleReaderBackend } = require(REPO + "/GoogleReader.js");
 
-const env = Object.fromEntries(
-  fs.readFileSync(process.env.HOME + "/secrets/miniflux.env", "utf8")
-    .split("\n").filter(l => l && !l.startsWith("#") && l.includes("="))
-    .map(l => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)])
-);
+// Which server to test against. The Google Reader API is a protocol, not a
+// product, so this suite is only meaningful when it can be pointed at more
+// than one implementation -- Miniflux and FreshRSS disagree in ways that
+// matter (see below).
+//
+//   node tests/live-greader.js            # Miniflux   (default)
+//   node tests/live-greader.js freshrss   # FreshRSS
+//
+// FreshRSS serves the API under /api/greader.php rather than at the root, so
+// its base URL carries that prefix. Confirmed divergence between the two:
+// Miniflux returns a bare [] with HTTP 200 for every stream/contents variant
+// while FreshRSS implements it properly -- which is exactly why this client
+// uses the two-step items/ids -> items/contents flow, the only one both
+// servers support.
+function loadEnv(file) {
+  return Object.fromEntries(
+    fs.readFileSync(process.env.HOME + "/secrets/" + file, "utf8")
+      .split("\n").filter(l => l && !l.startsWith("#") && l.includes("="))
+      .map(l => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)])
+  );
+}
 
-const config = {
-  greaderUrl: env.MINIFLUX_URL,
-  greaderUsername: env.GREADER_USERNAME,
-  greaderPassword: env.GREADER_PASSWORD,
-  maxItems: 20,
-  showStarred: false
-};
+const TARGET = (process.argv[2] || "miniflux").toLowerCase();
+let config;
+
+if (TARGET === "freshrss") {
+  const env = loadEnv("freshrss.env");
+  config = {
+    greaderUrl: env.GREADER_BASE_URL,
+    greaderUsername: env.FRESHRSS_USER_NAME,
+    greaderPassword: env.FRESHRSS_API_PASSWORD,
+    maxItems: 20,
+    showStarred: false
+  };
+} else {
+  const env = loadEnv("miniflux.env");
+  config = {
+    greaderUrl: env.MINIFLUX_URL,
+    greaderUsername: env.GREADER_USERNAME,
+    greaderPassword: env.GREADER_PASSWORD,
+    maxItems: 20,
+    showStarred: false
+  };
+}
+
+console.log("target: " + TARGET + "  (" + config.greaderUrl + ")");
 
 const backend = createGoogleReaderBackend({ FeedParser, ReaderState });
 
@@ -134,7 +167,19 @@ check("toggleStar(true) unstarred it again", !unstarred.items.some(i => i.id ===
   ];
   const out = execFileSync(argv[0], argv.slice(1), { encoding: "utf8" });
   const status = out.slice(out.lastIndexOf("HTTPSTATUS:") + "HTTPSTATUS:".length);
-  check("edit-tag without T= (post token) is rejected with 401", status === "401", "status=" + status);
+  // The post token is REQUIRED by Miniflux (401 without it) and OPTIONAL on
+  // FreshRSS (200 without it). Confirmed against both. That asymmetry is
+  // exactly why this client always sends it: a client developed only against
+  // FreshRSS would omit it, work perfectly, and then fail on Miniflux with a
+  // bare 401 and nothing to explain it. Assert per server rather than
+  // pretending one behaviour is universal.
+  if (TARGET === "freshrss") {
+    check("edit-tag without T= is accepted by FreshRSS (Miniflux rejects it)",
+      status === "200", "status=" + status);
+  } else {
+    check("edit-tag without T= (post token) is rejected with 401",
+      status === "401", "status=" + status);
+  }
 }
 
 console.log(fail === 0 ? "\nALL LIVE CHECKS PASSED" : "\n*** " + fail + " FAILED ***");
