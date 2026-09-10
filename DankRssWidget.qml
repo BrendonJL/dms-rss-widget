@@ -34,33 +34,28 @@ DesktopPluginComponent {
     property int fontSize: pluginData.fontSize ?? Theme.fontSizeSmall
     property bool notifyNewItems: pluginData.notifyNewItems ?? true
 
-    // --- Miniflux settings (v2.4) ---
-    // "standard" | "miniflux" -- exclusive, never hybrid (see v2.4 plan §0).
-    // The ?? "standard" default is load-bearing for users upgrading from a
-    // pre-2.4 install with no sourceMode key at all: they must land in
-    // standard/RSS mode with every existing behavior intact (v2.4 plan §5.5).
+    // --- Miniflux settings ---
+    // sourceMode is "standard" or "miniflux", never hybrid. The ?? "standard"
+    // default is load-bearing: an install with no sourceMode key at all
+    // (pre-Miniflux-support) must land in standard/RSS mode with every
+    // existing behavior intact, not silently switch modes on upgrade.
     property string sourceMode: pluginData.sourceMode ?? "standard"
     property string minifluxUrl: (pluginData.minifluxUrl ?? "").replace(/\/$/, "")
     property string minifluxToken: pluginData.minifluxToken ?? ""
     property bool syncReadOnOpen: pluginData.syncReadOnOpen ?? true
     property bool showStarred: pluginData.showStarred ?? false
 
-    // --- Google Reader settings (Phase 1 / stage 1b) ---
-    // No settings UI yet -- that's stage 1c. Reachable in 1b only by
-    // hand-editing settings.json, which is enough to verify the runner (see
-    // docs/plans/2026-09-09-phase1-google-reader-design.md, "Out of scope
-    // for 1b").
+    // --- Google Reader settings ---
+    // No settings UI yet; only reachable by hand-editing settings.json. That
+    // is enough to exercise the backend runner while the UI is still pending.
     property string greaderUrl: (pluginData.greaderUrl ?? "").replace(/\/$/, "")
     property string greaderUsername: pluginData.greaderUsername ?? ""
     property string greaderPassword: pluginData.greaderPassword ?? ""
 
-    // --- Backend provider interface (Phase 0 / stage 0b, extended Phase 1 /
-    // stage 1b) ---
-    // JS owns every backend-specific decision (which URL, method, headers,
-    // body, how to parse a response, what the backend can do); QML owns only
-    // the side effects (running Proc, showing toasts, assigning properties).
-    // See docs/plans/2026-09-08-phase0-backend-interface-design.md and the
-    // Phase 1 doc's stage 1b addendum.
+    // --- Backend provider interface ---
+    // JS owns every backend-specific decision (URL, method, headers, body,
+    // response parsing, capabilities); QML owns only the side effects
+    // (running Proc, showing toasts, assigning properties).
     readonly property var backends: Backends.createBackends({ FeedParser: FeedParser, ReaderState: ReaderState, GoogleReader: GoogleReader })
     readonly property var backend: root.backends[root.sourceMode] || root.backends.standard
     readonly property var backendConfig: ({
@@ -87,31 +82,29 @@ DesktopPluginComponent {
     property bool isLoading: true
     property var windowRef: null
     property int fetchGeneration: 0    // guards against overlapping refreshes (see below)
-    // Google Reader session cache (Phase 1 / stage 1b): { authToken,
-    // postToken }. Deliberately IN MEMORY ONLY -- never written to plugin
-    // state. It is re-derivable with one ClientLogin, and persisting a
-    // credential-bearing token to disk for that trade is a bad one. Updated
-    // from the `session` field ChainRunner's terminal (and "next") results
-    // carry back; every backend other than greader ignores it, but it is
-    // threaded through positionally to all of them regardless (Phase 0
-    // contract -- see tests/backend-interface.test.js).
+    // Google Reader session cache: { authToken, postToken }. Deliberately IN
+    // MEMORY ONLY -- never written to plugin state, since it's re-derivable
+    // with one ClientLogin and not worth the risk of a credential on disk.
+    // Updated from the `session` field ChainRunner's results carry back.
+    // Every backend but greader ignores it, but it is threaded through
+    // positionally to all of them regardless -- all backends share one call
+    // signature.
     property var backendSession: ({})
     property string filterMode: "all"  // "all", "unread" or "bookmarked"
     property string searchQuery: ""
     property bool searchActive: false   // whether the search field is revealed
     property int timeTick: 0           // bumped to re-evaluate relative-time bindings
 
-    // T6/PR#3: clicks anywhere in the row/controls must be ignored while the
-    // niri overview is open -- otherwise clicking a thumbnail in the overview
-    // to switch workspaces can land on this widget instead and silently open
-    // a link / mark an item read. A plain "inOverview" check is not enough:
-    // the overview-close IPC event and the Wayland pointer delivery are async,
-    // so NiriService.inOverview can already read false by the time the stray
-    // click arrives. _overviewGuard stays true for overviewReleaseTimer's
-    // window after overview close to absorb that race. CompositorService.isNiri
-    // and NiriService.inOverview are both `qs.Services` singletons (already
-    // imported above); the typeof guards are defense in depth only, matching
-    // how this file already treats ToastService/PluginService.
+    // Clicks anywhere in the row/controls must be ignored while the niri
+    // overview is open -- otherwise clicking a thumbnail in the overview to
+    // switch workspaces can land on this widget instead and silently open a
+    // link or mark an item read. A plain "inOverview" check isn't enough:
+    // the overview-close IPC event and the Wayland pointer delivery are
+    // async, so NiriService.inOverview can already read false by the time
+    // the stray click arrives. _overviewGuard stays true for
+    // overviewReleaseTimer's window after overview close to absorb that
+    // race. The typeof guards below are defense in depth, matching how this
+    // file already treats ToastService/PluginService.
     property bool _overviewGuard: false
 
     function _clickFromOverview() {
@@ -138,15 +131,13 @@ DesktopPluginComponent {
         onTriggered: root._overviewGuard = false
     }
 
-    // D8: DMS maps this onto WlrKeyboardFocus.OnDemand (surface-eligible,
-    // not surface-focused) vs. None. Widening it to include pointer hover
-    // does not reintroduce the keybind-swallowing problem this guard exists
-    // for: OnDemand never grants focus on its own, it only lets a click that
-    // lands on us claim it. While the pointer merely rests over the widget
-    // with nothing clicked, keys still go to niri untouched. This is needed
-    // because the surface must already be focus-eligible *before* the click
-    // that opens search, or that very click grants nothing and typing is a
-    // no-op until a second click (see search-fixes design doc, Problem 1).
+    // DMS maps this onto WlrKeyboardFocus.OnDemand (surface-eligible, not
+    // surface-focused) vs. None. Widening it to include pointer hover does
+    // not reintroduce keybind-swallowing: OnDemand never grants focus on its
+    // own, it only lets a click that lands on us claim it -- while the
+    // pointer merely hovers, keys still go to niri untouched. This must
+    // already be true before the click that opens search, or that very
+    // click grants no focus and typing is a no-op until a second click.
     property bool acceptsKeyboardFocus: root.searchActive || widgetHover.hovered
 
     // Read tracking, keyed by stable item id. `readMap` is replaced (not mutated)
@@ -162,12 +153,11 @@ DesktopPluginComponent {
     property var bookmarkOrder: []
 
     // Selection is TRANSIENT: never persisted, never bounded/capped like
-    // readOrder/bookmarkOrder. Pruned only against root.allItems (S10), so it
+    // readOrder/bookmarkOrder. Pruned only against root.allItems, so it
     // survives search/filter-chip changes and can include ids currently
     // hidden by the active filter -- not just what's on screen. Plain map
     // (not an id-order list) because membership is all that matters; order
-    // is irrelevant. Mirrors readMap/bookmarkMap's "map alongside a QML
-    // property, replaced not mutated" pattern.
+    // is irrelevant.
     property var selectedMap: ({})
     readonly property int selectedCount: ReaderState.countSelected(root.selectedMap)
 
@@ -237,10 +227,10 @@ DesktopPluginComponent {
     onWidgetWidthChanged: root.handleVisibilityChange()
     onWidgetHeightChanged: root.handleVisibilityChange()
 
-    // NOTE: do NOT declare `onPluginServiceChanged` here. DesktopPluginComponent
-    // already handles it (to call loadPluginData()), and a derived declaration
-    // would REPLACE the base handler, leaving pluginData permanently empty.
-    // Reader state is loaded lazily instead — see loadReaderState() callers.
+    // Do NOT declare `onPluginServiceChanged` here: DesktopPluginComponent
+    // already handles it (to call loadPluginData()), and a derived handler
+    // would REPLACE the base one, leaving pluginData permanently empty.
+    // Reader state is loaded lazily instead -- see loadReaderState() callers.
 
     Component.onDestruction: {
         timer.running = false;
@@ -259,11 +249,11 @@ DesktopPluginComponent {
         }
     }
 
-    // v2.4 Risk #3: switching sourceMode must clear ONLY the per-mode view
-    // (feedModel/allItems), never readMap/bookmarkMap -- those are shared,
-    // cross-mode-safe id lists keyed by the "m:"/"g:"/"l:"/"h:"-prefixed
-    // stable ids, and clearing them on every toggle would un-read/un-bookmark
-    // everything in BOTH modes every time the user flips the settings switch.
+    // Switching sourceMode must clear ONLY the per-mode view (feedModel/
+    // allItems), never readMap/bookmarkMap -- those are shared, cross-mode
+    // id lists keyed by "m:"/"g:"/"l:"/"h:"-prefixed stable ids. Clearing
+    // them on every toggle would un-read/un-bookmark everything in BOTH
+    // modes each time the user flips the settings switch.
     onSourceModeChanged: {
         if (root.isRunnable()) {
             root.allItems = [];
@@ -277,7 +267,7 @@ DesktopPluginComponent {
         if (root.isRunnable()) {
             // A local (non-server-backed) backend with a zero-feed config
             // will never fetch anything -- resolve isLoading now instead of
-            // leaving the T5 default-true spinner running forever. A
+            // leaving the default-true spinner running forever. A
             // server-backed backend (e.g. Miniflux) has no per-feed list
             // here; fetchAllFeeds resolves isLoading itself when its config
             // isn't ready, and the timer is still armed below so a
@@ -322,14 +312,14 @@ DesktopPluginComponent {
 
     // --- Persistence (state tier: dedicated per-plugin JSON, debounced writes) ---
     //
-    // IMPORTANT: the object injected as `pluginService` is NOT always the real
-    // PluginService. A desktop-widget INSTANCE receives instanceScopedPluginService
-    // from DesktopPluginWrapper.qml, which implements only load/savePluginData —
-    // it has NO load/savePluginState. Calling those on it throws, and such an
-    // exception previously aborted fetchAllFeeds() before a single feed was
-    // requested (the widget just sat on "No items loaded"). So: prefer the real
-    // singleton, feature-detect it, and never let a persistence failure take the
-    // fetch path down with it.
+    // The object injected as `pluginService` is NOT always the real
+    // PluginService. A desktop-widget INSTANCE receives
+    // instanceScopedPluginService from DesktopPluginWrapper.qml, which
+    // implements only load/savePluginData -- it has NO load/savePluginState.
+    // Calling those on it throws, and that exception used to abort
+    // fetchAllFeeds() before a single feed was requested (stuck on "No items
+    // loaded"). So: prefer the real singleton, feature-detect it, and never
+    // let a persistence failure take the fetch path down with it.
     readonly property var stateService: ReaderState.resolveStateService(
         typeof PluginService !== "undefined" ? PluginService : null,
         root.pluginService)
@@ -393,18 +383,16 @@ DesktopPluginComponent {
     function toggleBookmark(itemId) {
         if (!itemId)
             return;
-        // v2.4 §2.3: bookmarkMap/bookmarkOrder are reused as-is for
-        // Miniflux's starred state -- no separate starred map. Bookmarks
-        // made in RSS mode are untouched by a mode switch: an RSS id's
-        // "h:"/"g:"/"l:" prefix can never collide with a Miniflux "m:" id,
-        // so switching sourceMode naturally hides the other mode's
-        // bookmarks from view (they simply aren't in allItems) without
-        // deleting them.
-        // MUST be read BEFORE the local toggle below: Google Reader's
-        // edit-tag has no "set" endpoint, only explicit add/remove, so
-        // toggleStarRequest needs to know the PRIOR starred state to pick
-        // a=/r=. Reading it after the toggle would report the NEW state and
-        // send the wrong one (stage 1b design doc, "Call sites").
+        // bookmarkMap/bookmarkOrder double as Miniflux's starred state -- no
+        // separate starred map. An RSS id's "h:"/"g:"/"l:" prefix can never
+        // collide with a Miniflux "m:" id, so switching sourceMode naturally
+        // hides the other mode's bookmarks from view without deleting them.
+        //
+        // wasBookmarked MUST be read BEFORE the local toggle below: Google
+        // Reader's edit-tag has no "set" endpoint, only explicit add/remove,
+        // so toggleStarRequest needs the PRIOR starred state to pick a=/r=.
+        // Reading it after the toggle would report the NEW state and send
+        // the wrong one.
         var wasBookmarked = !!root.bookmarkMap[itemId];
 
         root.bookmarkOrder = ReaderState.toggleBookmark(root.bookmarkOrder, itemId, root.idHistoryCap);
@@ -446,13 +434,13 @@ DesktopPluginComponent {
         root.readMap = ReaderState.buildIdMap(root.readOrder);
         root.saveReadState();
 
-        // v2.4 §2.7: push to the server in one batched call rather than one
-        // per id (Miniflux's PUT /v1/entries already accepts an array of
-        // entry_ids). Filtered to "m:"-prefixed ids as a cheap correctness
-        // guard -- only one source mode's items are ever in allItems/
-        // selectedMap at a time, so this filter should never actually drop
-        // anything in practice. markReadRequest is a no-op (null) on any
-        // backend without server-side read state, so no mode check is needed.
+        // Push to the server in one batched call rather than one per id
+        // (Miniflux's PUT /v1/entries accepts an array of entry_ids).
+        // Filtered to ids the active backend recognizes as a cheap
+        // correctness guard -- only one source mode's items are ever in
+        // allItems/selectedMap at a time, so this should never actually
+        // drop anything in practice. markReadRequest is a no-op (null) on
+        // any backend without server-side read state.
         var numIds = [];
         for (var i = 0; i < ids.length; i++) {
             var numId = root.backendItemId(ids[i]);
@@ -472,13 +460,11 @@ DesktopPluginComponent {
         var ids = Object.keys(root.selectedMap);
         if (ids.length === 0) return;
 
-        // v2.4 §2.7: capture "already bookmarked" BEFORE the local additive
-        // update below, since addAllBookmarked marks every selected id as
-        // bookmarked regardless of its prior state -- checking bookmarkMap
-        // AFTER that update would see every id as bookmarked and could never
-        // tell which ones were newly starred. Computed unconditionally: on a
-        // backend without server-side star state this is only ever consulted
-        // by a loop whose toggleStarRequest is already a guaranteed no-op.
+        // Capture "already bookmarked" BEFORE the local additive update
+        // below, since addAllBookmarked marks every selected id as
+        // bookmarked regardless of prior state -- checking bookmarkMap AFTER
+        // that update would see every id as bookmarked and could never tell
+        // which ones were newly starred.
         var alreadyBookmarked = {};
         for (var i = 0; i < ids.length; i++) {
             if (root.bookmarkMap[ids[i]])
@@ -497,9 +483,10 @@ DesktopPluginComponent {
             var id = ids[j];
             if (alreadyBookmarked[id])
                 continue;
-            // currentlyStarred is always false here: the loop already
-            // skipped every id alreadyBookmarked captured before the local
-            // toggle above (same "read before toggle" rule as toggleBookmark).
+            // currentlyStarred is always false here: alreadyBookmarked
+            // already filtered out anything starred before the loop began
+            // (same "read before toggle" rule as toggleBookmark's
+            // wasBookmarked).
             var numId = root.backendItemId(id);
             var req = root.backend.toggleStarRequest(root.backendConfig, root.backendSession, numId, false);
             root.runRequest(req, function(output, code) {
@@ -545,7 +532,7 @@ DesktopPluginComponent {
         root.readMap = ReaderState.buildIdMap(root.readOrder);
         root.saveReadState();
 
-        // v2.4 §2.7: same batched-push pattern as bulkMarkReadSelected.
+        // Same batched-push pattern as bulkMarkReadSelected.
         var numIds = [];
         for (var i2 = 0; i2 < ids.length; i2++) {
             var numId = root.backendItemId(ids[i2]);
@@ -569,26 +556,26 @@ DesktopPluginComponent {
         timer.restart();
     }
 
-    // The ONLY place a request descriptor becomes a process. `req.timeoutMs`
+    // The ONLY place a request descriptor becomes a process. req.timeoutMs
     // must be honoured: Miniflux carries 30000 deliberately, longer than
-    // curl's own 25s --max-time inside that descriptor's argv, because
-    // otherwise a slow-but-fine request races Proc's default timeout and
-    // surfaces a spurious failure toast. A null/absent request is a no-op
-    // for that backend (e.g. StandardBackend's mark/star requests) -- report
-    // it as such via a null exit code so callers can tell "nothing to do"
-    // apart from a real failure.
+    // curl's own 25s --max-time inside that descriptor's argv, so a
+    // slow-but-fine request doesn't race Proc's default timeout and surface
+    // a spurious failure toast. A null/absent request is a no-op for that
+    // backend (e.g. StandardBackend's mark/star requests); report it via a
+    // null exit code so callers can tell "nothing to do" apart from a real
+    // failure.
     function runRequest(req, cb) {
         if (!req) {
             cb(null, null);
             return;
         }
-        // T4/v2.4 §2.4: id is deliberately null on every call -- Proc's
-        // debounce map (_procDebouncers) keys entries by id and only cleans
-        // up entries created with a falsy id; a fixed string id is kept
-        // forever and, worse, is SHARED across overlapping calls (a manual
-        // refresh firing while a periodic one is still in flight), so the
-        // second call would clobber the first's callback before it exits.
-        // A null id makes Proc generate a fresh id per call and self-clean.
+        // id is deliberately null on every call: Proc's debounce map
+        // (_procDebouncers) keys entries by id and only cleans up entries
+        // created with a falsy id. A fixed string id would be kept forever
+        // and, worse, SHARED across overlapping calls (a manual refresh
+        // firing while a periodic one is still in flight), so the second
+        // call would clobber the first's callback before it exits. A null
+        // id makes Proc generate a fresh id per call and self-clean.
         Proc.runCommand(null, req.argv, function(out, code) {
             cb(out, code);
         }, undefined, req.timeoutMs || undefined);
@@ -603,13 +590,12 @@ DesktopPluginComponent {
         // (missing it would re-mark everything unread).
         root.loadReaderState();
 
-        // Invalidate any in-flight callbacks from a previous cycle. Without this,
-        // two overlapping fetches share one collector and one pending counter,
-        // and the cycle finalizes early on a half-filled result set.
-        //
-        // v2.4/Stage 0b: incremented ABOVE the backend lookup below (not
-        // below it) so every backend shares one generation counter, even if
-        // sourceMode is toggled mid-flight (v2.4 plan §5 Risk #1).
+        // Invalidate any in-flight callbacks from a previous cycle. Without
+        // this, two overlapping fetches would share one collector and one
+        // pending counter, and the cycle would finalize early on a
+        // half-filled result set. Incremented ABOVE the backend lookup below
+        // so every backend shares one generation counter, even if sourceMode
+        // is toggled mid-flight.
         root.fetchGeneration++;
         var gen = root.fetchGeneration;
 
@@ -629,8 +615,8 @@ DesktopPluginComponent {
         if (!backend.capabilities.serverState) {
             // Keyed by meta.index (position in root.feeds), NOT by url: two
             // enabled feeds may share a url under different display names,
-            // and keying on url collapses them onto one descriptor so one
-            // renders its items under the other's name.
+            // and keying on url would collapse them onto one descriptor so
+            // one renders its items under the other's name.
             var byIndex = ({});
             for (var r = 0; r < requests.length; r++) {
                 if (requests[r].meta)
@@ -736,11 +722,11 @@ DesktopPluginComponent {
     }
 
     // Runs one link of `chain` and hands its parse result to
-    // ChainRunner.step(). THE PENDING COUNTER RULE (stage 1b design doc):
-    // ctx.pending is decremented exactly once per CHAIN, never once per
-    // request. action === "next" recurses to run the following link and
-    // must NOT touch ctx.pending; only "done" or "error" -- the chain's one
-    // terminal result -- decrements it, right where the old single-request
+    // ChainRunner.step(). THE PENDING COUNTER RULE: ctx.pending is
+    // decremented exactly once per CHAIN, never once per request.
+    // action === "next" recurses to run the following link and must NOT
+    // touch ctx.pending; only "done" or "error" -- the chain's one terminal
+    // result -- decrements it, right where the old single-request
     // fetchDescriptor used to.
     function runChainLink(req, status, ctx, hadItems, chain) {
         root.runRequest(req, function(output, exitCode) {
@@ -775,16 +761,14 @@ DesktopPluginComponent {
 
             // ChainRunner.step() throws ONLY when called after its chain
             // already produced a terminal result -- deliberately, to
-            // surface a caller bug loudly rather than silently double-
-            // decrementing ctx.pending (ChainRunner.js's own header
-            // comment). That caller bug should be structurally impossible
-            // here (this function only ever calls step() once per link,
-            // and stops recursing the moment a terminal comes back), but an
-            // uncaught exception in a running widget would leave isLoading
-            // stuck true forever, so catch it anyway: treat it as a
-            // terminal error and decrement exactly once, same as any other
-            // chain error. Loud in development (console.warn), safe in
-            // production.
+            // surface a caller bug loudly rather than silently
+            // double-decrementing ctx.pending. That bug should be
+            // structurally impossible here (this function calls step() once
+            // per link and stops recursing once a terminal comes back), but
+            // an uncaught exception in a running widget would leave
+            // isLoading stuck true forever -- so catch it anyway, treat it
+            // as a terminal error, and decrement exactly once like any other
+            // chain error.
             var result;
             try {
                 result = chain.step(parsed);
@@ -826,13 +810,12 @@ DesktopPluginComponent {
                 for (var j = 0; j < result.items.length; j++)
                     ctx.collector.push(result.items[j]);
 
-                // Server wins on fetch reconciliation (v2.4 §2.2/§2.3):
-                // reconcile server read/starred status into local readMap/
-                // bookmarkMap. This is the ONLY place this runs -- never on
-                // a local action -- so a local push has already had a
-                // chance to reach the server by the time this corrects any
-                // drift. A no-op (identity) on any backend without
-                // server-side state.
+                // Server wins on fetch reconciliation: reconcile server
+                // read/starred status into local readMap/bookmarkMap. This
+                // is the ONLY place this runs -- never on a local action --
+                // so a local push has already had a chance to reach the
+                // server by the time this corrects any drift. A no-op
+                // (identity) on any backend without server-side state.
                 var reconciled = root.backend.reconcile({
                     readOrder: root.readOrder,
                     bookmarkOrder: root.bookmarkOrder,
@@ -921,7 +904,7 @@ DesktopPluginComponent {
         root.saveSeenState();
     }
 
-    // --- Miniflux source mode (v2.4) ---
+    // --- Server-backed source mode helpers ---
 
     function toastError(msg) {
         if (typeof ToastService !== "undefined")
@@ -930,14 +913,12 @@ DesktopPluginComponent {
 
     // Strips the backend-specific id prefix ("m:" for Miniflux, "r:" for
     // Google Reader) down to the raw id each backend's API expects. Returns
-    // "" for anything with neither prefix (defensive: callers should
-    // already only reach here with an id from the active backend, but a
-    // filter that silently no-ops on a foreign-mode id is cheap insurance
-    // against read-state corruption crossing between source modes -- v2.4
-    // plan §5 Risk #2, extended in Phase 1 to greader's "r:" ids). Only one
-    // source mode's items are ever in allItems/selectedMap/bookmarkMap at a
-    // time, so checking the prefix directly is enough -- no need to also
-    // check root.backend.id.
+    // "" for anything with neither prefix: callers should already only
+    // reach here with an id from the active backend, but a silent no-op on
+    // a foreign-mode id is cheap insurance against read-state corruption
+    // crossing between source modes. Only one source mode's items are ever
+    // in allItems/selectedMap/bookmarkMap at a time, so checking the prefix
+    // alone is enough -- no need to also check root.backend.id.
     function backendItemId(itemId) {
         if (typeof itemId !== "string")
             return "";
@@ -956,12 +937,10 @@ DesktopPluginComponent {
     }
 
     // minifluxApiCall, fetchMinifluxEntries, minifluxMarkRead,
-    // minifluxMarkUnread and minifluxToggleStar (v2.4/PR #6) are gone --
-    // Backends.js's MinifluxBackend now builds their argv/parse descriptors,
-    // and runRequest/fetchAllFeeds/fetchDescriptor above and the mark/star
-    // call sites below run them uniformly with StandardBackend's, whose
-    // equivalents are no-ops (null descriptors). See Stage 0b addendum in
-    // docs/plans/2026-09-08-phase0-backend-interface-design.md.
+    // minifluxMarkUnread and minifluxToggleStar are gone -- Backends.js's
+    // MinifluxBackend now builds their argv/parse descriptors, and
+    // runRequest/fetchAllFeeds/fetchDescriptor above run them uniformly with
+    // StandardBackend's, whose equivalents are no-ops (null descriptors).
 
     // --- View model ---
     function applyFilter() {
@@ -989,8 +968,8 @@ DesktopPluginComponent {
             });
         }
 
-        // S10: prune selection against the full dataset (root.allItems), not
-        // the newly-rebuilt visible set -- selection must survive search and
+        // Prune selection against the full dataset (root.allItems), not the
+        // newly-rebuilt visible set -- selection must survive search and
         // filter-chip changes and only drop an id once it leaves the dataset
         // entirely (e.g. a refresh evicting an old item). selectedCount can
         // therefore exceed what's on screen; bulk actions already iterate
@@ -1111,9 +1090,9 @@ DesktopPluginComponent {
             }
 
             // Search toggle, shared by the actions bar and the selection bar
-            // (S6) so the two copies cannot drift out of sync. Layout.*
-            // sizing is set on the Loader that instantiates this, not here --
-            // a Component's root item isn't a direct RowLayout child, so
+            // so the two copies cannot drift out of sync. Layout.* sizing
+            // is set on the Loader that instantiates this, not here -- a
+            // Component's root item isn't a direct RowLayout child, so
             // attached properties set inside it are ignored by the layout.
             Component {
                 id: searchToggleComponent
@@ -1195,7 +1174,6 @@ DesktopPluginComponent {
                     sourceComponent: searchToggleComponent
                 }
 
-                // Mark all read / unread toggle
                 Rectangle {
                     id: markAllRect
                     readonly property bool allRead: root.allItems.length > 0 && root.unreadCount === 0
@@ -1242,22 +1220,21 @@ DesktopPluginComponent {
                 }
             }
 
-            // --- Selection bar (S6): replaces the row above while items are selected ---
+            // --- Selection bar: replaces the row above while items are selected ---
             RowLayout {
                 id: selectionActionsRow
                 Layout.fillWidth: true
                 spacing: Theme.spacingXS
                 visible: root.selectedCount > 0
 
-                // S10: selection can now include ids hidden by the active
-                // filter/search (pruned only against root.allItems), so the
-                // label must say so rather than silently undercounting what
-                // "N selected" implies is on screen. Derived from
-                // root.visibleItems (the set applyFilter last built) rather
-                // than re-running filterItems here: that would both duplicate
-                // the scan and read root.searchQuery live, so the count would
-                // race ahead of the list during searchDebounce's 150ms and
-                // briefly disagree with what is on screen.
+                // selectedCount can exceed what's visible (selection is
+                // pruned only against allItems, not the active filter), so
+                // the label must say so rather than silently undercounting.
+                // Derived from root.visibleItems (the set applyFilter last
+                // built) rather than re-running filterItems here, which
+                // would double the scan and read root.searchQuery live --
+                // racing ahead of the list during searchDebounce's 150ms
+                // window.
                 readonly property int hiddenSelected: root.selectedCount - ReaderState.countSelectedIn(root.selectedMap, root.visibleItems)
 
                 StyledText {
@@ -1269,7 +1246,7 @@ DesktopPluginComponent {
                     elide: Text.ElideRight
                 }
 
-                // Save (bulk bookmark) — additive only (S7).
+                // Save (bulk bookmark) -- additive only, never un-saves.
                 Rectangle {
                     Layout.preferredWidth: saveRow.implicitWidth + Theme.spacingS * 2
                     Layout.minimumWidth: 22 + Theme.spacingS * 2
@@ -1305,7 +1282,7 @@ DesktopPluginComponent {
                     }
                 }
 
-                // Mark read — additive only (S7).
+                // Mark read -- additive only, never marks unread.
                 Rectangle {
                     Layout.preferredWidth: markReadRow.implicitWidth + Theme.spacingS * 2
                     Layout.minimumWidth: 22 + Theme.spacingS * 2
@@ -1341,10 +1318,10 @@ DesktopPluginComponent {
                     }
                 }
 
-                // Search toggle (Problem 2): the header's filter/search row
-                // is replaced by this bar while items are selected, so
-                // search needs its own entry point here too, sharing the
-                // header's exact behaviour via searchToggleComponent.
+                // The header's filter/search row is replaced by this bar
+                // while items are selected, so search needs its own entry
+                // point here too, sharing the header's exact behaviour via
+                // searchToggleComponent.
                 Loader {
                     Layout.preferredWidth: root.searchToggleSize
                     Layout.preferredHeight: root.searchToggleSize
@@ -1375,10 +1352,11 @@ DesktopPluginComponent {
                 showClearButton: true
                 font.pixelSize: root.fontSize
 
-                // NOTE: `text` is deliberately NOT bound to root.searchQuery.
-                // `text` aliases the inner TextInput, so typing would break the
-                // binding while this handler writes back to the same property.
-                // The field owns the text; root.searchQuery mirrors it.
+                // `text` is deliberately NOT bound to root.searchQuery:
+                // `text` aliases the inner TextInput, so typing would break
+                // the binding while this handler writes back to the same
+                // property. The field owns the text; root.searchQuery
+                // mirrors it.
                 onTextChanged: {
                     if (root.searchQuery === text)
                         return;
@@ -1387,11 +1365,11 @@ DesktopPluginComponent {
                 }
 
                 onVisibleChanged: {
-                    // D8/Problem 1: focus arrival is not synchronous with the
-                    // click that revealed us (seat focus grant races Qt's
-                    // internal focus item), so a single forceActiveFocus()
-                    // can land before the surface is actually eligible. The
-                    // deferred retry catches that case.
+                    // Focus arrival is not synchronous with the click that
+                    // revealed us (seat focus grant races Qt's internal
+                    // focus item), so a single forceActiveFocus() can land
+                    // before the surface is actually eligible. The deferred
+                    // retry catches that case.
                     if (visible) {
                         forceActiveFocus();
                         Qt.callLater(forceActiveFocus);
@@ -1454,11 +1432,10 @@ DesktopPluginComponent {
                     // Tracks hover across the WHOLE row, including the two
                     // trailing control buttons. The row MouseArea below is
                     // shrunk to exclude those buttons (so they can receive
-                    // their own clicks), which means its own containsMouse
-                    // would go false the moment the pointer reaches a
-                    // control -- causing the controls to fade out just as
-                    // the user reaches for them. HoverHandler doesn't have
-                    // that problem: it tracks hover independently of any
+                    // their own clicks), so its own containsMouse would go
+                    // false the moment the pointer reaches a control --
+                    // fading the controls out just as the user reaches for
+                    // them. HoverHandler tracks hover independently of any
                     // MouseArea's hit-testing, so it stays true over the
                     // whole delegate including the buttons on top.
                     HoverHandler {
@@ -1480,13 +1457,13 @@ DesktopPluginComponent {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            // T6: a click that lands here while the niri
+                            // A click that lands here while the niri
                             // overview is open is a stray overview-navigation
                             // click, not user intent to open/mark this item.
                             if (root._clickFromOverview())
                                 return;
 
-                            // D1: row click ALWAYS opens + marks read. Never
+                            // Row click ALWAYS opens + marks read. Never
                             // un-reads -- that regressed link-opening once an
                             // item had been read before. None of the three
                             // controls (selection, mark-read, bookmark) ever
@@ -1495,10 +1472,10 @@ DesktopPluginComponent {
                             if (!id)
                                 return;
                             root.markRead(id);
-                            // v2.4 §2.2: opening an item syncs read state to
-                            // the server only when the user opted in via
-                            // "Mark as read on open" -- unlike the explicit
-                            // mark-read button (below), which always syncs.
+                            // Opening an item syncs read state to the server
+                            // only when the user opted in via "Mark as read
+                            // on open" -- unlike the explicit mark-read
+                            // button (below), which always syncs.
                             if (root.syncReadOnOpen) {
                                 var numId = root.backendItemId(id);
                                 root.runRequest(root.backend.markReadRequest(root.backendConfig, root.backendSession, numId ? [numId] : []), function(output, code) {
@@ -1507,8 +1484,8 @@ DesktopPluginComponent {
                                 });
                             }
                             if (root.openInBrowser && model.link) {
-                                // T2 SECURITY: never hand an unsafe-scheme
-                                // link (javascript:, file:, data:, ...) to
+                                // SECURITY: never hand an unsafe-scheme link
+                                // (javascript:, file:, data:, ...) to
                                 // Qt.openUrlExternally -- surface it instead
                                 // so the user knows the feed gave a bad link,
                                 // rather than silently swallowing it.
@@ -1530,8 +1507,8 @@ DesktopPluginComponent {
                         anchors.margins: root.viewMode === "compact" ? Theme.spacingXS : Theme.spacingS
                         spacing: Theme.spacingS
 
-                        // NEW, leading: selection checkbox (S1/S2). Never
-                        // opens a link, never touches read state.
+                        // Leading: selection checkbox. Never opens a link,
+                        // never touches read state.
                         DankActionButton {
                             iconName: itemDelegate.isSelected ? "check_box" : "check_box_outline_blank"
                             iconSize: 14
@@ -1629,12 +1606,12 @@ DesktopPluginComponent {
                             }
                         }
 
-                        // Thumbnail (hidden in compact mode). T2 SECURITY:
-                        // gated on FeedParser.isSafeUrl as defense in depth --
-                        // FeedParser already blanks unsafe imageUrl values at
-                        // parse time, but a QML Image must never be pointed
-                        // at an unvetted URL even if that first line of
-                        // defense were ever bypassed.
+                        // Thumbnail (hidden in compact mode). SECURITY:
+                        // gated on FeedParser.isSafeUrl as defense in depth
+                        // -- FeedParser already blanks unsafe imageUrl
+                        // values at parse time, but a QML Image must never
+                        // be pointed at an unvetted URL even if that first
+                        // line of defense were somehow bypassed.
                         Rectangle {
                             id: thumbRect
                             visible: root.viewMode !== "compact" && root.showImages && FeedParser.isSafeUrl(model.imageUrl) && thumbImage.status !== Image.Error
@@ -1655,13 +1632,14 @@ DesktopPluginComponent {
                             }
                         }
 
-                        // NEW, trailing #1: mark-read toggle (S3). Takes over
-                        // the read-toggle behavior the checkbox used to have
-                        // before this plan, moved here with a distinct icon
-                        // so it can't be confused with the leading selection
-                        // checkbox. Always enabled, always hittable -- never
-                        // disable the subtree via `enabled: <opacity expr>`,
-                        // that's what broke the bookmark button before.
+                        // Trailing #1: mark-read toggle. Takes over the
+                        // read-toggle behavior the checkbox used to have
+                        // before selection was added, moved here with a
+                        // distinct icon so it isn't confused with the
+                        // leading selection checkbox. Always enabled, always
+                        // hittable -- never disable the subtree via
+                        // `enabled: <opacity expr>`, that's what broke the
+                        // bookmark button before.
                         DankActionButton {
                             iconName: itemDelegate.isRead ? "mark_email_read" : "mark_email_unread"
                             iconSize: 14
@@ -1678,10 +1656,10 @@ DesktopPluginComponent {
                                     root.markUnread(model.itemId);
                                 else
                                     root.markRead(model.itemId);
-                                // v2.4 §2.2: an explicit toggle via this
-                                // button ALWAYS syncs to the server,
-                                // regardless of syncReadOnOpen (that setting
-                                // only gates the row-click "open" path above).
+                                // An explicit toggle via this button ALWAYS
+                                // syncs to the server, regardless of
+                                // syncReadOnOpen (that setting only gates
+                                // the row-click "open" path above).
                                 var numId = root.backendItemId(model.itemId);
                                 var ids = numId ? [numId] : [];
                                 var req = wasRead
@@ -1698,7 +1676,7 @@ DesktopPluginComponent {
                             }
                         }
 
-                        // D3: bookmark toggle. `enabled` stays true always --
+                        // Bookmark toggle. `enabled` stays true always --
                         // binding it to the opacity expression disabled the
                         // whole subtree for input whenever idle, which is
                         // why it used to be unclickable without hovering
@@ -1736,12 +1714,11 @@ DesktopPluginComponent {
 
                 DankIcon {
                     name: {
-                        // v2.4 §2.6/Stage 0b: the widget asks the backend
-                        // whether its config is usable, never which backend
-                        // it is. `reason` is shared across backends
-                        // ("unconfigured"/"empty"/null) but the user-facing
-                        // wording differs, so capabilities.serverState picks
-                        // between them below.
+                        // The widget asks the backend whether its config is
+                        // usable, never which backend it is. `reason` is
+                        // shared across backends ("unconfigured"/"empty"/
+                        // null) but the user-facing wording differs, so
+                        // capabilities.serverState picks between them below.
                         var cs = root.backend.configState(root.backendConfig);
                         if (!cs.ok)
                             return root.backend.capabilities.serverState ? "sync" : "rss_feed";

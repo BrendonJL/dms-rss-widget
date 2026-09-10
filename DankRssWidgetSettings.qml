@@ -17,11 +17,10 @@ PluginSettings {
     property var feedStatuses: []
     property var minifluxFeedsList: []
 
-    // v2.4 §2.4/§5.6: null Proc id + curl hardening flags on every Miniflux
-    // call made from settings, matching the widget's fetchFeed/minifluxApiCall
-    // pattern -- PR #6 used fixed ids here ("minifluxTestConn",
-    // "minifluxSettingsFeeds") which clobber a callback if the user mashes
-    // the button twice before the first call returns.
+    // null Proc id + curl hardening flags on every Miniflux call made from
+    // settings, matching the widget's own request pattern -- a fixed id here
+    // would clobber a callback if the user mashes the button twice before
+    // the first call returns.
     function fetchMinifluxFeeds() {
         var url = root.loadValue("minifluxUrl", "").replace(/\/$/, "");
         var token = root.loadValue("minifluxToken", "");
@@ -149,7 +148,7 @@ PluginSettings {
         color: Theme.outlineVariant
     }
 
-    // ─── Source Mode (v2.4) ───
+    // ─── Source Mode ───
 
     StyledText {
         width: parent.width
@@ -223,9 +222,8 @@ PluginSettings {
             color: Theme.surfaceVariantText
         }
 
-        // NOTE: the token is never logged and never appears in a toast (v2.4
-        // §2.5) -- it is only ever read back into a curl -H argv element in
-        // fetchMinifluxFeeds/the widget's minifluxApiCall.
+        // The token is never logged and never appears in a toast -- it is
+        // only ever read back into a curl -H argv element.
         DankTextField {
             id: minifluxTokenField
             width: parent.width
@@ -284,8 +282,8 @@ PluginSettings {
                                 ToastService.showInfo("Miniflux connection successful!");
                             root.fetchMinifluxFeeds();
                         } else {
-                            // NOTE: never include the URL/token in this
-                            // message (v2.4 §2.5) -- describe the failure only.
+                            // Never include the URL/token in this message --
+                            // describe the failure only (same rule as above).
                             if (typeof ToastService !== "undefined")
                                 ToastService.showError("Connection failed: check URL and token");
                         }
@@ -483,7 +481,7 @@ PluginSettings {
         visible: sourceModeSetting.value === "standard"
     }
 
-    // ─── Feed Management (standard mode only -- v2.4 §2.6) ───
+    // ─── Feed Management (standard mode only) ───
 
     StyledText {
         width: parent.width
@@ -494,7 +492,6 @@ PluginSettings {
         visible: sourceModeSetting.value === "standard"
     }
 
-    // Add/Edit form
     StyledRect {
         width: parent.width
         height: addFeedColumn.implicitHeight + Theme.spacingL * 2
@@ -618,7 +615,6 @@ PluginSettings {
         }
     }
 
-    // Existing feeds list
     StyledRect {
         width: parent.width
         height: Math.max(120, feedsListColumn.implicitHeight + Theme.spacingL * 2)
@@ -745,7 +741,6 @@ PluginSettings {
                             }
                         }
 
-                        // Move up button
                         Rectangle {
                             id: moveUpButton
                             width: 32; height: 32; radius: 16
@@ -781,7 +776,6 @@ PluginSettings {
                             }
                         }
 
-                        // Move down button
                         Rectangle {
                             id: moveDownButton
                             width: 32; height: 32; radius: 16
@@ -817,7 +811,6 @@ PluginSettings {
                             }
                         }
 
-                        // Edit button
                         Rectangle {
                             width: 32; height: 32; radius: 16
                             color: editArea.containsMouse ? Theme.primary : "transparent"
@@ -845,7 +838,6 @@ PluginSettings {
                             }
                         }
 
-                        // Delete button
                         Rectangle {
                             width: 32; height: 32; radius: 16
                             color: deleteArea.containsMouse ? Theme.error : "transparent"
@@ -889,7 +881,6 @@ PluginSettings {
                     }
                 }
 
-                // Empty state
                 StyledText {
                     anchors.centerIn: parent
                     text: "No feeds configured yet"
@@ -901,7 +892,7 @@ PluginSettings {
         }
     }
 
-    // OPML Import (standard mode only -- v2.4 §2.6)
+    // OPML Import (standard mode only)
     StyledRect {
         width: parent.width
         height: opmlColumn.implicitHeight + Theme.spacingL * 2
@@ -983,7 +974,7 @@ PluginSettings {
         visible: sourceModeSetting.value === "standard"
     }
 
-    // ─── Preset Feeds (standard mode only -- v2.4 §2.6) ───
+    // ─── Preset Feeds (standard mode only) ───
     // Wrapped in one Column with a single `visible` binding rather than
     // repeating it on every child below -- there are a lot of them.
     Column {
@@ -1006,7 +997,6 @@ PluginSettings {
         color: Theme.surfaceVariantText
     }
 
-    // News — US
     StyledText {
         width: parent.width
         text: "News — US"
@@ -1038,7 +1028,6 @@ PluginSettings {
         }
     }
 
-    // News — Global
     StyledText {
         width: parent.width
         text: "News — Global"
@@ -1070,7 +1059,6 @@ PluginSettings {
         }
     }
 
-    // Tech
     StyledText {
         width: parent.width
         text: "Tech"
@@ -1102,7 +1090,6 @@ PluginSettings {
         }
     }
 
-    // Reddit
     StyledText {
         width: parent.width
         text: "Reddit"
@@ -1158,11 +1145,10 @@ PluginSettings {
         }
     }
 
-    } // end Quick Add Column (standard mode only)
+    } // end Quick Add Column
 
     function addPresetFeed(name, url) {
         var currentFeeds = root.loadValue("feeds", []);
-        // Check for duplicate URL
         for (var i = 0; i < currentFeeds.length; i++) {
             if (currentFeeds[i].url === url) {
                 if (typeof ToastService !== "undefined") {

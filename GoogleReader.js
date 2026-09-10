@@ -1,81 +1,35 @@
-// Google Reader API backend for the Dank RSS Widget (Phase 1, stage 1a).
+// Google Reader API backend for the Dank RSS Widget.
 //
-// Shared, like Backends.js/FeedParser.js/ReaderState.js, between QML and the
-// Node test suite:
-//   QML  : import "GoogleReader.js" as GoogleReader
-//   Node : require("./GoogleReader.js")
+// See README.md's "Architecture" section for the QML/Node dual-load
+// mechanism, the `.pragma library` rule (kept once, in FeedParser.js), and
+// the dependency-injection pattern:
+//   GoogleReader.createGoogleReaderBackend({ FeedParser: FeedParser, ReaderState: ReaderState })
 //
-// IMPORTANT: no `.pragma library` line here — it is invalid JavaScript and
-// would break `require()` in the tests.
+// Full protocol write-up, probed against a live Miniflux 2.x instance:
+// docs/plans/2026-09-09-phase1-google-reader-design.md. The facts that
+// matter while reading this file sit next to the code that depends on them.
 //
-// Everything here stays PURE: no Qt APIs, no I/O, no Date.now(), no
-// randomness, no mutable module-level state. Request-descriptor functions
-// never run curl themselves — they return { argv, parse, meta, timeoutMs }.
-// QML alone spawns `argv` and hands the result to `parse`.
+// This backend is a CHAIN, unlike Standard/Miniflux's one-shot
+// fetchRequests(config) -> [descriptor]: parse() may return a `nextRequest`
+// descriptor alongside the usual { items, serverStatus, error }, which
+// ChainRunner.js (the QML runner) steps instead of finishing.
 //
-// DEPENDENCY INJECTION: this file cannot `require()`/`.import` its sibling
-// shared modules in a form both QML and Node accept, so the caller passes
-// them in: GoogleReader.createGoogleReaderBackend({ FeedParser: FeedParser,
-// ReaderState: ReaderState }).
-//
-// ─── The protocol, as probed against a live Miniflux 2.x instance ─────────
-//
-// See docs/plans/2026-09-09-phase1-google-reader-design.md for the full
-// write-up. Summary:
-//
-//   1. POST /accounts/ClientLogin (Email=, Passwd=) -> body has an "Auth="
-//      line. That's the bearer token for every later call, sent as
-//      "Authorization: GoogleLogin auth=<token>".
-//   2. Every POST additionally needs a POST-token from
-//      GET /reader/api/0/token, sent as "T=" in the form body. Skip it and a
-//      POST returns 401 with no explanation.
-//   3. GET /reader/api/0/stream/items/ids?s=<stream>&n=<n>&output=json ->
-//      { itemRefs: [{id: "46"}, ...], continuation: "..." }. Ids here are
-//      DECIMAL strings.
-//   4. POST /reader/api/0/stream/items/contents?output=json (T=, repeated
-//      i=) -> the full items. Ids here are the LONG form
-//      ("tag:google.com,2005:reader/item/000000000000002e", hex, zero-padded
-//      to 16). `stream/contents` itself (the single-request shortcut the
-//      original docs describe) is NOT implemented by Miniflux: every variant
-//      returns a bare `[]` with HTTP 200, so this file always uses the two-
-//      step ids -> contents flow.
-//   5. POST /reader/api/0/edit-tag (T=, i=, a=/r=) with
-//      user/-/state/com.google/read or .../starred flips read/star state.
-//      Confirmed to accept EITHER id encoding.
-//
-// Both id encodings normalise to one id here, prefixed "r:" — its own
-// prefix, distinct from makeItemId's "g:"/"l:"/"h:" and Miniflux's "m:"
-// (FeedParser.js:395-401).
-//
-// ─── Chain interface (the extension this backend needs) ───────────────────
-//
-// Phase 0's fetchRequests(config) -> [descriptor] assumes independent,
-// parallel requests. Google Reader is a CHAIN: contents needs ids, which
-// needs a post token, which needs an auth token. `parse` may therefore
-// return a `nextRequest` descriptor (or null) alongside the usual
-// { items, serverStatus, error }; the QML runner (stage 1b) runs that
-// instead of finishing. Standard/Miniflux never set it.
-//
-// The chain is capped at MAX_CHAIN_LINKS (5): one full cold start
-// (ClientLogin -> token -> ids -> contents = 4 links) leaves exactly one
-// spare link, which is what a single re-authenticate-on-401 recovery from a
-// fully-cached, gone-stale session needs (ids -> ClientLogin -> token -> ids
-// -> contents = 5 links). A SECOND 401 in the same chain does not retry
-// again — reauthAttempted latches true and the chain terminates with an
-// error instead of looping.
-//
-// ─── Session ────────────────────────────────────────────────────────────
-//
-// The backend holds no mutable state (or the tests would break). The
-// caller owns a `session` object { authToken, postToken } and passes it
-// into fetchRequests/markReadRequest/markUnreadRequest/toggleStarRequest.
-// The terminal link of every fetch chain reports back `session: { authToken,
-// postToken }` (nulls where unknown) so the caller can cache them; without a
-// session the fetch chain starts at ClientLogin, and the mark/star
-// mutations simply refuse (return null) since edit-tag cannot be built
+// The backend holds no mutable module-level state (or the tests would
+// break). The caller owns a `session` object { authToken, postToken } and
+// threads it through fetchRequests/markReadRequest/markUnreadRequest/
+// toggleStarRequest; the terminal link of every fetch chain reports back a
+// fresh `session` (nulls where unknown) so the caller can cache it. Without
+// a session the fetch chain starts cold at ClientLogin, and the mark/star
+// mutations simply refuse (return null), since edit-tag cannot be built
 // without a cached post token.
 
 var GREADER_PROC_TIMEOUT_MS = 30000;
+
+// One full cold start (ClientLogin -> token -> ids -> contents = 4 links)
+// leaves exactly one spare link -- enough for a single reauthenticate-on-401
+// recovery when a cached session goes stale (ids -> ClientLogin -> token ->
+// ids -> contents = 5). A second 401 in the same chain does not retry again;
+// see handleAuthFailure's reauthAttempted latch.
 var MAX_CHAIN_LINKS = 5;
 var STATUS_MARKER = "\nHTTPSTATUS:";
 
@@ -312,6 +266,10 @@ function buildClientLoginRequest(config, chainState, FeedParser) {
     };
 }
 
+// Fetches the per-session post token. Every POST under /reader/api/0/*
+// (edit-tag, stream/items/contents) must echo this back as a "T=" form
+// field or the request returns 401 with no explanation -- there is nothing
+// in a failed response to hint that a post token was the problem.
 function buildTokenRequest(config, authToken, chainState, FeedParser) {
     if (!chainLinkAllowed(chainState.linkIndex))
         return null;
@@ -340,6 +298,12 @@ function buildTokenRequest(config, authToken, chainState, FeedParser) {
     };
 }
 
+// Step 1 of 2: ids only. Miniflux's single-request "stream/contents"
+// shortcut (the one the original Google Reader docs describe) is not
+// implemented: every variant tried against a live Miniflux 2.x instance
+// returns a bare `[]` with HTTP 200, indistinguishable from "no items" if
+// this file trusted it. So a fetch always chains ids -> contents as two
+// separate links instead (see buildItemsContentsRequest).
 function buildItemsIdsRequest(config, authToken, postToken, chainState, FeedParser) {
     if (!chainLinkAllowed(chainState.linkIndex))
         return null;

@@ -1,27 +1,19 @@
-// Export provider interface for the Dank RSS Widget (Phase 4, stage 4a).
+// Export provider interface for the Dank RSS Widget.
 //
-// Shared, like Backends.js/AiProvider.js, between QML and the Node test
-// suite:
-//   QML  : import "ExportProvider.js" as ExportProvider
-//   Node : require("./ExportProvider.js")
-//
-// IMPORTANT: no `.pragma library` line here -- it is invalid JavaScript and
-// would break `require()` in the tests. See
-// docs/plans/2026-09-08-phase4-export-provider-design.md.
+// See README.md's "Architecture" section for the QML/Node dual-load
+// mechanism and the `.pragma library` rule (kept once, in FeedParser.js).
+// See docs/plans/2026-09-08-phase4-export-provider-design.md for the full
+// design and its numbered security rules, cited below where each applies.
 //
 // Everything here stays PURE: no Qt APIs, no I/O, no Date.now(), no
 // randomness, and -- unlike the Node test file that exercises it -- no
 // `require("path")` / `require("buffer")` either, because this file also
-// has to run unmodified inside QML's JS engine. Byte-clamping and
-// containment checks below are hand-rolled string operations for exactly
-// that reason.
+// runs unmodified inside QML's JS engine. Byte-clamping and containment
+// checks below are hand-rolled string operations for exactly that reason.
 //
 // THE SECURITY PROBLEM THIS FILE EXISTS TO SOLVE: feed content is
 // untrusted, attacker-controlled input, and buildNote() turns it into a
-// filesystem path. An article title is chosen by whoever runs the feed --
-// "../../../.bashrc" is a legal RSS <title>. See the design doc's security
-// section for the full rule list; each rule below is tagged with its
-// number from that section.
+// filesystem path -- "../../../.bashrc" is a legal RSS <title>.
 
 // ─── byte-safe string helpers (no Buffer available here) ───
 
@@ -113,9 +105,11 @@ function isRelPathContained(relPath) {
     return true;
 }
 
-// Rule 6 applied to a base name + fixed extension: clamp the WHOLE
-// filename (basename + extension) to maxBytes, since that is what
-// NAME_MAX actually limits.
+// Clamp the WHOLE filename (base + extension) to 255 BYTES, not characters:
+// NAME_MAX is a byte limit, so a CJK or emoji title hits it at roughly 85
+// characters. Truncates on a codepoint boundary so the result stays valid
+// UTF-8.
+
 function clampFilenameBytes(base, ext, maxBytes) {
     var extBytes = ext.length; // ext is plain ASCII ("." + letters)
     var available = maxBytes - extBytes;

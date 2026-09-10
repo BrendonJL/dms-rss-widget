@@ -1,32 +1,18 @@
-// Backend provider interface for the Dank RSS Widget (Phase 0, stage 0a).
+// Backend provider interface for the Dank RSS Widget.
 //
-// Shared, like FeedParser.js and ReaderState.js, between QML and the Node
-// test suite:
-//   QML  : import "Backends.js" as Backends
-//   Node : require("./Backends.js")
+// See README.md's "Architecture" section for the QML/Node dual-load
+// mechanism, the `.pragma library` rule (kept once, in FeedParser.js), and
+// the dependency-injection pattern this file uses:
+//   Backends.createBackends({ FeedParser: FeedParser, ReaderState: ReaderState })
+// See also docs/plans/2026-09-08-phase0-backend-interface-design.md.
 //
-// IMPORTANT: no `.pragma library` line here — it is invalid JavaScript and
-// would break `require()` in the tests. See docs/plans/2026-09-08-phase0-
-// backend-interface-design.md.
-//
-// Everything here stays PURE: no Qt APIs, no I/O, no Date.now(), no
-// randomness. Request-descriptor functions never run curl themselves — they
-// return { argv, parse, meta, timeoutMs } (a full curl argv vector plus a
-// pure function to turn stdout into normalised items) or null/[] when the
-// call is a no-op for that backend. fetchRequests(config) returns an ARRAY
-// of descriptors (one per eligible feed for standard, at most one for
-// Miniflux); markReadRequest/markUnreadRequest/toggleStarRequest each still
-// return a single descriptor or null. QML alone is responsible for actually
-// spawning `argv` and handing the result to `parse`.
-//
-// DEPENDENCY INJECTION: this file has no way to `import`/`require` its
-// sibling shared modules (FeedParser.js, ReaderState.js) in a form both QML
-// and Node accept — QML's non-pragma `.import` directive is not valid
-// JavaScript syntax, so a literal `.import` line here would break Node's
-// require(). Callers (the DankRssWidget.qml aggregator in stage 0b, or a
-// test file here) already import both modules themselves and pass them in:
-//
-//   var backends = Backends.createBackends({ FeedParser: FeedParser, ReaderState: ReaderState });
+// Request-descriptor contract: everything here stays PURE (no Qt APIs, no
+// I/O, no Date.now(), no randomness) and returns { argv, parse, meta,
+// timeoutMs } -- a curl argv vector plus a pure function to turn stdout into
+// normalised items -- never running curl itself. fetchRequests(config)
+// returns an ARRAY (one descriptor per eligible feed for standard, at most
+// one for Miniflux); the mark/star request builders each return a single
+// descriptor or null. QML alone spawns `argv` and hands stdout to `parse`.
 
 // Proc-side timeout for Miniflux calls, deliberately LONGER than curl's own
 // --max-time of 25s. Carried on the request descriptor because it is a real

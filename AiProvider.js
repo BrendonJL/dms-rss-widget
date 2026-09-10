@@ -1,29 +1,21 @@
-// Local AI provider interface for the Dank RSS Widget (Phase 3, stage 3a).
+// Local AI provider interface for the Dank RSS Widget.
 //
-// Shared, like Backends.js/FeedParser.js/ReaderState.js, between QML and the
-// Node test suite:
-//   QML  : import "AiProvider.js" as AiProvider
-//   Node : require("./AiProvider.js")
-//
-// IMPORTANT: no `.pragma library` line here -- it is invalid JavaScript and
-// would break `require()` in the tests (CI now globs ./*.js and would catch
-// it either way). See docs/plans/2026-09-08-phase3-ai-provider-design.md.
+// See README.md's "Architecture" section for the QML/Node dual-load
+// mechanism and the `.pragma library` rule (kept once, in FeedParser.js).
+// See docs/plans/2026-09-08-phase3-ai-provider-design.md for the full design.
 //
 // This is the OpenAI-compatible chat API, not "an ollama integration": a
 // provider is { label, baseUrl, model, apiKey, timeoutMs } and nothing more.
 // POST {baseUrl}/chat/completions, read choices[0].message.content. Presets
 // below are a data table, not code paths -- adding a runtime later is a
-// table row.
+// table row. No dependency-injection factory: unlike Backends.js this
+// module needs no sibling modules to build its requests.
 //
 // Everything here stays PURE: no Qt APIs, no I/O, no Date.now(), no
 // randomness. Every *Request function returns a request descriptor
-// ({ argv, parse, timeoutMs }, a full curl argv vector plus a pure function
-// to turn stdout into a normalised result) or null when the call is a no-op
-// (not configured, or nothing to send). QML alone is responsible for
-// actually spawning `argv` and handing the result to `parse`.
-//
-// No dependency-injection factory: unlike Backends.js this module needs no
-// siblings (FeedParser/ReaderState) to build its requests.
+// ({ argv, parse, timeoutMs }) or null when the call is a no-op (not
+// configured, or nothing to send). QML alone spawns `argv` and hands stdout
+// to `parse`.
 //
 // MEASURED ON THIS MACHINE (RTX 2070 Super, qwen3:8b, 2026-09-08 -- see the
 // design doc's Measurements section, which is load-bearing, not illustrative):

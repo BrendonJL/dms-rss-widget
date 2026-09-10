@@ -1,15 +1,12 @@
 // Pure reader-state helpers for the Dank RSS Widget.
 //
-// Shared, like FeedParser.js, between QML and the Node test suite:
-//   QML  : import "ReaderState.js" as ReaderState
-//   Node : require("./ReaderState.js")
+// Shared with QML/Node like FeedParser.js — see README.md's "Architecture"
+// section for the dual-load mechanism and the `.pragma library` rule (kept
+// once, in FeedParser.js). See also docs/plans/v2-contract.md.
 //
-// IMPORTANT: no `.pragma library` line here — it is invalid JavaScript and
-// would break `require()` in the tests. See docs/plans/v2-contract.md.
-//
-// Everything in this file must stay PURE: no Qt APIs, no I/O, no Date.now(),
-// no randomness. That is what makes the read/seen/notification rules testable
-// without a running shell.
+// Everything here stays PURE: no Qt APIs, no I/O, no Date.now(), no
+// randomness — what makes the read/seen/notification rules testable without
+// a running shell.
 
 var DEFAULT_CAP = 1000;
 
@@ -302,7 +299,7 @@ function filterItems(items, options) {
     return out;
 }
 
-// Classify one finished curl attempt into a CONTRACT 6 state.
+// Classify one finished curl attempt into a fetch state (ok/timeout/error).
 // `exitCode` 124 is what Proc.runCommand synthesizes on its own timeout.
 
 // Human-readable curl failures. "curl exit 6" is accurate and useless to the
@@ -389,7 +386,7 @@ function compareByFeedOrder(a, b, orderMap) {
     return ((b ? b.timestamp : 0) || 0) - ((a ? a.timestamp : 0) || 0);
 }
 
-// --- Selection (transient, in-memory only — see S9 in v2.3 plan) ----------
+// --- Selection (transient, in-memory only) ---------------------------------
 //
 // Selection is a plain { id: true } map, NOT a boundIdList array: it is
 // never persisted, has no cap, and order is irrelevant — only membership
@@ -433,7 +430,7 @@ function countSelectedIn(selectedMap, items) {
     return count;
 }
 
-// Drop any selected id whose item has left the dataset entirely (S10). The
+// Drop any selected id whose item has left the dataset entirely. The
 // caller passes the full dataset, not the filtered/visible view — selection
 // is intentionally allowed to exceed what's on screen (search, filter chips)
 // and is only cleared for an id when a refresh evicts it from `items`.
@@ -449,7 +446,7 @@ function pruneSelected(selectedMap, items) {
     return out;
 }
 
-// Bulk-bookmark, additive only (S7) — mirrors addAllRead exactly (same
+// Bulk-bookmark, additive only — mirrors addAllRead exactly (same
 // generic "prepend + dedupe + cap" list operation), given a distinct name
 // at the bookmark call sites so the code reads correctly there. Delegates
 // to addAllRead rather than duplicating its body.
@@ -457,7 +454,7 @@ function addAllBookmarked(bookmarkOrder, ids, cap) {
     return addAllRead(bookmarkOrder, ids, cap);
 }
 
-// --- Miniflux server-status reconciliation (v2.4 §4.2) ----------------------
+// --- Miniflux server-status reconciliation ----------------------------------
 //
 // Called ONLY right after a successful Miniflux fetch, so the server's view
 // (which already reflects any local push this widget made moments earlier)
@@ -499,8 +496,8 @@ function reconcileServerStatus(readOrder, bookmarkOrder, serverEntries, cap) {
     var readChanged = toMarkRead.length > 0 || Object.keys(toMarkUnread).length > 0;
     var bookmarkChanged = toMarkStarred.length > 0 || Object.keys(toMarkUnstarred).length > 0;
 
-    // Apply removals first, then additions, matching the "delegate to
-    // existing primitives" guidance in §4.2.
+    // Apply removals before additions so a same-cycle read+unread (or
+    // star+unstar) flip on the same id nets out to the server's final state.
     var newReadOrder = ro;
     if (Object.keys(toMarkUnread).length > 0) {
         var filtered = [];
