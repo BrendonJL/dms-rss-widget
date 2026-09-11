@@ -97,3 +97,36 @@ This is where the value is, and it is fully testable:
   Pure, no I/O, no QML. This is the whole risk.
 - **4c-b** — wire into export: fetch on demand, cache alongside summaries, the
   frontmatter flag, the fallback.
+
+---
+
+## Measured, 2026-09-11 — decision: keep our own extractor
+
+`tests/oracle/run-oracle.js` runs Mozilla Readability (Firefox Reader View's
+algorithm) in headless Chromium over 20 real articles and compares ours against
+it on word-multiset overlap.
+
+**Mean 91.1%, median 91.6%, worst 81%, several at 98-99%** across 18 comparable
+pages (two blocked the fetch). So the zero-dependency extractor stays: neither a
+runtime browser nor a vendored Readability plus DOM shim is justified by a 9%
+gap on prose.
+
+Two findings from doing this properly:
+
+**An earlier run scored 71% and the fault was the URL list, not the code.** It
+included section fronts — `bbc.com/news`, `arstechnica.com/` — where Readability
+correctly returns almost nothing, because the right answer for an index page is
+"this is not an article". Ours returned 13k characters of headline soup. Real
+article URLs moved the mean from 71% to 91% with no code change.
+
+**That exposes a real limitation: we over-extract on index pages.** Readability
+refuses; we produce a headline list. A user exporting an item whose link
+resolves to a section front would get junk. **4c-b should guard it** — reject a
+result whose link density is high, or which is mostly short unpunctuated lines,
+and fall back to the summary.
+
+The 81% floor is all Wikipedia, and it is precision rather than recall: we emit
+~2.5x Readability's volume, pulling in reference lists and infoboxes. When a
+page has no single wrapping content container the document root wins by
+default, and there is no mechanism to merge sibling candidates. Acceptable for
+a saved note; worth revisiting only if it bleeds navigation.
