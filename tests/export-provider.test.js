@@ -273,21 +273,31 @@ describe("buildNote: annotation rendering", () => {
         assert.ok(result.content.indexOf("Just a note, no quote.") !== -1);
     });
 });
-
 // ─── provider differences ───
 
-describe("provider differences: wikilink tags", () => {
-    test("obsidian emits wikilink-style tags in the body", () => {
+// These two asserted that tags were written into the note BODY -- as
+// "[[news]]" for Obsidian and "#news" elsewhere. That behaviour was removed
+// deliberately: the frontmatter already carries the tags, every markdown tool
+// that cares reads them from there, and the body line was just something to
+// delete in every note. Rewritten to assert the current intent rather than
+// deleted, so the decision stays visible.
+describe("tags live in frontmatter, not the body", () => {
+    test("obsidian puts no wikilink tags in the body", () => {
         var p = createExportProvider(baseConfig({ kind: "obsidian", tags: ["news", "tech"] }));
-        var result = p.buildNote(article(), []);
-        assert.ok(result.content.indexOf("[[news]]") !== -1);
-        assert.ok(result.content.indexOf("[[tech]]") !== -1);
+        var content = p.buildNote(article(), []).content;
+        var body = content.split(/^---$/m).slice(2).join("---");
+        assert.equal(body.indexOf("[[news]]"), -1);
+        assert.equal(body.indexOf("[[tech]]"), -1);
+        assert.ok(content.indexOf('tags: ["news", "tech"]') !== -1, "frontmatter still carries them");
     });
 
-    test("markdown-dir provider does NOT emit wikilink tags", () => {
+    test("markdown-dir puts no hashtags in the body either", () => {
         var p = createExportProvider(baseConfig({ kind: "markdown", tags: ["news", "tech"] }));
-        var result = p.buildNote(article(), []);
-        assert.equal(result.content.indexOf("[["), -1);
+        var content = p.buildNote(article(), []).content;
+        var body = content.split(/^---$/m).slice(2).join("---");
+        assert.equal(body.indexOf("#news"), -1);
+        assert.equal(body.indexOf("[["), -1);
+        assert.ok(content.indexOf('tags: ["news", "tech"]') !== -1);
     });
 
     test("neovim provider does NOT emit wikilink tags", () => {
@@ -381,6 +391,21 @@ describe("the ordinary case", () => {
             assert.ok(Buffer.byteLength(pth) <= 255, pth.length + " bytes exceeds NAME_MAX");
             assert.match(pth, /-[0-9a-f]+\.md$/, "the disambiguating hash must survive clamping");
         });
+    });
+
+    // Obsidian and every other markdown tool read tags from frontmatter. A
+    // "[[rss]]" line under the article added nothing and left a stray line to
+    // delete in every note.
+    test("tags appear in frontmatter only, never in the body", () => {
+        const p = createExportProvider({
+            kind: "obsidian", root: "C", vault: "v",
+            filenameTemplate: "{title}.md", tags: ["rss", "news"]
+        });
+        const content = p.buildNote({ id: "m:1", title: "T", link: "https://x/1", description: "Body." }, []).content;
+        const body = content.split(/^---$/m).slice(2).join("---");
+        assert.match(content, /^tags: \["rss", "news"\]$/m, "frontmatter keeps the tags");
+        assert.doesNotMatch(body, /\[\[rss\]\]/, "no wikilink tags in the body");
+        assert.doesNotMatch(body, /#rss\b/, "no hashtags in the body either");
     });
     test("a normal title yields one extension, hash before it", () => {
         var r = provider.buildNote({ id: "m:42", title: "Cloud licensing probe" }, []);

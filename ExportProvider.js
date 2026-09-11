@@ -240,14 +240,10 @@ function buildBody(article, annotations, caps, config, extracted) {
     if (rendered) parts.push(rendered);
 
 
-    var tags = (config && config.tags) || [];
-    if (tags.length > 0) {
-        if (caps.wikilinks) {
-            parts.push(tags.map(function (t) { return "[[" + t + "]]"; }).join(" "));
-        } else {
-            parts.push(tags.map(function (t) { return "#" + String(t).replace(/\s+/g, "-"); }).join(" "));
-        }
-    }
+    // Tags are not repeated in the body. The frontmatter already carries
+    // them, and every markdown tool that cares about tags reads it from
+    // there -- Obsidian included. Emitting "[[rss]]" under the article as
+    // well just leaves a stray line to delete in every note.
 
     return parts.join("\n\n") + "\n";
 }

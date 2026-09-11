@@ -30,9 +30,16 @@ QtObject {
             var b = provider.buildNote({ id: "id-b", title: "Same" }, []);
             if (!a || !b || a.relPath === b.relPath) { Qt.exit(code); return; }
 
-            code = 46;                       // 46 = obsidian wikilink tag missing from body
+            // 46 = tags leaked into the note body. They belong in the
+            // frontmatter only; every markdown tool reads them from there, and
+            // a "[[news]]" line under the article was just one more thing to
+            // delete in every note.
+            code = 46;
             var tagResult = provider.buildNote({ id: "id-3", title: "Tagged" }, []);
-            if (tagResult.content.indexOf("[[news]]") === -1) { Qt.exit(code); return; }
+            var parts = tagResult.content.split("---");
+            var body = parts.length > 2 ? parts.slice(2).join("---") : tagResult.content;
+            if (body.indexOf("[[news]]") !== -1) { Qt.exit(code); return; }
+            if (tagResult.content.indexOf("tags:") === -1) { Qt.exit(code); return; }
 
             code = 47;                       // 47 = openRequest wrong shape
             var open = provider.openRequest(tagResult.relPath);

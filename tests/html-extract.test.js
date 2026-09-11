@@ -478,3 +478,75 @@ describe("no fixture throws", () => {
         assert.doesNotMatch(md, /\]\(\/one\)/);
     });
 });
+
+// Publishers splice "recommended stories" widgets between paragraphs, inside
+// the article container, with no class the boilerplate filter catches. Both
+// shapes were found in real exports: Al Jazeera labels the section with a
+// heading, the BBC emits a bare list of headline links.
+describe("promo sections are dropped from the article body", () => {
+    const PROSE = "This is a genuine paragraph of article prose, long enough to count as real content rather than a fragment. ";
+
+    function article(middle) {
+        return "<html><body><article><h1>Title</h1><p>" + PROSE.repeat(2) + "</p>" +
+            middle + "<p>" + PROSE.repeat(2) + "</p></article></body></html>";
+    }
+
+    function md(html) {
+        return extractArticle(html, { baseUrl: "https://site.example/a/b", summary: "s" }).markdown;
+    }
+
+    test("a labelled Recommended Stories section is dropped with its list", () => {
+        const out = md(article(
+            "<h2>Recommended Stories</h2><ul>" +
+            "<li><a href='/one'>Some other article entirely</a></li>" +
+            "<li><a href='/two'>And another unrelated headline</a></li></ul>"));
+        assert.doesNotMatch(out, /Recommended Stories/i);
+        assert.doesNotMatch(out, /Some other article entirely/);
+        assert.match(out, /genuine paragraph of article prose/);
+    });
+
+    test("the drop stops at the next heading of the same level", () => {
+        const out = md(article(
+            "<h2>Related Stories</h2><ul><li><a href='/x'>Promo headline</a></li></ul>" +
+            "<h2>Focus of attacks</h2><p>" + PROSE + "</p>"));
+        assert.doesNotMatch(out, /Promo headline/);
+        assert.match(out, /Focus of attacks/, "a real section heading after the promo must survive");
+    });
+
+    test("a normal article heading is never treated as promo", () => {
+        const out = md(article("<h2>What happens next</h2><p>" + PROSE + "</p>"));
+        assert.match(out, /What happens next/);
+    });
+
+    // Al Jazeera prefixes list items with screen-reader text.
+    test("screen-reader 'list N of M' prefixes do not defeat the match", () => {
+        const out = md(article(
+            "<h2>Recommended Stories</h2><ul>" +
+            "<li>list 1 of 2 <a href='/one'>Promo headline one</a></li>" +
+            "<li>list 2 of 2 <a href='/two'>Promo headline two</a></li></ul>"));
+        assert.doesNotMatch(out, /Promo headline/);
+    });
+
+    test("an unlabelled short list of bare links between prose is dropped", () => {
+        const out = md(article(
+            "<ul><li><a href='/one'>Saudi Arabia vows to respond after attacks</a></li>" +
+            "<li><a href='/two'>Oil hits $100 a barrel for the first time</a></li></ul>"));
+        assert.doesNotMatch(out, /Saudi Arabia vows/);
+    });
+
+    // The dangerous direction: a reference list is real content.
+    test("a LONG list of links is kept -- that is a reference list, not a promo", () => {
+        let items = "";
+        for (let i = 0; i < 12; i++) items += "<li><a href='/r" + i + "'>Reference number " + i + "</a></li>";
+        const out = md(article("<ul>" + items + "</ul>"));
+        assert.match(out, /Reference number 0/, "a 12-item link list is content and must survive");
+        assert.match(out, /Reference number 11/);
+    });
+
+    test("a list with real text beyond its links is kept", () => {
+        const out = md(article(
+            "<ul><li>First step, which explains something and links to <a href='/one'>a source</a></li>" +
+            "<li>Second step, also with explanation and <a href='/two'>another source</a></li></ul>"));
+        assert.match(out, /First step/);
+    });
+});

@@ -621,6 +621,91 @@ function emitBlockChildren(children, depth, opts) {
     return blocks.join("\n\n");
 }
 
+
+// Drop promo sections spliced into the article body.
+//
+// Publishers put "recommended stories" widgets between paragraphs, inside the
+// same container as the prose, with no class the boilerplate filter catches.
+// Two shapes, handled separately because they carry different evidence.
+//
+// 1. A LABELLED SECTION. Al Jazeera emits:
+//
+//        ## Recommended Stories
+//        - list 1 of 3 [BRICS summit: Is the bloc truly...](...)
+//
+//    The heading is the publisher stating outright that what follows is not
+//    the article. That is explicit intent, not a guess, so it is the strongest
+//    signal available -- drop the heading and everything under it until the
+//    next heading of the same or higher level.
+//
+// 2. AN UNLABELLED SHORT LIST of nothing but headline links, interrupting
+//    prose. No heading to go on, so all three conditions must hold: every item
+//    link-only, at most PROMO_MAX_ITEMS, and prose on both sides. A long run of
+//    link-only blocks is a reference list and real content -- danluu's
+//    input-lag article has 56 of them and every one belongs.
+var PROMO_MAX_ITEMS = 5;
+
+var PROMO_HEADING = /^#{1,6}\s*(recommended|related|more (from|on|stories)|read more|you may (also )?like|most read|popular|trending|sponsored|promoted|from our|elsewhere on)\b/i;
+
+function headingLevel(block) {
+    var m = String(block || "").match(/^(#{1,6})\s/);
+    return m ? m[1].length : 0;
+}
+
+function isLinkOnlyItem(line) {
+    // Some publishers prefix screen-reader text ("list 1 of 3"), which is not
+    // part of the headline and should not stop this matching.
+    return /^\s*[-*]\s*(list \d+ of \d+\s*)?\[[^\]]*\]\([^)]*\)\s*$/i.test(line);
+}
+
+function isPromoList(block) {
+    var lines = String(block || "").split("\n").filter(function (l) { return l.trim() !== ""; });
+    if (lines.length === 0 || lines.length > PROMO_MAX_ITEMS) return false;
+    for (var i = 0; i < lines.length; i++) {
+        if (!isLinkOnlyItem(lines[i])) return false;
+    }
+    return true;
+}
+
+function isProseBlock(block) {
+    var t = String(block || "").trim();
+    if (!t) return false;
+    if (/^[#>\-*`|]/.test(t)) return false;
+    if (/^\s*\[[^\]]*\]\([^)]*\)\s*$/.test(t)) return false;
+    return t.length > 80;
+}
+
+function dropPromoSections(markdown) {
+    var blocks = String(markdown || "").split("\n\n");
+    var out = [];
+    var skipUntilLevel = 0;
+
+    for (var i = 0; i < blocks.length; i++) {
+        var block = blocks[i];
+        var level = headingLevel(block);
+
+        if (skipUntilLevel > 0) {
+            // A heading at the same or higher level ends the promo section.
+            if (level > 0 && level <= skipUntilLevel) {
+                skipUntilLevel = 0;
+            } else {
+                continue;
+            }
+        }
+
+        if (level > 0 && PROMO_HEADING.test(block)) {
+            skipUntilLevel = level;
+            continue;
+        }
+
+        if (isPromoList(block) && isProseBlock(blocks[i - 1]) && isProseBlock(blocks[i + 1])) {
+            continue;
+        }
+
+        out.push(block);
+    }
+    return out.join("\n\n");
+}
 function emitMarkdown(node, opts) {
     return emitBlockChildren(node.children, 0, opts).trim();
 }
@@ -682,7 +767,7 @@ function extractArticle(html, options) {
     var candidates = collectCandidates(tree);
     var best = pickBest(candidates);
 
-    var markdown = emitMarkdown(best, options);
+    var markdown = dropPromoSections(emitMarkdown(best, options));
     var textLength = plainTextLength(markdown);
 
     if (textLength === 0) {
