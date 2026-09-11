@@ -1,93 +1,79 @@
-# Design: Phase 5 — reader and annotation app
+# Design: Phase 5 — reading window
 
-Date: 2026-09-11
-Status: design only, not started
-Depends on: Phase 4 (export). Phase 3 is useful but not required.
+Date: 2026-09-11 (rewritten; supersedes the annotation-app design of the same day)
+Status: design only, blocked on judging extraction quality
+Depends on: 4c (extraction), 4b (export)
 
-The widget stays the glanceable list. This is where reading happens: a
-standalone window, launched from the widget, showing one article at a time
-with room to highlight and annotate.
+A window that shows one article properly. The widget triages; this reads.
 
-Per the roadmap decision it ships **in this repo as a second plugin**, so it
-shares `ExportProvider.js`, `FeedParser.js` and the backends directly rather
-than duplicating them, and one registry listing covers both.
+## What changed, and why the first design was wrong
 
-## The hard part is anchoring, not the UI
+The original Phase 5 was a reader **and annotation** app: highlights, margin
+notes, an annotation store, and a fuzzy-anchoring module to re-locate
+highlights after an article was refetched. Anchoring was called "the whole risk
+of this phase", staged first and alone because if it could not be made reliable
+the phase needed rethinking.
 
-A highlight must survive the article being fetched again — with different
-whitespace, an inserted subscribe banner, a rewritten wrapper, or a
-paragraph the publisher edited after publication.
+It has been rethought, on a better principle: **let the text editor do the text
+editing.** Notes are exported as markdown and opened in Obsidian, Neovim, VS
+Code or whatever the user runs. Highlighting happens there, in the file, and
+how it renders is the editor's business.
 
-**Character offsets do not survive any of that.** Store instead, per
-highlight:
+That deletes the hard parts outright. There is no pointer into refetched text
+to maintain, so there is no anchoring problem, no orphaned-highlight
+degradation, no annotation store, and no cap-per-article storage question.
+`Anchor.js` will not be written.
 
-```js
-{ exactQuote, prefixContext, suffixContext, approxOffset }
-```
+What remains is the part that was never the risk: showing prose well.
 
-and re-locate on load by searching for `exactQuote`, disambiguating repeats
-with the surrounding context, and using `approxOffset` only as a tiebreaker
-between otherwise identical candidates. This is the model the W3C Web
-Annotation spec settled on, for exactly this reason.
+## Why a window at all, if the editor reads it
 
-**A failed relocation must degrade, never guess.** An anchor that cannot be
-found becomes an orphaned note attached to the article, visibly marked as
-such. A highlight silently landing on the wrong sentence is worse than one
-that admits it is lost, because the user will not notice and will later trust
-a quote the article never made.
+Because not everything is worth saving. The widget's rows are a list; deciding
+whether an article deserves a place in your vault needs more than a two-line
+summary and less than a full export-and-switch. This is the surface between
+"skim the headline" and "commit it to my notes".
 
-`anchorHighlight(articleText, anchor) -> { start, end } | null` is a pure
-function. It is the whole risk of this phase and it is fully unit-testable:
-whitespace changes, a duplicated quote, text inserted before and after,
-the quote deleted entirely, an empty article.
+## The content is the same; the presentation is not
 
-## Storage
+The window shows exactly what `HtmlExtract` produced — the same markdown that
+gets exported. It will not read better because the text is better. It reads
+better because the widget deliberately destroys structure and this does not.
 
-Annotations live in **plugin state**, keyed by article id; markdown is a
-derived export, never the store. Round-tripping structured anchors through a
-file a user may have reflowed means parsing our own bookkeeping back out of
-prose. A hand-edited exported note is a copy, and we never read it back.
+`htmlToText` flattens everything for the list, correctly: a row rendering `<h2>`
+and `<ul>` would be worse than useless. Here, **Qt renders the markdown
+natively** — `textFormat: Text.MarkdownText`, verified working on Qt 6.11 with
+headings, bold, links, lists, blockquotes and code. No library, no dependency.
 
-The state cost is real — annotations are unbounded in a way read ids are not,
-since a heavy annotator on one article can outweigh a thousand read markers.
-Cap per article rather than globally, so one article cannot evict another's
-work.
+Then typography, which is where reading comfort actually comes from:
 
-## The window
+- **Measure of 60-75 characters.** The single largest factor, and the one the
+  widget structurally cannot provide: it is sized for a desktop corner, not for
+  prose.
+- Line height around 1.5; the list needs tighter.
+- 16-18px body text, against the list's 11px.
+- Real paragraph spacing, a centred column, honest margins.
+- The DMS theme's colours, so it belongs to the desktop.
 
-Quickshell, shaped like DankCalendar. Not a layer-shell panel: this is a
-reading surface the user sits with, so it wants to be a normal window they
-can move, resize and leave open.
+## Scope
 
-Keyboard-first, reusing `KeyMap.js`'s vocabulary where it transfers — `j`/`k`
-to scroll, `o` to open externally, `s` to save, `e` to export, `Esc` to close.
-`h` to highlight the selection is new.
+- **5a** — the window: layout, typography, scrolling, DMS theming.
+- **5b** — keyboard, reusing `KeyMap.js`'s vocabulary: `j`/`k` scroll, `o`
+  opens externally, `e` exports, `s` saves, `Esc` closes.
+- **5c** — opened from the widget on a key and on a row action, showing the
+  cursor row.
 
-**Full-text fetch**: in Miniflux and Google Reader modes the body often is not
-in the feed. Both servers can fetch it; that is a backend capability
-(`fullText`, already in the interface and currently false for every backend)
-rather than a reader-app concern. Wire the capability first, in whichever
-phase touches the backends next.
+No annotation. No highlight capture. If reading in the window makes the user
+want to mark something up, the answer is `e` — export it and open it in the
+editor, which is better at this than we will ever be.
 
-## Staging
+## What would make it fail
 
-- **5a** — `Anchor.js` plus tests. Pure, and the entire risk. Do this first
-  and alone; if fuzzy relocation cannot be made reliable, the rest of the
-  phase needs rethinking, and that is much cheaper to discover here.
-- **5b** — the window: layout, typography, scrolling, keyboard.
-- **5c** — selection to highlight, margin notes, the annotation store.
-- **5d** — export of an article plus its annotations through Phase 4.
+**Extraction quality**, which is now the critical path rather than a
+nice-to-have. This window displays what `HtmlExtract` produces at reading size,
+so anything it gets wrong is magnified rather than hidden. Judge the extracted
+markdown before building this; a bigger view of a bad extraction is worse than
+no view.
 
-## What would make this fail
-
-Worth stating before building anything:
-
-- **Anchoring that is subtly wrong.** Mitigated by 5a first, and by orphaning
-  rather than guessing.
-- **Reading feel.** Typography, measure and spacing are the entire product
-  here, and they are subjective. This is the one phase where the design
-  cannot be settled by reasoning; it needs Brendon reading real articles in
-  it and saying what is wrong.
-- **Scope.** A reader app can absorb infinite work — themes, fonts, reading
-  positions, sync. 5b should be plain and unconfigurable until it is
-  pleasant to read, and only then gain options.
+**Scope creep.** A reading window can absorb infinite work — themes, fonts,
+reading positions, sync, per-site rules. It should be plain and unconfigurable
+until it is pleasant to read, and gain options only after.
