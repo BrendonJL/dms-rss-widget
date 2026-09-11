@@ -1,128 +1,77 @@
 # Dank RSS Widget
 
-A desktop widget plugin for [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell) that displays RSS and Atom feeds directly on your desktop.
+A desktop widget for [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell) that shows RSS and Atom feeds on your desktop, either fetched directly or synced from a [Miniflux](https://miniflux.app/) server.
+
+![screenshot](screenshot.png)
 
 ## Features
 
-- RSS 2.0 and Atom feed support with auto-detection
-- Configurable auto-refresh interval (5min - 24hr)
-- Click an item to open it in your browser and mark it read — this always happens, even if the item is already read (clicking never un-reads it)
-- A read/unread checkbox on each row toggles read state directly, without opening the link
-- Add/edit/remove feeds via the settings panel, with per-feed enable/disable
-- URL validation on add/edit (auto-prepends `https://` to a bare domain, rejects non-URLs, inline error text)
-- OPML import for bulk feed migration (uses the shared parser)
-- Quick-add presets: US/global news, tech, Reddit communities
-- Sort modes: newest first, oldest first, grouped by feed
-- Compact and expanded view modes
-- Thumbnail images from media:thumbnail, media:content, enclosures
-- Read/unread tracking with mark-all toggle, **persisted across reloads**
-- All / Unread / Saved filter row, with a live count on Unread and Saved
-- Bookmarks: toggle a saved flag on any item from a bookmark icon on the row (reduced opacity until hover or already-bookmarked, so hovering never reflows the row), persisted by stable item ID across reloads
-- Search: a toggle button reveals a search field on its own row; matches title, description, and source name, case-insensitively, with multiple space-separated terms ANDed (they may match across different fields) and debounced 150ms; composes with whichever filter is active
-- Feed reordering in settings via move-up/move-down buttons, disabled (not hidden) at the list boundaries
-- New-item notifications via the DMS toast system, based on stable item IDs seen since the last run (no backlog spam on first launch)
-- Manual refresh button in the header, disabled while a refresh is in flight
-- Per-feed fetch status (idle/loading/ok/error/timeout/disabled) with item counts and error text, visible in settings
-- Failed-feed count indicator in the header; distinct empty states for no feeds / all disabled / all failed / all caught up / no matching search results / no saved items
-- Configurable font size
-- Appearance customization (background opacity, borders)
-- CDATA unwrapping and HTML entity decoding
-- Feed source labels per item
-- **Optional [Miniflux](https://miniflux.app/) mode** — sync with a self-hosted Miniflux server instead of fetching feeds directly, with bidirectional read/unread and starred sync
+**Reading**
+- RSS 2.0 and Atom, auto-detected; thumbnails from `media:thumbnail`, `media:content` or enclosures
+- Compact and expanded views, configurable font size, sort by newest, oldest or feed
+- Click to open and mark read; a per-row checkbox toggles read state without opening
+- Bookmarks and read state persist across restarts, keyed by stable item ID
+- All / Unread / Saved filters with live counts, plus search across title, description and source
+
+**Managing feeds**
+- Add, edit, reorder and enable/disable feeds in settings, with URL validation
+- OPML import and quick-add presets (news, tech, Reddit)
+- Per-feed fetch status with item counts and readable error text
+- Auto-refresh from 5 minutes to 24 hours, plus a manual refresh button
+- New-item toast notifications, silent on first run so there is no backlog spam
+
+**Miniflux mode**
+- Use a self-hosted Miniflux server instead of fetching feeds directly
+- Bidirectional read/unread and starred sync, batched into one API call per action
 
 ## Roadmap
 
-Full designs live in [`docs/plans/`](docs/plans/). Contributors welcome on
-anything here — the **Phase 6** items are deliberately self-contained and are
-the best place to start.
+Designs live in [`docs/plans/`](docs/plans/). Contributors welcome — the **Phase 6** items below are self-contained and are the best place to start.
 
-**In progress**
+**Done, awaiting release**
 
-- Search focus and search-during-selection fixes — [design](docs/plans/2026-09-07-search-fixes-design.md)
+- Search focus and search-during-selection fixes
+- **Phase 0** — backend provider interface. Every `sourceMode` branch in the widget is gone (17 → 0), leaving one dispatch point.
+- **Phase 1** — Google Reader API backend and chained-request runner. Verified against a live server; no settings UI yet.
+- **Phase 3a** / **Phase 4a** — `AiProvider.js` and `ExportProvider.js`. No UI yet.
+- Three fixes for bugs shipped in 2.3.3: mark-as-read never reached Miniflux (`entry_ids` must be `int64`), every Miniflux API error was silently discarded (`curl` exits 0 on an HTTP 400), and the settings panel showed stale feed status.
 
-**Planned** — [full roadmap design](docs/plans/2026-09-07-roadmap-design.md)
+**Planned**
 
 | Phase | Work | Depends on |
 |---|---|---|
-| 0 | Backend provider interface — replaces the inline `sourceMode` branches | — |
-| 1 | Google Reader API backend (FreshRSS, TT-RSS, Inoreader, TheOldReader, BazQux, Miniflux) | 0 |
-| 2 | Keyboard navigation (`j`/`k`/`o`/`m`/`s`, `/` to search) | search fixes |
-| 3 | Local AI via any OpenAI-compatible runtime (ollama, vLLM, llama.cpp, LM Studio): per-article TL;DR, daily digest, interest ranking | 0 |
-| 4 | Notes/export provider: markdown directory, Obsidian, Neovim | — |
+| 1c | Settings UI for Google Reader | 1 |
+| 2 | Keyboard navigation (`j`/`k`/`o`/`m`/`s`, `/` to search) | — |
+| 3 | Local AI via any OpenAI-compatible runtime: per-article TL;DR, digest, interest ranking | 3a |
+| 4 | Notes export: markdown directory, Obsidian, Neovim | 4a |
 | 5 | Reader + annotation app — a standalone window for reading, highlighting and note-taking | 3, 4 |
-| 6 | Independent smaller items — see below | — |
+| 6 | Independent smaller items, below | — |
 
 **Phase 6 / good first issues**
 
-- Feed autodiscovery (paste a site URL, find its feed)
-- OPML **export** (import already exists)
-- Categories/folders (Miniflux returns them; we flatten them)
-- Per-feed refresh intervals
-- Audio enclosures → MPRIS, so podcast feeds play through the DMS media widget
-- Rule-based notifications (notify on *interesting* items, not just new ones)
-- Mark-read-on-scroll, per-source snooze, oldest-first sort
+Feed autodiscovery (paste a site URL, find its feed) · OPML **export** (import already exists) · categories/folders · per-feed refresh intervals · audio enclosures → MPRIS so podcasts play through the DMS media widget · rule-based notifications · mark-read-on-scroll · per-source snooze.
 
-**Design principle for anything with a vendor in its name:** it gets an
-interface with presets, never a hardcoded integration. Feed backends speak the
-Google Reader API, AI runtimes speak the OpenAI-compatible chat API, and notes
-apps are "write a markdown file to a directory". Adding ollama should not make
-vLLM harder, and adding Obsidian should not make Neovim harder.
+**Design principle:** anything with a vendor name gets an interface with presets, never a hardcoded integration. Feed backends speak the Google Reader API, AI runtimes speak the OpenAI-compatible chat API, and notes apps are "write a markdown file to a directory". Adding ollama must not make vLLM harder.
 
-**Not planned**
-
-- **Fever API** — covers only backends the Google Reader API already reaches,
-  and is read-only in Miniflux.
-- **Evernote export** — its local API was retired; there is no integration
-  surface left that fits the export interface. Use the markdown provider.
+**Not planned:** Fever API (reaches only backends Google Reader already covers, and is read-only in Miniflux) and Evernote export (its local API was retired). Open to a contributor who wants either.
 
 ## Miniflux mode
 
-Instead of fetching RSS/Atom URLs directly, the widget can act as a front-end for a
-[Miniflux](https://miniflux.app/) server. Switch **Source** to *Miniflux* in settings, enter your
-server URL and an API token, and hit **Test Connection**.
+Set **Source** to *Miniflux* in settings, enter your server URL and an API token (Miniflux → Settings → API Keys), and hit **Test Connection**.
 
-Switching **Source** to *Miniflux* replaces the RSS Feed Management, OPML Import, and
-Quick Add sections in settings with a Miniflux Connection section (they're RSS-only
-concepts and don't apply once feeds are coming from your Miniflux server). That section
-has:
+Miniflux mode replaces the RSS-only settings sections (Feed Management, OPML Import, Quick Add) with a Connection section offering server URL and token fields, **Mark as read on open**, **Show starred entries** (fetch bookmarks instead of unread), Test Connection / Force Refresh, and a read-only list of your subscriptions.
 
-- **Server URL** and **API Token** fields
-- **Mark as read on open** — sync read state to the server as soon as you open/read an item, not just on the next refresh
-- **Show starred entries** — switches the fetched set to your Miniflux bookmarks instead of unread entries
-- **Test Connection** and **Force Refresh** buttons
-- A read-only list of your Miniflux feed subscriptions
+Entries flow through the same row UI as RSS items. The mark-read control and the bookmark icon push read and **starred** state to the server — the bookmark icon doubles as the star, rather than adding a second control. Bulk actions batch into one API call each. Every fetch reconciles server state back into local state, so the server wins after each refresh while local clicks stay instant.
 
-In Miniflux mode:
+Switching modes never clears read or bookmark history in either direction: ids are prefixed per source (`m:`, `r:`, `g:`/`l:`/`h:`), so the two sets cannot collide.
 
-- Unread (or starred) entries are pulled from the server and flow through the same row UI as RSS items — the same selection checkbox, mark-read control, and bookmark icon described above
-- Opening an item marks it read locally immediately and, if *Mark as read on open* is on, pushes that read state to the server
-- The row's mark-read control also pushes the read/unread change to the server
-- The row's bookmark icon toggles the item's **starred** state in Miniflux (there is no separate star button — Miniflux mode reuses the existing bookmark control instead of adding a second one)
-- Bulk **Save** / **Mark read** on a selection push to the server too (batched into one API call per action, not one call per item)
-- Every successful fetch reconciles server-side read/starred status back into the local read/bookmark state, so the server is the source of truth after each refresh even though local clicks are instant
-- Switching back to Standard/RSS mode leaves your RSS feeds' read/bookmark state exactly as you left it — mode switching never clears read or bookmark history in either direction
+**The API token is stored in plaintext** in the plugin's settings, like every other setting. Keep that in mind if your DMS settings are backed up or synced.
 
-Create an API token in Miniflux under **Settings → API Keys**.
+## Known limitations
 
-**A note on the token:** the API token is stored in plaintext in the plugin's settings,
-the same way every other setting (feed URLs, refresh interval, etc.) is stored — there is
-no separate encryption or keyring for it. Keep that in mind if your DMS settings file is
-backed up, synced, or otherwise readable by other tools.
-
-### Planned (not in this milestone)
-
-- A dedicated "Errors" filter view — deliberately skipped this pass; feed errors are already surfaced via the header's failed-feed count indicator and per-feed status lines in settings, and an error view would need a different row type than the item list
-- Per-feed color/category labels
-- Configurable excerpt length
-- Stale-feed warnings
-- Copy-link action on items
-
-### Known limitations
-
-- At very narrow widget widths (approaching the 100px floor) the filter chips can still crowd each other. Fully solving it would need chip wrapping or eliding, which is not implemented. At normal sizes (the default and above) this is not visible.
-- Compact view rows reserve slightly more vertical padding than their margins strictly need. This is a pre-existing cosmetic issue, not introduced or fixed in this release.
-- `acceptsKeyboardFocus` gating search means the search field needs a **second click** before it accepts typing. The DMS wrapper maps this property onto layer-shell `WlrKeyboardFocus.OnDemand` (`Modules/Plugins/DesktopPluginWrapper.qml`), and `on_demand` grants keyboard focus only on a click that lands while the surface is already focus-eligible — which it is not at the instant the search toggle is clicked. Fix designed, see the roadmap.
-- The Miniflux settings layout (Connection section, read-only feed list, mode-gated visibility of the RSS-only sections) has not been visually verified in a live DMS session.
+- At widths approaching the 100px floor, the filter chips crowd each other. Solving it needs chip wrapping or eliding, which is not implemented; at default width and above it is not visible.
+- Compact rows reserve slightly more vertical padding than their margins need.
+- A bookmark is stored by item ID and survives restarts, but Saved can only show items still present in the fetched set. There is no local article archive, so an item that scrolls out of its feed stays bookmarked but invisible until it is fetched again.
 
 ## Installation
 
@@ -147,7 +96,7 @@ Open the widget settings to:
 
 1. **Add feeds** — Enter a name and RSS/Atom URL, or use the quick-add presets
 2. **Enable/disable feeds** — A disabled feed stays configured and editable but is not fetched
-3. **Reorder feeds** — Move-up/move-down buttons on each feed row change the order feeds are stored in. This order is what "grouped by feed" sort mode groups follow, so reordering feeds changes their display order in that mode. Opening the edit form and then reordering closes the edit form, since a swap would otherwise leave it pointing at the wrong feed.
+3. **Reorder feeds** — Move-up/move-down buttons set the stored feed order, which is the order "grouped by feed" sort follows. Reordering closes an open edit form, since a swap would leave it pointing at the wrong feed.
 4. **Set refresh interval** — How often feeds are fetched (default: 30 minutes)
 5. **Max items** — Limit displayed items (default: 20)
 6. **Appearance** — Background opacity, border toggle/color/thickness
@@ -190,91 +139,57 @@ feature-detects before calling it, so read/seen/bookmark persistence works in bo
 modes and a missing state API can never block feed fetching. Reader state is keyed by
 plugin ID, so multiple instances share one read/bookmark history.
 
-**Bookmark limitation:** a bookmark is stored by stable item ID and survives refreshes and reloads, but the Saved view can only display an item that is still present in the currently fetched set. If an item scrolls out of its feed (e.g. the source pushes it past your configured max-items window), its bookmark ID is still stored, but there is no local article archive to fall back on — the item simply won't appear in Saved until/unless it's fetched again.
-
 ## Architecture
 
-Logic that can be pure is kept out of QML, in two shared files at the repo root:
+Logic that can be pure is kept out of QML, in modules at the repo root. QML owns side effects — running processes, showing toasts, assigning properties — and nothing else.
 
-| File | Responsibility | Imported by |
-|------|----------------|-------------|
-| `FeedParser.js` | RSS/Atom/OPML parsing, stable item IDs, image extraction, relative time | both `.qml` files + tests |
-| `ReaderState.js` | Read/seen/bookmark ID bookkeeping, bounding, new-item detection, search + filtering, fetch classification, persistence capability detection, feed enable/disable and ordering rules | both `.qml` files + tests |
+| Module | Responsibility |
+|---|---|
+| `FeedParser.js` | RSS/Atom/OPML parsing, stable item IDs, image extraction, relative time |
+| `ReaderState.js` | Read/seen/bookmark bookkeeping, bounding, new-item detection, search and filtering, fetch classification, feed enable/disable and ordering |
+| `Backends.js` | The backend interface: `capabilities` plus request descriptors for the standard and Miniflux backends |
+| `GoogleReader.js` | Google Reader API backend (FreshRSS, TT-RSS, Inoreader, TheOldReader, BazQux, Miniflux) |
+| `ChainRunner.js` | Steps a chained request sequence, so the QML runner holds no counter arithmetic |
+| `AiProvider.js` | Client for any OpenAI-compatible runtime (ollama, vLLM, llama.cpp, LM Studio) |
+| `ExportProvider.js` | Builds note paths and markdown for the notes providers |
 
-Both are imported the same way (`import "FeedParser.js" as FeedParser`), and the Node test suite `require()`s the very same files — there is no separate copy of the logic to keep in sync.
+Each is imported the same way (`import "FeedParser.js" as FeedParser`) and `require()`d unchanged by the Node tests — there is no second copy of the logic to keep in sync.
 
-Splitting `ReaderState.js` out is what makes the trickiest rules testable without a running shell: that notifications stay silent on first run, that a feed outage cannot manufacture phantom "new items", that ID history stays bounded, and that a feed with no `enabled` key still counts as enabled.
+Two rules that are easy to violate and hard to notice:
 
-These files deliberately have **no `.pragma library` line**. That directive is required for QML-only JS modules in some contexts, but it is not valid JavaScript, and `require()` in Node fails on it immediately. Do not add it back — doing so breaks the test suite without breaking the widget, which makes the failure easy to miss.
+**No `.pragma library` line.** It is required for QML-only JS modules in some contexts, but it is not valid JavaScript and `require()` fails on it immediately. Adding one breaks the test suite without breaking the widget. CI greps for it.
 
-Exports are guarded with `if (typeof module !== "undefined" && module.exports) { ... }`, so the same file behaves as a plain QML-imported script inside DMS and as a CommonJS module under Node.
+**Modules never `require()` each other.** `require` does not exist under QML and `.import` is not valid JavaScript, so neither works in both runtimes. Modules that need a sibling take it as an argument instead — `createBackends({ FeedParser, ReaderState, GoogleReader })`.
 
-## Testing
+Backends return **request descriptors** (`{ argv, parse, timeoutMs, meta }`) and perform no I/O, which is what makes a protocol testable without a server. Every backend takes the same arguments in the same order, because the caller invokes them positionally without knowing which one it holds; `tests/backend-interface.test.js` enforces that.
 
-The parsing and reader-state logic is unit tested directly with Node.js. The tests import the exact same files the widget uses at runtime, not a mirror or copy, so they exercise real production code.
+## Development
 
-### Running Tests
+`install.sh` symlinks the repo into `~/.config/DankMaterialShell/plugins/`, so **the branch you have checked out is the widget DMS loads**. There is no plugin hot-reload; `dms restart` picks up changes.
 
 ```bash
-node --test tests/*.test.js
+node --test tests/*.test.js     # the JS modules
+./tests/qml/run.sh              # QML smoke tests, headless
+qmllint DankRssWidget.qml       # semantic checks, needs a full Qt + DMS
 ```
 
-Or one suite at a time:
+Node 18+ (`node:test`). Note `node --test tests/` without the glob fails on Node 24 — it tries to resolve `tests` as a module.
 
-```bash
-node --test tests/feed-parser.test.js   # parsing
-node --test tests/reader-state.test.js  # read/seen state, feed status
-```
+Three tiers, each catching what the one below cannot:
 
-Note: `node --test tests/` (with a trailing slash and no glob) fails on Node 24 —
-it tries to resolve `tests` as a module. Use the glob form above.
+- **`tests/*.test.js`** — the modules, run in CI. They prove you built the request you meant to build.
+- **`tests/qml/run.sh`** — runs `.qml` files under a real Qt engine headless. Needs `QT_QPA_PLATFORM=offscreen` **and** `QML2_IMPORT_PATH`; without the latter the `qml` tool prints only "Did not load any objects" and no error, which is why this project long assumed QML could not be tested at all. `console.log` does not reach stdout either, so tests report through staged exit codes (55 = pass).
+- **`tests/live-*.js`** — deliberately **not** `*.test.js`, so CI never runs them. They execute a module's own generated argv against a real server. This tier exists because unit tests structurally cannot catch a request that is perfectly well-formed and that the *server* rejects: both Miniflux bugs fixed in this cycle were invisible to 400 passing unit tests.
 
-Requires Node.js 18+ (uses the built-in `node:test` runner).
+CI runs the Node suite on Node 20/22/24, a manifest check, and a QML **syntax** check via `qmlformat`. It is not qmllint — the DMS shell it would need to resolve types against cannot be installed on a runner. See [`docs/ci/README.md`](docs/ci/README.md).
 
-### Test Coverage
-
-240 tests across 32 suites — covering (among other things):
-
-| Area | What it covers |
-|------|-----------------|
-| `extractTag` | XML tag extraction, CDATA, attributes, case-insensitivity |
-| `cleanText` | HTML entity decoding (`&amp;`, `&lt;`, `&#x...;`, `&#...;`), whitespace collapsing |
-| `stripHtml` | HTML tag removal, self-closing tags, attributes |
-| `getRelativeTime` | Relative timestamps (just now, Xm/h/d ago), locale fallback |
-| `extractImageUrl` | media:thumbnail, media:content, enclosure (attribute order independent), inline img, entity decoding |
-| `makeItemId` | Stable ID precedence: guid/id -> canonical link -> deterministic djb2 hash; same input always yields the same ID |
-| `parseRssFeed` | Full RSS 2.0 parsing, CDATA titles, entity descriptions, image extraction, Dublin Core `<dc:date>` fallback |
-| `parseAtomFeed` | Atom feed parsing, attribute-order-independent alternate-link selection, missing-`rel` handling, `rel="self"` avoidance, updated/published dates |
-| link entity decoding | `&amp;`/numeric entities decoded in RSS `<link>` and Atom `href` links (e.g. a BBC-style `&amp;` query string, or a numeric `&#233;` entity), so opened URLs are well-formed |
-| `parseFeed` | Auto-detection of RSS vs Atom format |
-| `parseOpml` | OPML import, feed name/URL extraction, entity decoding |
-| `dedupeItems` | Removing repeated items by stable ID |
-| `boundIdList` | Dedupe + newest-first bounding at 1000, dropping corrupted entries |
-| `evaluateSeen` | Silent first run, new-ID-only notifications, and the regression test that a feed outage plus recovery announces nothing |
-| read transitions | Mark read/unread, mark-all, and preserving read history for items outside the current view |
-| `classifyFetch` | Timeout (exit 124) reported distinctly from other errors, empty response, and zero-item responses |
-| feed migration | A feed with no `enabled` key counts as enabled; only an explicit `false` disables |
-| bookmarks | Toggle on/off, bounding, and that a bookmark survives the item being reparsed into a brand-new object (proving it keys off the stable ID, not object identity) |
-| search | Tokenizing and lowercasing, multiple terms ANDed across different fields, blank query matching everything, missing fields not throwing |
-| `filterItems` | Each filter alone, and search composed with Unread and with Saved, plus an unknown mode falling back to showing everything |
-| persistence detection | The real service accepted, the reduced instance shim rejected, half-implemented services rejected, and the resolver preferring whichever can actually persist |
-| feed ordering | Configured feed order beating alphabetical source order, newest-first within a feed, unconfigured feeds sorting last, and reordering the config reversing the grouping |
-| `toggleBookmark` / `isBookmarked` | Toggling on and off, persistence by stable item ID across reparse, bounding at the same cap as read/seen history |
-| `tokenizeQuery` | Lowercasing, whitespace splitting, empty/non-string input |
-| search matching | Matches on title, description, and source name; multiple terms ANDed, including across different fields; empty query matches everything; items with missing fields don't throw |
-| `filterItems` | All/Unread/Saved modes combined with a search query; search narrows within Unread and within Saved; items with no ID treated as unread and un-bookmarked; unknown mode falls back to showing everything |
-| `parseMinifluxEntries` | Mapping Miniflux JSON entries to the standard Item shape with `"m:"`-prefixed stable ids, id-collision safety against RSS's `makeItemId`, content-over-summary description preference, image extraction (enclosure over inline `<img>`, `isSafeUrl`-gated), and malformed/empty-input handling |
-| `reconcileServerStatus` | Server-wins reconciliation of Miniflux read/starred status into local `readOrder`/`bookmarkOrder`: adding/removing entries, no-op when already in sync, mixed batches, cap enforcement, and null/undefined input safety |
+Run the live suites against a local Miniflux; the Google Reader one needs its API enabled for your user.
 
 ## Migration / upgrading from 1.x
 
 - Existing configured feeds keep working with no changes required.
 - A feed with no `enabled` key (all feeds saved by 1.x) is treated as enabled — nothing gets silently disabled on upgrade.
 - Read/unread state starts empty on first run after upgrading. In 1.x this state lived only in memory and was already reset on every widget reload, so nothing that previously persisted is being lost.
-
-## Screenshots
-
-![RSS Widget on desktop](screenshot.png)
 
 ## Related plugins
 
@@ -298,6 +213,67 @@ as did the parser bugs fixed in 2.3.1 and 2.3.2
 ([#7](https://github.com/BrendonJL/dms-rss-widget/issues/7)).
 
 ## Changelog
+
+### 2.4.0
+
+**New: Google Reader API support.** Adds FreshRSS, Tiny Tiny RSS (via its
+plugin), Inoreader, TheOldReader and BazQux as sources — one protocol rather
+than one integration each. Select **Google Reader** as the source mode and
+enter your server URL, username and password. On Miniflux and FreshRSS these
+are the API credentials from the server's integration settings, not your web
+login. Verified end to end against both.
+
+**New: keyboard navigation.** Click the widget once, then drive it: `j`/`k` to
+move, `o` or `Enter` to open, `m` to toggle read, `s` to save, `Space` to
+select, `g g`/`G` for top and bottom, `/` to search, `r` to refresh, `A` to
+mark all read. Press `?` for the full list. `Esc` unwinds one layer at a time —
+it closes the help, then search, then a selection, then the cursor, so it never
+destroys a selection you were part-way through building.
+
+**Fixed: mark-as-read never reached Miniflux.** Every read you made in Miniflux
+mode stayed local. The API types `entry_ids` as `int64` and the widget sent
+strings, so the server rejected the whole request with HTTP 400. Starring was
+unaffected, because it puts the id in the URL path where the type is never
+checked — which is why the bug survived: half the feature worked.
+
+**Fixed: Miniflux API errors were silently discarded.** `curl` exits 0 on an
+HTTP 400, and the widget only reacted to a non-zero exit, so every API failure
+vanished without a toast, a log line or any other trace. This is what hid the
+bug above. Requests now use `--fail-with-body`.
+
+**Fixed: the settings panel showed stale feed status.** It re-read the status
+list only when the panel opened, so a feed added while it was already open read
+"Not fetched yet" indefinitely — even after the widget had fetched it and
+recorded a real result. It now refreshes while visible.
+
+**Fixed: search could not be typed into until you clicked it twice.** DMS maps
+a plugin's `acceptsKeyboardFocus` onto layer-shell `OnDemand`, which grants
+keyboard focus only on a click landing while the surface is *already*
+focus-eligible — which it was not at the moment the search toggle was clicked.
+
+**Fixed: the search button disappeared while items were selected**, and
+**selecting items then searching silently dropped the selection.** Selection is
+now pruned against the whole dataset rather than the visible list, so it
+survives a filter change; the count reports how many of the selected items are
+currently hidden.
+
+**Fixed: two feeds sharing a URL rendered each other's names.** Fetch results
+were matched to feeds by URL; they are matched by position now.
+
+**Improved: readable fetch errors.** "Could not resolve host" rather than
+"curl exit 6", keeping the code in parentheses for bug reports.
+
+**Improved: bulk mark-read is state-aware**, flipping to "Mark unread" when
+every selected item is already read.
+
+**Internal.** The widget no longer branches on the source mode anywhere: 17
+`sourceMode ===` checks became one dispatch point, with backends exposing
+capabilities and returning request descriptors that the QML layer executes.
+This is what made a third backend a new file rather than a new branch in
+twenty places. Test suite grew from 240 to 610, including live suites that run
+the widget's own generated requests against real Miniflux and FreshRSS
+servers — both Miniflux bugs above were invisible to the unit tests, because
+the requests were well-formed and the *server* rejected them.
 
 **1.0.0 is the only version previously published to the DMS registry.** The 2.0.0
 through 2.2.0 entries below were developed but never released — this is the first

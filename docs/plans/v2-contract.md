@@ -1,5 +1,12 @@
 # RSS Widget v2 — Frozen Contracts (Milestone 1)
 
+> **Status:** historical (Milestone 1, the v2 rewrite). The core contracts —
+> item shape, id precedence, feed config shape — are still live, but
+> `FeedParser.js`'s exported function set has grown substantially since
+> (safe-URL checks, OPML, namespace handling, Miniflux entry parsing). Treat
+> the "FROZEN" function list here as the Milestone 1 baseline, not the
+> current API — check `FeedParser.js`'s own `module.exports` for that.
+
 Authored by the lead agent. All DMS facts below were VERIFIED against
 `/usr/share/quickshell/dms/` on this machine. Do not re-litigate them.
 

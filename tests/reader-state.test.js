@@ -152,6 +152,32 @@ describe("classifyFetch — per-feed status", () => {
         assert.strictEqual(r.lastError, "Timed out");
     });
 
+
+    // "curl exit 6" is accurate and useless to whoever reads it in the
+    // settings panel. Each of these is something the user can act on.
+    test("common curl failures read as English, keeping the code for triage", () => {
+        assert.match(R.classifyFetch(6, "", 0).lastError, /Could not resolve host/);
+        assert.match(R.classifyFetch(7, "", 0).lastError, /Could not connect/);
+        assert.match(R.classifyFetch(28, "", 0).lastError, /Timed out/);
+        assert.match(R.classifyFetch(60, "", 0).lastError, /Certificate/);
+        assert.match(R.classifyFetch(22, "", 0).lastError, /Server returned an error/);
+        // the numeric code survives, so a bug report is still diagnosable
+        assert.match(R.classifyFetch(6, "", 0).lastError, /curl 6/);
+    });
+
+    test("an unmapped exit code still says something useful", () => {
+        var r = R.classifyFetch(43, "", 0);
+        assert.strictEqual(r.state, "error");
+        assert.match(r.lastError, /Fetch failed/);
+        assert.match(r.lastError, /43/);
+    });
+
+    // 124 is Proc's own timeout, not curl's, and must keep its own state.
+    test("124 is still a timeout state, not folded into the curl mapping", () => {
+        var r = R.classifyFetch(124, "", 0);
+        assert.strictEqual(r.state, "timeout");
+        assert.doesNotMatch(r.lastError, /curl/);
+    });
     test("a nonzero exit code is an error naming the code", () => {
         const r = R.classifyFetch(6, "", 0);
         assert.strictEqual(r.state, "error");
