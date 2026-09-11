@@ -248,12 +248,82 @@ function buildBody(article, annotations, caps, config, extracted) {
     return parts.join("\n\n") + "\n";
 }
 
-// ─── capabilities table ───
+// ─── open-command presets (stage 4d) ───
+//
+// Adding an editor used to mean adding a branch to buildOpenRequest for
+// each one. The file being opened is identical in every case -- the only
+// editor-specific thing is the command that opens it afterward -- so that
+// becomes a single command TEMPLATE with `{path}` substituted, and "one more
+// editor" becomes "one more row in this table", not a new code path.
+//
+// GUI editors (VS Code, Zed, Emacs) ship a launcher that takes a bare path.
+// Terminal ones (Neovim, Helix, Vim) need a terminal emulator wrapped around
+// them, and which terminal is the user's business -- these presets assume
+// `kitty` because that is what this machine runs. They are a starting point
+// to edit, not a claim about anyone's setup; the settings panel says so.
+var EXPORT_OPEN_PRESETS = [
+    { id: "none", label: "None", template: "" },
+    { id: "obsidian", label: "Obsidian", template: "obsidian://open?vault={vault}&file={file}" },
+    { id: "vscode", label: "VS Code", template: "code {path}" },
+    { id: "zed", label: "Zed", template: "zed {path}" },
+    { id: "emacs", label: "Emacs", template: "emacsclient -n {path}" },
+    { id: "nvim-remote", label: "Neovim (running instance)", template: "nvim --server $NVIM --remote {path}" },
+    { id: "nvim-terminal", label: "Neovim (terminal)", template: "kitty nvim {path}" },
+    { id: "helix", label: "Helix", template: "kitty hx {path}" },
+    { id: "vim", label: "Vim", template: "kitty vim {path}" },
+    { id: "custom", label: "Custom", template: "" }
+];
 
-function capabilitiesFor(kind) {
-    if (kind === "obsidian") return { openAfterWrite: true, wikilinks: true };
-    if (kind === "neovim") return { openAfterWrite: true, wikilinks: false };
-    return { openAfterWrite: false, wikilinks: false }; // "markdown" and any unknown kind
+function presetById(id) {
+    for (var i = 0; i < EXPORT_OPEN_PRESETS.length; i++) {
+        if (EXPORT_OPEN_PRESETS[i].id === id) return EXPORT_OPEN_PRESETS[i];
+    }
+    return null;
+}
+
+// ─── legacy config migration (stage 4d) ───
+//
+// Before this stage "exportKind" was one of exactly three values and fully
+// determined behaviour by itself. It is now the id of whichever preset is
+// active, and the actual open command lives in `exportOpenCommand`. A saved
+// config from before this stage has no `exportOpenCommand` key at all --
+// that absence is what marks it as legacy, not the value of exportKind
+// (which stays a normal, possibly-empty string forever after). A config
+// that already HAS the key, even set to "", has already been through this
+// (or was created after it existed) and is returned unchanged.
+function resolveExportConfig(saved) {
+    saved = saved || {};
+    if (Object.prototype.hasOwnProperty.call(saved, "exportOpenCommand")) {
+        return {
+            exportKind: saved.exportKind || "custom",
+            exportOpenCommand: saved.exportOpenCommand || ""
+        };
+    }
+
+    // "obsidian" and "neovim" were the only legacy kinds with any open
+    // behaviour at all -- "markdown" (and anything unrecognised) had none,
+    // and maps to "no preset selected" rather than to a real one.
+    var legacyPresetId = { obsidian: "obsidian", neovim: "nvim-remote" }[saved.exportKind];
+    if (!legacyPresetId)
+        return { exportKind: "none", exportOpenCommand: "" };
+
+    var preset = presetById(legacyPresetId);
+    return { exportKind: preset.id, exportOpenCommand: preset.template };
+}
+
+// ─── capabilities table ───
+//
+// Obsidian's wikilink tags change the note's CONTENT (adding "[[tag]]"
+// links), not how the note is opened afterward -- that is what makes them a
+// capability flag rather than something baked into the open-command
+// template, and why this keys off `kind` (which preset is active) rather
+// than off the template text itself.
+function capabilitiesFor(config) {
+    config = config || {};
+    return {
+        openAfterWrite: !!(config.exportOpenCommand && String(config.exportOpenCommand).trim()),
+        wikilinks: config.kind === "obsidian"
+    };
 }
 
 // ─── path building ───
@@ -329,7 +399,7 @@ function buildNote(config, article, annotations, extracted) {
     if (!article)
         return { error: "No article to export" };
 
-    var caps = capabilitiesFor(config.kind);
+    var caps = capabilitiesFor(config);
     var relPath = buildRelPath(config, article);
 
     // Rule 1: re-check containment on the assembled path. This should be
@@ -345,31 +415,68 @@ function buildNote(config, article, annotations, extracted) {
     return { relPath: relPath, content: content };
 }
 
+// `{path}` is substituted as its OWN argv element, never concatenated into a
+// shell string: the template is trusted local config, but the path is
+// derived from feed content, which is not (see the header comment). Argv
+// separation -- never a shell -- is what makes a filename containing a
+// space, a quote or a semicolon a non-event rather than an injection.
 function buildOpenRequest(config, relPath) {
-    var caps = capabilitiesFor(config.kind);
-    if (!caps.openAfterWrite || !relPath) return null;
+    config = config || {};
+    if (!relPath) return null;
+
+    var template = String(config.exportOpenCommand || "").trim();
+    if (!template) return null; // "None" / unconfigured -- write the file and stop
 
     var root = String(config.root || "").replace(/[\/\\]+$/, "");
     var fullPath = root + "/" + relPath;
 
+    // Obsidian is a URL handler, not an executable, so its template is a URI
+    // with `{vault}`/`{file}` substituted directly into the string rather
+    // than split into argv. The extension is stripped because Obsidian
+    // addresses a note by its wikilink name, not its filename.
     if (config.kind === "obsidian") {
         if (!config.vault) return null;
         var noExt = relPath.replace(/\.md$/, "");
-        return {
-            kind: "obsidian",
-            url: "obsidian://open?vault=" + encodeURIComponent(config.vault) + "&file=" + encodeURIComponent(noExt)
-        };
+        var url = template
+            .replace(/\{vault\}/g, encodeURIComponent(config.vault))
+            .replace(/\{file\}/g, encodeURIComponent(noExt));
+        return { kind: "obsidian", url: url };
     }
 
-    if (config.kind === "neovim") {
-        if (!config.nvimServer) return null;
-        return {
-            kind: "neovim",
-            argv: ["nvim", "--server", config.nvimServer, "--remote", fullPath]
-        };
+    // Split BEFORE substituting fullPath in: joining it into the template
+    // string first and splitting afterward would let a path containing a
+    // space re-fragment into two argv elements, exactly the injection this
+    // split exists to prevent. This also means a template cannot itself
+    // contain a quoted argument with a space in it -- an accepted limit on
+    // the shape of command this is, and it beats invoking a shell to parse
+    // it.
+    var parts = template.split(/\s+/).filter(function (s) { return s.length > 0; });
+    var argv = [];
+    var sawPath = false;
+    for (var i = 0; i < parts.length; i++) {
+        if (parts[i] === "{path}") {
+            sawPath = true;
+            argv.push(fullPath);
+        } else {
+            argv.push(parts[i]);
+        }
     }
 
-    return null;
+    // A template with no {path} would run a command that never receives the
+    // note at all -- silently opening nothing while looking like success.
+    // Refuse it outright rather than run it.
+    if (!sawPath) return null;
+
+    // `$NVIM` and any other environment variable is deliberately NOT
+    // expanded here. argv is handed straight to the OS with no shell in
+    // between, so there is nothing to expand it anyway -- and reimplementing
+    // shell variable expansion ourselves, by hand, on a string next to
+    // attacker-adjacent input, just to make one preset more convenient, is
+    // exactly the kind of thing this file exists to avoid doing (see the
+    // header comment). The nvim --server $NVIM preset only resolves where
+    // the process that ultimately runs it already has $NVIM in its own
+    // environment.
+    return { kind: "custom", argv: argv };
 }
 
 // ─── article fetch (stage 4c-b) ───
@@ -420,7 +527,7 @@ function buildArticleFetchRequest(url) {
 
 function createExportProvider(config) {
     config = config || {};
-    var caps = capabilitiesFor(config.kind);
+    var caps = capabilitiesFor(config);
 
     return {
         buildNote: function (article, annotations, extracted) {
@@ -439,6 +546,8 @@ if (typeof module !== "undefined" && module.exports) {
     module.exports = {
         createExportProvider: createExportProvider,
         buildArticleFetchRequest: buildArticleFetchRequest,
-        articleSummaryText: articleSummaryText
+        articleSummaryText: articleSummaryText,
+        EXPORT_OPEN_PRESETS: EXPORT_OPEN_PRESETS,
+        resolveExportConfig: resolveExportConfig
     };
 }

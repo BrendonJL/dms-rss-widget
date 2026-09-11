@@ -2,7 +2,13 @@ const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 
-const { createExportProvider, buildArticleFetchRequest, articleSummaryText } = require("../ExportProvider.js");
+const {
+    createExportProvider,
+    buildArticleFetchRequest,
+    articleSummaryText,
+    EXPORT_OPEN_PRESETS,
+    resolveExportConfig
+} = require("../ExportProvider.js");
 
 var ROOT = "/home/user/vault";
 
@@ -81,19 +87,24 @@ function parseFrontmatter(content) {
 // ─── capabilities ───
 
 describe("capabilities", () => {
-    test("markdown provider: no openAfterWrite, no wikilinks", () => {
+    test("no open command configured: no openAfterWrite, no wikilinks", () => {
         var p = createExportProvider(baseConfig({ kind: "markdown" }));
         assert.deepEqual(p.capabilities, { openAfterWrite: false, wikilinks: false });
     });
 
-    test("obsidian provider: openAfterWrite + wikilinks", () => {
-        var p = createExportProvider(baseConfig({ kind: "obsidian" }));
+    test("obsidian preset: openAfterWrite + wikilinks", () => {
+        var p = createExportProvider(baseConfig({ kind: "obsidian", exportOpenCommand: "obsidian://open?vault={vault}&file={file}" }));
         assert.deepEqual(p.capabilities, { openAfterWrite: true, wikilinks: true });
     });
 
-    test("neovim provider: openAfterWrite, no wikilinks", () => {
-        var p = createExportProvider(baseConfig({ kind: "neovim" }));
+    test("a non-obsidian preset with a command: openAfterWrite, no wikilinks", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", exportOpenCommand: "code {path}" }));
         assert.deepEqual(p.capabilities, { openAfterWrite: true, wikilinks: false });
+    });
+
+    test("a whitespace-only command counts as unconfigured", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", exportOpenCommand: "   " }));
+        assert.equal(p.capabilities.openAfterWrite, false);
     });
 });
 
@@ -300,8 +311,8 @@ describe("tags live in frontmatter, not the body", () => {
         assert.ok(content.indexOf('tags: ["news", "tech"]') !== -1);
     });
 
-    test("neovim provider does NOT emit wikilink tags", () => {
-        var p = createExportProvider(baseConfig({ kind: "neovim", tags: ["news", "tech"] }));
+    test("a non-obsidian preset does NOT emit wikilink tags", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", tags: ["news", "tech"] }));
         var result = p.buildNote(article(), []);
         assert.equal(result.content.indexOf("[["), -1);
     });
@@ -310,41 +321,175 @@ describe("tags live in frontmatter, not the body", () => {
 // ─── openRequest ───
 
 describe("openRequest", () => {
-    test("markdown provider never returns an open request", () => {
+    test("empty template returns null: write the file and stop", () => {
+        var p = createExportProvider(baseConfig({ kind: "none", exportOpenCommand: "" }));
+        assert.equal(p.openRequest("some-note.md"), null);
+    });
+
+    test("unset template (key absent) also returns null", () => {
         var p = createExportProvider(baseConfig({ kind: "markdown" }));
         assert.equal(p.openRequest("some-note.md"), null);
     });
 
-    test("obsidian provider returns an obsidian:// url", () => {
-        var p = createExportProvider(baseConfig({ kind: "obsidian", vault: "MyVault" }));
+    test("null relPath never produces an open request", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", exportOpenCommand: "code {path}" }));
+        assert.equal(p.openRequest(null), null);
+    });
+
+    // ─── Obsidian: URI, not argv ───
+
+    test("obsidian preset returns an obsidian:// url, not an argv", () => {
+        var p = createExportProvider(baseConfig({
+            kind: "obsidian", vault: "MyVault",
+            exportOpenCommand: "obsidian://open?vault={vault}&file={file}"
+        }));
         var req = p.openRequest("some-note.md");
         assert.ok(req);
+        assert.equal(req.argv, undefined);
         assert.ok(req.url.indexOf("obsidian://open?vault=MyVault") === 0);
         assert.ok(req.url.indexOf("file=some-note") !== -1);
     });
 
-    test("obsidian provider with no vault configured returns null", () => {
-        var p = createExportProvider(baseConfig({ kind: "obsidian", vault: "" }));
+    test("obsidian preset with no vault configured returns null", () => {
+        var p = createExportProvider(baseConfig({
+            kind: "obsidian", vault: "",
+            exportOpenCommand: "obsidian://open?vault={vault}&file={file}"
+        }));
         assert.equal(p.openRequest("some-note.md"), null);
     });
 
-    test("neovim provider with no server configured returns null", () => {
-        var p = createExportProvider(baseConfig({ kind: "neovim" }));
-        assert.equal(p.openRequest("some-note.md"), null);
-    });
+    // ─── {path} substitution: one argv element, never a shell string ───
 
-    test("neovim provider with a server returns a spawnable argv, no shell string", () => {
-        var p = createExportProvider(baseConfig({ kind: "neovim", nvimServer: "/tmp/nvim.sock" }));
+    test("{path} is substituted as its own argv element", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", exportOpenCommand: "code {path}" }));
         var req = p.openRequest("some-note.md");
-        assert.ok(req);
         assert.ok(Array.isArray(req.argv));
-        assert.equal(req.argv[0], "nvim");
-        assert.ok(req.argv.indexOf("/tmp/nvim.sock") !== -1);
+        assert.deepEqual(req.argv, ["code", "/home/user/vault/some-note.md"]);
     });
 
-    test("null relPath never produces an open request", () => {
-        var p = createExportProvider(baseConfig({ kind: "obsidian" }));
-        assert.equal(p.openRequest(null), null);
+    test("a template with flags before {path} keeps them as separate argv elements", () => {
+        var p = createExportProvider(baseConfig({ kind: "custom", exportOpenCommand: "emacsclient -n {path}" }));
+        var req = p.openRequest("some-note.md");
+        assert.deepEqual(req.argv, ["emacsclient", "-n", "/home/user/vault/some-note.md"]);
+    });
+
+    test("a path containing spaces, quotes and semicolons survives intact as ONE argv element", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", exportOpenCommand: "code {path}" }));
+        var hostileRelPath = "evil; rm -rf ~ \"'.md";
+        var req = p.openRequest(hostileRelPath);
+        assert.ok(Array.isArray(req.argv));
+        // Never re-fragmented into multiple argv elements by the spaces
+        // inside it -- the split happens on the TEMPLATE, before {path} is
+        // substituted in, not on the result.
+        assert.equal(req.argv.length, 2);
+        assert.equal(req.argv[1], "/home/user/vault/" + hostileRelPath);
+    });
+
+    test("a template with no {path} is rejected -- it would silently open nothing", () => {
+        var p = createExportProvider(baseConfig({ kind: "custom", exportOpenCommand: "code" }));
+        assert.equal(p.openRequest("some-note.md"), null);
+    });
+
+    test("$NVIM is never expanded -- it is handed through as a literal argv element", () => {
+        var preset = EXPORT_OPEN_PRESETS.find(p => p.id === "nvim-remote");
+        var p = createExportProvider(baseConfig({ kind: "custom", exportOpenCommand: preset.template }));
+        var req = p.openRequest("some-note.md");
+        assert.ok(req.argv.indexOf("$NVIM") !== -1);
+    });
+
+    // ─── every preset ───
+
+    describe("every preset parses to a plausible request", () => {
+        EXPORT_OPEN_PRESETS.forEach(function (preset) {
+            test(preset.id, () => {
+                var isObsidian = preset.id === "obsidian";
+                var p = createExportProvider(baseConfig({
+                    kind: isObsidian ? "obsidian" : preset.id,
+                    vault: "MyVault",
+                    exportOpenCommand: preset.template
+                }));
+                var req = p.openRequest("some-note.md");
+
+                if (!preset.template) {
+                    // "None" and "Custom" ship with an empty template --
+                    // there is nothing to open until the user types one.
+                    assert.equal(req, null);
+                    return;
+                }
+
+                assert.ok(req, preset.id + " produced no request");
+                if (isObsidian) {
+                    assert.equal(typeof req.url, "string");
+                    assert.ok(req.url.indexOf("obsidian://") === 0);
+                } else {
+                    assert.ok(Array.isArray(req.argv), preset.id + " did not produce an argv");
+                    assert.ok(req.argv.length > 0);
+                    assert.ok(req.argv.indexOf("/home/user/vault/some-note.md") !== -1,
+                        preset.id + " never substituted {path}");
+                }
+            });
+        });
+    });
+});
+
+// ─── resolveExportConfig: legacy exportKind migration (stage 4d) ───
+
+describe("resolveExportConfig: migrating exportKind to a preset", () => {
+    test("legacy exportKind: 'obsidian' migrates to the obsidian preset, not to None", () => {
+        var resolved = resolveExportConfig({ exportKind: "obsidian" });
+        assert.equal(resolved.exportKind, "obsidian");
+        assert.equal(resolved.exportOpenCommand, EXPORT_OPEN_PRESETS.find(p => p.id === "obsidian").template);
+    });
+
+    test("legacy exportKind: 'neovim' migrates to the running-instance preset, not to None", () => {
+        var resolved = resolveExportConfig({ exportKind: "neovim" });
+        assert.equal(resolved.exportKind, "nvim-remote");
+        assert.equal(resolved.exportOpenCommand, EXPORT_OPEN_PRESETS.find(p => p.id === "nvim-remote").template);
+    });
+
+    test("legacy exportKind: 'markdown' has no equivalent open command -- resolves to None", () => {
+        var resolved = resolveExportConfig({ exportKind: "markdown" });
+        assert.equal(resolved.exportKind, "none");
+        assert.equal(resolved.exportOpenCommand, "");
+    });
+
+    test("no saved config at all resolves to None, not a throw", () => {
+        var resolved = resolveExportConfig(undefined);
+        assert.equal(resolved.exportKind, "none");
+        assert.equal(resolved.exportOpenCommand, "");
+    });
+
+    test("a config that already has exportOpenCommand is left alone, even if empty", () => {
+        var resolved = resolveExportConfig({ exportKind: "custom", exportOpenCommand: "" });
+        assert.equal(resolved.exportKind, "custom");
+        assert.equal(resolved.exportOpenCommand, "");
+    });
+
+    test("a config already in the new shape keeps its own command untouched", () => {
+        var resolved = resolveExportConfig({ exportKind: "vscode", exportOpenCommand: "code -r {path}" });
+        assert.equal(resolved.exportKind, "vscode");
+        assert.equal(resolved.exportOpenCommand, "code -r {path}");
+    });
+});
+
+describe("EXPORT_OPEN_PRESETS", () => {
+    test("has exactly the ten presets from the design doc", () => {
+        assert.equal(EXPORT_OPEN_PRESETS.length, 10);
+    });
+
+    test("every preset has an id, a label, and a template field", () => {
+        EXPORT_OPEN_PRESETS.forEach(function (preset) {
+            assert.equal(typeof preset.id, "string");
+            assert.ok(preset.id.length > 0);
+            assert.equal(typeof preset.label, "string");
+            assert.ok(preset.label.length > 0);
+            assert.equal(typeof preset.template, "string");
+        });
+    });
+
+    test("ids are unique", () => {
+        var ids = EXPORT_OPEN_PRESETS.map(p => p.id);
+        assert.equal(new Set(ids).size, ids.length);
     });
 });
 

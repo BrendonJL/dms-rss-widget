@@ -61,7 +61,17 @@ DesktopPluginComponent {
     // writes to the instance config only. So these are per-instance for an
     // instanced widget and global otherwise -- the same as every other
     // setting in this file.
-    property string exportKind: pluginData.exportKind ?? "markdown"
+    // Stage 4d replaced the fixed markdown/obsidian/neovim provider dropdown
+    // with an editable open-command template (exportOpenCommand); exportKind
+    // is now the id of whichever preset is active rather than a closed set
+    // of three values. resolveExportConfig() reads BOTH of those the same
+    // way regardless of whether pluginData is in the old or new shape, so a
+    // config saved before this stage (e.g. exportKind: "obsidian" with no
+    // exportOpenCommand at all) lands on the equivalent preset instead of
+    // silently losing its open-after-export behaviour.
+    readonly property var _exportResolved: ExportProvider.resolveExportConfig(pluginData)
+    property string exportKind: root._exportResolved.exportKind
+    property string exportOpenCommand: root._exportResolved.exportOpenCommand
     property string exportRoot: pluginData.exportRoot ?? ""
     property string exportVault: pluginData.exportVault ?? ""
     property string exportTemplate: pluginData.exportTemplate ?? "{title}.md"
@@ -76,7 +86,8 @@ DesktopPluginComponent {
         root: root.exportRoot,
         vault: root.exportVault,
         filenameTemplate: root.exportTemplate,
-        tags: root.exportTags
+        tags: root.exportTags,
+        exportOpenCommand: root.exportOpenCommand
     })
 
     // --- Backend provider interface ---
@@ -994,9 +1005,29 @@ DesktopPluginComponent {
         var view = exportFileViewComponent.createObject(root, {
             exportIndex: index,
             exportTitle: title,
+            exportRelPath: note.relPath,
             path: root.exportRoot.replace(/[\/\\]+$/, "") + "/" + note.relPath
         });
         view.setText(note.content);
+    }
+
+    // Runs whatever the active preset's open command resolves to, once the
+    // note it names has actually finished writing. `openRequest` returns
+    // null for "no command configured" (write and stop) and for a template
+    // that failed to parse -- both are silent no-ops here, not errors, since
+    // the note itself was still written successfully either way.
+    function _openAfterWrite(relPath) {
+        var req = root.exportProvider.openRequest(relPath);
+        if (!req) return;
+        if (req.url) {
+            // Obsidian is a URL handler, not an executable -- Qt.openUrlExternally
+            // is the same mechanism this widget already uses for article links.
+            Qt.openUrlExternally(req.url);
+        } else if (req.argv) {
+            // Same Proc path every other command in this widget runs through --
+            // argv only, never a shell string (see buildOpenRequest's header).
+            Proc.runCommand(null, req.argv, function () {});
+        }
     }
 
     // Called once per write, in whatever order writes actually finish
@@ -1044,12 +1075,14 @@ DesktopPluginComponent {
             id: exportFileViewInstance
             property int exportIndex: -1
             property string exportTitle: ""
+            property string exportRelPath: ""
             blockWrites: true
             atomicWrites: true
             preload: false
 
             onSaved: {
                 root._exportItemDone(exportIndex, true, exportTitle);
+                root._openAfterWrite(exportRelPath);
                 exportFileViewInstance.destroy();
             }
 

@@ -9,6 +9,7 @@ import "FeedParser.js" as FeedParser
 import "ReaderState.js" as ReaderState
 import "Backends.js" as Backends
 import "GoogleReader.js" as GoogleReader
+import "ExportProvider.js" as ExportProvider
 
 PluginSettings {
     id: root
@@ -514,23 +515,64 @@ PluginSettings {
 
     StyledText {
         width: parent.width
-        text: "Send an article to a local notes folder, an Obsidian vault, or Neovim. Leave the folder empty to disable this entirely -- no export button or shortcut appears until one is set."
+        text: "Send an article to a local notes folder and, optionally, open it in an editor of your choice afterward. Leave the folder empty to disable this entirely -- no export button or shortcut appears until one is set."
         font.pixelSize: Theme.fontSizeSmall
         color: Theme.surfaceVariantText
         wrapMode: Text.WordWrap
     }
 
-    SelectionSetting {
-        id: exportKindSetting
-        settingKey: "exportKind"
-        label: "Provider"
-        description: "Obsidian and Neovim add vault-aware paths and an optional jump-to-note callback on top of the plain markdown-directory case."
-        options: [
-            { label: "Markdown directory", value: "markdown" },
-            { label: "Obsidian", value: "obsidian" },
-            { label: "Neovim", value: "neovim" }
-        ]
-        defaultValue: "markdown"
+    // Stage 4d: editors used to each need their own hardcoded branch (see
+    // ExportProvider.js's design doc). Now there's one open-command template
+    // with `{path}` substituted, and "one more editor" is one more row in
+    // EXPORT_OPEN_PRESETS rather than a new code path. Picking a preset below
+    // fills the Command field; it stays editable afterward, and editing it
+    // does not change which preset is shown selected here -- so tweaking a
+    // preset's flags does not silently look like "Custom" was chosen instead.
+    Column {
+        id: exportPresetColumn
+        width: parent.width
+        spacing: Theme.spacingS
+
+        readonly property var presets: ExportProvider.EXPORT_OPEN_PRESETS
+        // resolveExportConfig() tells "never saved" apart from "saved as
+        // empty" by whether the `exportOpenCommand` KEY is present at all --
+        // so this object must only carry that key when loadValue actually
+        // found one, not whenever this binding happens to construct an
+        // object literal (which would always have the key, undefined or
+        // not, and make every legacy config look already-migrated).
+        readonly property var resolved: {
+            var saved = { exportKind: root.loadValue("exportKind") };
+            var storedCommand = root.loadValue("exportOpenCommand");
+            if (storedCommand !== undefined)
+                saved.exportOpenCommand = storedCommand;
+            return ExportProvider.resolveExportConfig(saved);
+        }
+        property string presetId: resolved.exportKind
+
+        function labelForId(id) {
+            for (var i = 0; i < presets.length; i++) {
+                if (presets[i].id === id) return presets[i].label;
+            }
+            return id;
+        }
+
+        DankDropdown {
+            width: parent.width
+            text: "Open After Export"
+            description: "Pick a starting point, then edit the Command field below to match your setup."
+            currentValue: exportPresetColumn.labelForId(exportPresetColumn.presetId)
+            options: exportPresetColumn.presets.map(p => p.label)
+            onValueChanged: newLabel => {
+                var preset = exportPresetColumn.presets.find(p => p.label === newLabel);
+                if (!preset) return;
+                exportPresetColumn.presetId = preset.id;
+                root.saveValue("exportKind", preset.id);
+                // Fills the command field from the preset -- this is the ONE
+                // place that happens; editing the field afterward never
+                // reaches back here to change presetId again.
+                exportOpenCommandField.text = preset.template;
+            }
+        }
     }
 
     Column {
@@ -564,13 +606,14 @@ PluginSettings {
     }
 
     // Vault name is Obsidian-specific identity, not a behavioural question --
-    // Neovim's equivalent is a --server address, not a vault, so this is
-    // gated on the provider string directly (same reasoning as the Google
-    // Reader/Miniflux credential fields above, not a capability check).
+    // every other preset's equivalent is baked into the command itself, so
+    // this is gated on which preset is selected directly (same reasoning as
+    // the Google Reader/Miniflux credential fields above, not a capability
+    // check).
     Column {
         width: parent.width
         spacing: Theme.spacingXS
-        visible: exportKindSetting.value === "obsidian"
+        visible: exportPresetColumn.presetId === "obsidian"
 
         StyledText {
             text: "Vault Name"
@@ -594,6 +637,36 @@ PluginSettings {
             onTextChanged: root.saveValue("exportVault", text)
             onFocusStateChanged: hasFocus => {
                 if (hasFocus) root.ensureItemVisible(exportVaultField);
+            }
+        }
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+
+        StyledText {
+            text: "Command"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "{path} is substituted as its own argument, never pasted into a shell string, so a note's path is safe even if its title contained spaces, quotes or semicolons. The terminal-based presets assume kitty, because that is what this machine runs -- edit this if you use a different terminal. Leave empty to just write the file."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        DankTextField {
+            id: exportOpenCommandField
+            width: parent.width
+            placeholderText: "code {path}"
+            text: exportPresetColumn.resolved.exportOpenCommand
+            onTextChanged: root.saveValue("exportOpenCommand", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(exportOpenCommandField);
             }
         }
     }
