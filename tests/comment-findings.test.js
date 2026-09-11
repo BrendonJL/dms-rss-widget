@@ -129,3 +129,44 @@ describe("functions QML calls but Node never imports", () => {
         });
     });
 });
+
+// The widget deliberately has NO Tab stops. Tab moves Qt focus outside
+// keyboardScope, after which its Keys.onPressed receives nothing and j/k go
+// dead with no way back but a click -- and DankActionButton additionally
+// consumes Space/Return/Enter (see DankCommon/Widgets/DankActionButton.qml),
+// the very keys that select and open an item.
+//
+// That makes "someone adds a button without activeFocusOnTab: false" a
+// regression that breaks keyboard navigation in a way no other test notices,
+// and that only shows up as "the keyboard randomly stops working".
+describe("no Tab stops in the widget", () => {
+    var src = fs.readFileSync(path.join(ROOT, "DankRssWidget.qml"), "utf8");
+    var lines = src.split("\n");
+
+    // Types that are focusable by Tab unless told otherwise.
+    var TABBABLE = /^\s*(DankActionButton|DankTextField|DankToggle|DankButton|DankDropdown|DankRefreshButton)\s*\{/;
+
+    lines.forEach(function (line, i) {
+        if (!TABBABLE.test(line))
+            return;
+        var type = line.trim().split(/\s+/)[0];
+        test(type + " at line " + (i + 1) + " sets activeFocusOnTab: false", () => {
+            // Scan the declaration body, not a fixed window: stop at the first
+            // line indented no further than the declaration itself.
+            var openIndent = line.search(/\S/);
+            var found = false;
+            for (var j = i + 1; j < lines.length; j++) {
+                var l = lines[j];
+                if (l.trim() === "") continue;
+                if (l.search(/\S/) <= openIndent) break;
+                if (/activeFocusOnTab\s*:\s*false/.test(l)) { found = true; break; }
+            }
+            assert.ok(found,
+                type + " at DankRssWidget.qml:" + (i + 1) + " is a Tab stop.\n" +
+                "  Add `activeFocusOnTab: false`. Tab focus escapes keyboardScope, " +
+                "which kills j/k with no way back, and DankActionButton eats " +
+                "Space/Return/Enter. Reach controls with the mouse, or with " +
+                "m/s/Space on the cursor row.");
+        });
+    });
+});

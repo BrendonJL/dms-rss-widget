@@ -1342,6 +1342,14 @@ DesktopPluginComponent {
                     }
 
                     DankActionButton {
+                        // No Tab stops anywhere in this widget. Tab moves Qt
+                        // focus outside keyboardScope, after which its
+                        // Keys.onPressed receives nothing and j/k go dead with
+                        // no way back but a click -- and DankActionButton
+                        // additionally consumes Space/Return/Enter, the very
+                        // keys that select and open. One cursor only: j/k
+                        // moves it, "/" reaches search, Esc leaves.
+                        activeFocusOnTab: false
                         visible: !root.isLoading
                         iconName: "refresh"
                         iconSize: 14
@@ -1383,6 +1391,7 @@ DesktopPluginComponent {
                 id: searchToggleComponent
 
                 DankActionButton {
+                    activeFocusOnTab: false
                     iconName: root.searchActive ? "search_off" : "search"
                     iconSize: 14
                     buttonSize: root.searchToggleSize
@@ -1624,6 +1633,7 @@ DesktopPluginComponent {
                 // Clear selection — icon-only always (never needs a label; "X"
                 // reads as "clear" without text at any width).
                 DankActionButton {
+                    activeFocusOnTab: false
                     iconName: "close"
                     iconSize: 14
                     buttonSize: 22
@@ -1635,6 +1645,7 @@ DesktopPluginComponent {
 
             // --- Search row (revealed by the header's search toggle) ---
             DankTextField {
+                    activeFocusOnTab: false
                 id: searchField
                 Layout.fillWidth: true
                 Layout.preferredHeight: 30
@@ -2188,6 +2199,7 @@ DesktopPluginComponent {
                     }
 
                     DankActionButton {
+                        activeFocusOnTab: false
                         iconName: "close"
                         iconSize: 14
                         buttonSize: 22
