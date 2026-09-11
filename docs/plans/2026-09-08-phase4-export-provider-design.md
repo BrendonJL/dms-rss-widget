@@ -89,7 +89,61 @@ and `atomicWrites: true` — verified: DMS writes its own caches exactly this wa
 Atomic writes matter here beyond crash-safety: a half-written note in a vault
 is worse than no note, because Obsidian will index and sync the truncated file.
 
-## Testing
+### Where the action lives
+
+**The selection bar**, next to Save and Mark read, plus `e` on the keyboard
+acting on the selection when there is one and the cursor row otherwise — the
+same rule `m` and `s` follow.
+
+Not a per-row button: the row already carries a checkbox, a read toggle and a
+bookmark, and a fourth control earns its place only if it is used as often as
+those. Not a right-click menu either — that is designed but unbuilt, and this
+stage should not block on it.
+
+### Settings
+
+Notes export is **global, not per-instance**. Unlike AI feature toggles, there
+is one vault; three widget instances writing to three different folders is a
+misfeature, not a feature.
+
+- **Provider** — Markdown directory / Obsidian / Neovim
+- **Folder** — absolute path, or vault-relative for Obsidian
+- **Vault name** — Obsidian only, needed for the `obsidian://` callback
+- **Filename template** — default `{title}.md`
+- **Tags** — applied to every note
+
+Show the action only when a folder is set. With nothing configured the widget
+must be silent: no affordance, no error, no prompt.
+
+### Writing more than one note
+
+A bulk export of twelve selected articles is twelve writes. `FileView` writes
+to one `path` at a time, so they must be **sequential** — set path, `setText`,
+wait, next. Firing twelve at one `FileView` races them and some will be lost or
+land in the wrong file.
+
+Report once at the end ("12 notes written"), not twelve times. A failure names
+the first article that failed and how many succeeded before it; do not abandon
+the rest silently, and do not emit a toast per failure.
+
+### Errors
+
+`buildNote` returns `{ error }` when a path escapes the export root — a hostile
+feed title, the case that module exists to prevent. Surface it as one toast
+naming the article. That path should be unreachable in practice; if a user ever
+sees it, it is a bug report worth having.
+
+### Testing
+
+`FileView` is not reachable from `tests/qml/run.sh` (it needs `Quickshell.Io`),
+so 4b's write path is verified by:
+
+- Unit: the sequential-queue logic, if it can be extracted as a pure reducer
+  over a list of pending writes. If it cannot be extracted cleanly, do not
+  contort the code to make it testable — say so and leave it to review.
+- Manual (Brendon): export one article and confirm the file appears with
+  correct frontmatter; export a multi-item selection and confirm every file
+  lands; unset the folder and confirm the action disappears entirely.
 
 Unit, all pure:
 
