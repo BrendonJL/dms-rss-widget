@@ -966,7 +966,13 @@ DesktopPluginComponent {
             // renders the honest "extracted: false" note either way.
             var extracted = null;
             if (code === 0 && out) {
-                extracted = HtmlExtract.extractArticle(out, { summary: ExportProvider.articleSummaryText(article) });
+                // baseUrl resolves the article's site-relative links. Without
+                // it they emit as "/news/articles/x", which reads as a link
+                // and goes nowhere in a markdown file.
+                extracted = HtmlExtract.extractArticle(out, {
+                    summary: ExportProvider.articleSummaryText(article),
+                    baseUrl: article.link || ""
+                });
             }
             root._writeExportJob(article, title, index, extracted);
         }, undefined, req.timeoutMs || undefined);

@@ -357,3 +357,124 @@ describe("plainTextLength", () => {
             plainTextLength("Heading\n\nSome bold and a link text."));
     });
 });
+
+// Extracted articles are full of site-relative links. Emitted as-is they
+// become "[text](/news/articles/x)" in the note -- something that reads as a
+// link, invites a click, and goes nowhere. Reported from a real export.
+describe("relative links are resolved against the article's URL", () => {
+    const BASE = "https://www.bbc.co.uk/news/articles/c23x72yx2rvo?at_medium=RSS";
+
+    function extract(bodyHtml, baseUrl) {
+        const pad = "Padding prose to clear the minimum length threshold. ".repeat(12);
+        const html = "<html><body><article><p>" + bodyHtml + "</p><p>" + pad + "</p></article></body></html>";
+        return extractArticle(html, { baseUrl: baseUrl, summary: "s" }).markdown;
+    }
+
+    test("a site-relative href gets the article's origin", () => {
+        const md = extract('<a href="/news/articles/abc">text</a>', BASE);
+        assert.match(md, /\[text\]\(https:\/\/www\.bbc\.co\.uk\/news\/articles\/abc\)/);
+    });
+
+    test("an absolute href is left alone", () => {
+        const md = extract('<a href="https://example.com/x">text</a>', BASE);
+        assert.match(md, /\[text\]\(https:\/\/example\.com\/x\)/);
+    });
+
+    test("a protocol-relative href inherits the scheme", () => {
+        const md = extract('<a href="//cdn.example.com/x">text</a>', BASE);
+        assert.match(md, /\[text\]\(https:\/\/cdn\.example\.com\/x\)/);
+    });
+
+    test("a document-relative href resolves against the base's directory", () => {
+        const md = extract('<a href="sub/page">text</a>', BASE);
+        assert.match(md, /\[text\]\(https:\/\/www\.bbc\.co\.uk\/news\/articles\/sub\/page\)/);
+    });
+
+    test("../ segments collapse", () => {
+        const md = extract('<a href="../other/page">text</a>', BASE);
+        assert.match(md, /\[text\]\(https:\/\/www\.bbc\.co\.uk\/news\/other\/page\)/);
+    });
+
+    // These cannot be made to work, so they must not look like links.
+    test("an in-page anchor keeps its text and loses the link", () => {
+        const md = extract('<a href="#section">text</a>', BASE);
+        assert.match(md, /\btext\b/);
+        assert.doesNotMatch(md, /\[text\]\(/);
+    });
+
+    test("with no baseUrl, a relative href degrades to plain text", () => {
+        const md = extract('<a href="/news/articles/abc">text</a>', "");
+        assert.match(md, /\btext\b/);
+        assert.doesNotMatch(md, /\[text\]\(/);
+    });
+
+    test("javascript: is never emitted as a link", () => {
+        const md = extract('<a href="javascript:alert(1)">text</a>', BASE);
+        assert.doesNotMatch(md, /javascript:/);
+        assert.match(md, /\btext\b/);
+    });
+
+    test("no relative path survives into the output", () => {
+        const md = extract(
+            '<a href="/a">one</a> <a href="b">two</a> <a href="#c">three</a> <a href="https://x.com/d">four</a>',
+            BASE);
+        const links = md.match(/\]\(([^)]*)\)/g) || [];
+        links.forEach(l => assert.match(l, /\]\((https?:)?\/\//,
+            "every emitted link must be absolute, got " + l));
+    });
+});
+
+// Every fixture must survive extraction without throwing.
+//
+// This exists because threading a new `opts` argument through the emitters
+// missed one function -- emitList -- and the whole suite stayed green while
+// the extractor threw "opts is not defined" on 14 of 20 real pages. The unit
+// tests exercised paragraphs and links; nothing exercised a LIST with the new
+// argument in play, and a ReferenceError only fires on the branch that touches
+// the missing binding.
+//
+// A per-feature test proves a feature works. This proves the module survives
+// real input, which is a different question and the one that failed.
+describe("no fixture throws", () => {
+    var files = fs.readdirSync(FIXTURES).filter(function (f) { return /\.html$/.test(f); });
+
+    test("there are fixtures to check", () => {
+        assert.ok(files.length >= 3, "expected several fixtures, found " + files.length);
+    });
+
+    files.forEach(function (f) {
+        test(f + " extracts without throwing", () => {
+            var html = fs.readFileSync(path.join(FIXTURES, f), "utf8");
+            var r;
+            assert.doesNotThrow(function () {
+                r = extractArticle(html, {
+                    baseUrl: "https://example.com/section/page?x=1",
+                    summary: "a short feed summary"
+                });
+            }, "extraction threw on " + f);
+            assert.equal(typeof r.markdown, "string");
+            assert.equal(typeof r.usedFallback, "boolean");
+        });
+
+        // Same page with no options at all: every caller-supplied field must be
+        // optional, since buildNote's signature keeps them so.
+        test(f + " extracts with no options", () => {
+            var html = fs.readFileSync(path.join(FIXTURES, f), "utf8");
+            assert.doesNotThrow(function () { extractArticle(html, {}); });
+            assert.doesNotThrow(function () { extractArticle(html); });
+        });
+    });
+
+    // A link inside a list is the exact shape that slipped through.
+    test("a list containing links extracts and resolves them", () => {
+        var html = "<html><body><article><h1>T</h1><ul>" +
+            "<li>An item with <a href=\"/one\">a relative link</a> in it</li>" +
+            "<li>Another item with <a href=\"https://x.com/two\">an absolute one</a></li>" +
+            "</ul><p>" + "Padding prose to clear the length threshold. ".repeat(12) +
+            "</p></article></body></html>";
+        var md = extractArticle(html, { baseUrl: "https://site.example/a/b", summary: "s" }).markdown;
+        assert.match(md, /https:\/\/site\.example\/one/);
+        assert.match(md, /https:\/\/x\.com\/two/);
+        assert.doesNotMatch(md, /\]\(\/one\)/);
+    });
+});

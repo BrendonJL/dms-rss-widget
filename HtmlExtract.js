@@ -432,6 +432,62 @@ function pickBest(candidates) {
 // emphasis. Images are dropped by default (a note full of hotlinked CDN
 // images rots).
 
+
+// Resolve an href against the page it came from.
+//
+// Extracted articles are full of site-relative links ("/news/articles/x").
+// They work on the site and are dead in a markdown file, which reads as text
+// that looks like a link and goes nowhere -- worse than no link, because the
+// reader tries it. Given the article's own URL we can make them real.
+//
+// No URL class here: this runs in QML's JS engine as well as Node, so it is
+// string work, like everything else in this file.
+//
+// Returns "" when the href cannot be made absolute, and the caller then emits
+// the link TEXT without a target. Losing a link is fine; a dead one is not.
+function resolveHref(href, baseUrl) {
+    var h = String(href || "").trim();
+    if (!h) return "";
+
+    // Already absolute, or a scheme we deliberately allow through as-is.
+    if (/^[a-z][a-z0-9+.-]*:/i.test(h)) return isSafeHref(h) ? h : "";
+
+    // Protocol-relative: inherit the base's scheme.
+    if (h.indexOf("//") === 0) {
+        var scheme = baseMatch(baseUrl, /^([a-z][a-z0-9+.-]*):/i);
+        return scheme ? scheme + ":" + h : "";
+    }
+
+    // In-page anchors point into a document the note does not contain.
+    if (h.charAt(0) === "#") return "";
+
+    var origin = baseMatch(baseUrl, /^([a-z][a-z0-9+.-]*:\/\/[^\/?#]+)/i);
+    if (!origin) return "";
+
+    if (h.charAt(0) === "/") return origin + h;
+
+    // Relative to the base's directory.
+    var pathOnly = String(baseUrl).replace(/^[a-z][a-z0-9+.-]*:\/\/[^\/?#]+/i, "").replace(/[?#].*$/, "");
+    var dir = pathOnly.replace(/[^\/]*$/, "");
+    if (dir.charAt(0) !== "/") dir = "/" + dir;
+
+    var joined = dir + h;
+    // Collapse ./ and ../ without a URL parser.
+    var parts = joined.split("/");
+    var stack = [];
+    for (var i = 0; i < parts.length; i++) {
+        var seg = parts[i];
+        if (seg === "" || seg === ".") continue;
+        if (seg === "..") { stack.pop(); continue; }
+        stack.push(seg);
+    }
+    return origin + "/" + stack.join("/");
+}
+
+function baseMatch(baseUrl, re) {
+    var m = String(baseUrl || "").match(re);
+    return m ? m[1] : "";
+}
 function isSafeHref(href) {
     if (typeof href !== "string") return false;
     var trimmed = href.trim();
@@ -455,7 +511,7 @@ function collectRawText(node) {
 // heading / link / list-item text). Unknown non-inline tags are flattened
 // rather than dropped, so a stray block tag inside inline context still
 // contributes its text.
-function emitInline(node) {
+function emitInline(node, opts) {
     var out = "";
     for (var i = 0; i < node.children.length; i++) {
         var c = node.children[i];
@@ -463,40 +519,41 @@ function emitInline(node) {
         if (c.tag === "img") continue;
         if (c.tag === "br" || c.tag === "wbr") { out += "\n"; continue; }
         if (c.tag === "a") {
-            var linkText = normalizeWhitespace(emitInline(c)).trim();
+            var linkText = normalizeWhitespace(emitInline(c, opts)).trim();
             if (!linkText) continue;
             var href = c.attrs && c.attrs.href;
-            out += (href && isSafeHref(href)) ? "[" + linkText + "](" + href + ")" : linkText;
+            var abs = resolveHref(href, opts && opts.baseUrl);
+            out += abs ? "[" + linkText + "](" + abs + ")" : linkText;
             continue;
         }
         if (c.tag === "strong" || c.tag === "b") {
-            var bt = normalizeWhitespace(emitInline(c)).trim();
+            var bt = normalizeWhitespace(emitInline(c, opts)).trim();
             out += bt ? "**" + bt + "**" : "";
             continue;
         }
         if (c.tag === "em" || c.tag === "i") {
-            var it = normalizeWhitespace(emitInline(c)).trim();
+            var it = normalizeWhitespace(emitInline(c, opts)).trim();
             out += it ? "*" + it + "*" : "";
             continue;
         }
         if (c.tag === "code") {
-            var ct = normalizeWhitespace(emitInline(c)).trim();
+            var ct = normalizeWhitespace(emitInline(c, opts)).trim();
             out += ct ? "`" + ct + "`" : "";
             continue;
         }
-        out += emitInline(c) + " ";
+        out += emitInline(c, opts) + " ";
     }
     return out;
 }
 
-function emitList(node, ordered, depth) {
+function emitList(node, ordered, depth, opts) {
     var lines = [];
     var idx = 1;
     var indent = repeat("  ", depth);
     for (var i = 0; i < node.children.length; i++) {
         var li = node.children[i];
         if (!li.tag || li.tag !== "li") continue;
-        var content = emitBlockChildren(li.children, depth + 1);
+        var content = emitBlockChildren(li.children, depth + 1, opts);
         if (!content) continue;
         var parts = content.split("\n\n");
         var marker = ordered ? (idx + ". ") : "- ";
@@ -507,24 +564,24 @@ function emitList(node, ordered, depth) {
     return lines.join("\n");
 }
 
-function emitBlockElement(node, depth) {
+function emitBlockElement(node, depth, opts) {
     switch (node.tag) {
         case "h1": case "h2": case "h3": case "h4": case "h5": case "h6": {
             var level = parseInt(node.tag.charAt(1), 10);
-            var htext = normalizeWhitespace(emitInline(node)).trim();
+            var htext = normalizeWhitespace(emitInline(node, opts)).trim();
             return htext ? repeat("#", level) + " " + htext : "";
         }
         case "p": {
-            return normalizeWhitespace(emitInline(node)).trim();
+            return normalizeWhitespace(emitInline(node, opts)).trim();
         }
         case "blockquote": {
-            var inner = emitBlockChildren(node.children, depth);
+            var inner = emitBlockChildren(node.children, depth, opts);
             return inner ? inner.split("\n").map(function (l) { return "> " + l; }).join("\n") : "";
         }
         case "ul":
-            return emitList(node, false, depth);
+            return emitList(node, false, depth, opts);
         case "ol":
-            return emitList(node, true, depth);
+            return emitList(node, true, depth, opts);
         case "pre": {
             var raw = collectRawText(node).replace(/^\n+|\n+$/g, "");
             return raw.trim() ? "```\n" + raw + "\n```" : "";
@@ -535,7 +592,7 @@ function emitBlockElement(node, depth) {
             // div, section, article, main, table/tr/td/th, figure, etc.:
             // no markdown shape of their own, so their children are emitted
             // as ordinary blocks.
-            return emitBlockChildren(node.children, depth);
+            return emitBlockChildren(node.children, depth, opts);
     }
 }
 
@@ -543,20 +600,20 @@ function emitBlockElement(node, depth) {
 // paragraphs and flushing to a distinct block whenever a real block-level
 // element is hit. This is what makes "div soup" (loose text directly under
 // a <div>, no <p> at all) come out as paragraphs instead of one run-on blob.
-function emitBlockChildren(children, depth) {
+function emitBlockChildren(children, depth, opts) {
     var blocks = [];
     var buffer = "";
     for (var i = 0; i < children.length; i++) {
         var c = children[i];
         if (!c.tag) { buffer += decodeEntities(c.text); continue; }
         if (c.tag === "img") continue;
-        if (INLINE_TAGS[c.tag]) { buffer += emitInline({ children: [c] }); continue; }
+        if (INLINE_TAGS[c.tag]) { buffer += emitInline({ children: [c] }, opts); continue; }
 
         var bufTrim = normalizeWhitespace(buffer).trim();
         if (bufTrim) blocks.push(bufTrim);
         buffer = "";
 
-        var blockMd = emitBlockElement(c, depth);
+        var blockMd = emitBlockElement(c, depth, opts);
         if (blockMd) blocks.push(blockMd);
     }
     var tailTrim = normalizeWhitespace(buffer).trim();
@@ -564,8 +621,8 @@ function emitBlockChildren(children, depth) {
     return blocks.join("\n\n");
 }
 
-function emitMarkdown(node) {
-    return emitBlockChildren(node.children, 0).trim();
+function emitMarkdown(node, opts) {
+    return emitBlockChildren(node.children, 0, opts).trim();
 }
 
 // ─── plain-text length (for the fallback comparison) ───
@@ -625,7 +682,7 @@ function extractArticle(html, options) {
     var candidates = collectCandidates(tree);
     var best = pickBest(candidates);
 
-    var markdown = emitMarkdown(best);
+    var markdown = emitMarkdown(best, options);
     var textLength = plainTextLength(markdown);
 
     if (textLength === 0) {
