@@ -24,6 +24,7 @@ var Key_O = 0x4f;
 var Key_R = 0x52;
 var Key_M = 0x4d;
 var Key_S = 0x53;
+var Key_E = 0x45;
 var Key_Space = 0x20;
 var Key_Slash = 0x2f;
 var Key_Question = 0x3f;
@@ -171,6 +172,18 @@ function resolveKey(event, state) {
         return act("toggleStar", index);
     }
 
+    // "e" (export to notes) follows the exact same rule as "m"/"s" above:
+    // the whole selection when one exists, else the cursor row. Whether the
+    // action actually does anything (a notes folder must be configured) is
+    // a QML-side concern -- this module has no idea export settings exist.
+    if (key === Key_E) {
+        if (hasSelection)
+            return act("exportSelected", index);
+        if (atRest)
+            return noop(-1);
+        return act("exportItem", index);
+    }
+
     // --- row actions: these need a cursor, or they act on an arbitrary item ---
 
     if (atRest)
@@ -200,6 +213,7 @@ if (typeof module !== "undefined" && module.exports) {
         Key_R: Key_R,
         Key_M: Key_M,
         Key_S: Key_S,
+        Key_E: Key_E,
         Key_Space: Key_Space,
         Key_Slash: Key_Slash,
         Key_Question: Key_Question,

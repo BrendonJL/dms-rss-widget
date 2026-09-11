@@ -13,6 +13,7 @@ import "Backends.js" as Backends
 import "GoogleReader.js" as GoogleReader
 import "ChainRunner.js" as ChainRunner
 import "KeyMap.js" as KeyMap
+import "ExportProvider.js" as ExportProvider
 
 DesktopPluginComponent {
     id: root
@@ -52,6 +53,26 @@ DesktopPluginComponent {
     property string greaderUrl: (pluginData.greaderUrl ?? "").replace(/\/$/, "")
     property string greaderUsername: pluginData.greaderUsername ?? ""
     property string greaderPassword: pluginData.greaderPassword ?? ""
+
+    // --- Notes export settings ---
+    // DesktopPluginWrapper.qml's loadPluginData reads the instance config
+    // first and falls back to the global plugin-wide store; savePluginData
+    // writes to the instance config only. So these are per-instance for an
+    // instanced widget and global otherwise -- the same as every other
+    // setting in this file.
+    property string exportKind: pluginData.exportKind ?? "markdown"
+    property string exportRoot: pluginData.exportRoot ?? ""
+    property string exportVault: pluginData.exportVault ?? ""
+    property string exportTemplate: pluginData.exportTemplate ?? "{title}.md"
+    property var exportTags: pluginData.exportTags ?? []
+
+    readonly property var exportProvider: ExportProvider.createExportProvider({
+        kind: root.exportKind,
+        root: root.exportRoot,
+        vault: root.exportVault,
+        filenameTemplate: root.exportTemplate,
+        tags: root.exportTags
+    })
 
     // --- Backend provider interface ---
     // JS owns every backend-specific decision (URL, method, headers, body,
@@ -165,6 +186,70 @@ DesktopPluginComponent {
 
     // Bindings help overlay, toggled by "?" (KeyMap's "toggleHelp" action).
     property bool helpVisible: false
+
+    // The keyboard bindings help overlay's row data. A plain array except
+    // for "e", which is left out entirely when no export folder is
+    // configured -- pressing "e" does nothing in that state (see
+    // exportArticles()), so documenting it would be advertising a feature
+    // that silently fails.
+    readonly property var helpBindingsModel: {
+        var rows = [
+            {
+                keys: ["j", "k"],
+                desc: "Move cursor down / up"
+            },
+            {
+                keys: ["o", "Enter"],
+                desc: "Open item"
+            },
+            {
+                keys: ["m"],
+                desc: "Toggle read / unread (whole selection, if any)"
+            },
+            {
+                keys: ["s"],
+                desc: "Toggle star (whole selection, if any)"
+            }
+        ];
+        if (root.exportRoot)
+            rows.push({
+                keys: ["e"],
+                desc: "Export to notes (whole selection, if any)"
+            });
+        rows.push({
+            keys: ["Space"],
+            desc: "Toggle selection"
+        });
+        rows.push({
+            keys: ["g", "g"],
+            desc: "Jump to first item"
+        });
+        rows.push({
+            keys: ["G"],
+            desc: "Jump to last item"
+        });
+        rows.push({
+            keys: ["/"],
+            desc: "Focus search"
+        });
+        rows.push({
+            keys: ["Esc"],
+            desc: "Close search, clear selection, or clear cursor"
+        });
+        rows.push({
+            keys: ["r"],
+            desc: "Refresh feeds"
+        });
+        rows.push({
+            keys: ["A"],
+            desc: "Mark all read / unread"
+        });
+        rows.push({
+            keys: ["?"],
+            desc: "Toggle this help"
+        });
+        return rows;
+    }
 
     // Read tracking, keyed by stable item id. `readMap` is replaced (not mutated)
     // so QML property-change notification fires; `readOrder` keeps newest-first
@@ -601,6 +686,22 @@ DesktopPluginComponent {
         case "saveSelected":
             root.bulkSaveSelected();
             break;
+        case "exportSelected":
+            root.exportSelected();
+            break;
+        case "exportItem":
+            {
+                // No affordance/error/prompt at all when nothing is
+                // configured -- silently doing nothing here is the point,
+                // not a shortcut.
+                if (!root.exportRoot)
+                    break;
+                var exportRow = feedModel.get(result.index);
+                var exportArticle = root.itemById(exportRow.itemId);
+                if (exportArticle)
+                    root.exportArticles([exportArticle]);
+                break;
+            }
         case "toggleSelect":
             {
                 var selectRow = feedModel.get(result.index);
@@ -741,6 +842,137 @@ DesktopPluginComponent {
         }
 
         root.clearSelection();
+    }
+
+    // --- Notes export ---
+    //
+    // FileView has exactly one `path` at a time, so exporting N articles is
+    // N sequential set-path/setText/wait-for-signal round trips, never N
+    // fired at once -- see exportFileView below. _exportQueue holds the
+    // writes not yet started; the item at index 0 is always the one
+    // exportFileView currently has in flight (or is about to).
+    //
+    // This queue is plain, mutable QML state rather than a pure function
+    // over a list, because driving it means calling into exportFileView (a
+    // real Quickshell.Io object) between every step -- there is no pure
+    // "next state" to compute without that side effect in the middle, and
+    // this file cannot add a new pure .js module to hold one (only
+    // DankRssWidget.qml, DankRssWidgetSettings.qml, KeyMap.js and its test
+    // file are this stage's to touch). See the stage 4b report for why this
+    // was left inline rather than contorted into something unit-testable.
+    property var _exportQueue: []
+    property int _exportWritten: 0
+    property string _exportFirstFailure: ""
+
+    function itemById(id) {
+        for (var i = 0; i < root.allItems.length; i++) {
+            if (root.allItems[i].id === id)
+                return root.allItems[i];
+        }
+        return null;
+    }
+
+    // Shared by the "e" keyboard action (with a selection) and the
+    // selection bar's Export button.
+    function exportSelected() {
+        if (!root.exportRoot)
+            return;
+        var ids = Object.keys(root.selectedMap);
+        var articles = [];
+        for (var i = 0; i < ids.length; i++) {
+            var article = root.itemById(ids[i]);
+            if (article)
+                articles.push(article);
+        }
+        root.exportArticles(articles);
+        root.clearSelection();
+    }
+
+    // Shared entry point for both the "e" keyboard action and the selection
+    // bar's Export button. `articles` is already the list of full article
+    // objects to export -- callers resolve ids to root.allItems entries
+    // before calling this, since the queue itself only deals in
+    // already-built {path, content} writes.
+    function exportArticles(articles) {
+        if (!root.exportRoot || articles.length === 0)
+            return;
+        // A batch is already running -- dropping a second trigger (a
+        // double keypress, or the key firing while a click is still being
+        // processed) rather than interleaving two queues into one FileView.
+        if (root._exportQueue.length > 0)
+            return;
+
+        var queue = [];
+        var firstBuildError = "";
+        for (var i = 0; i < articles.length; i++) {
+            var article = articles[i];
+            var note = root.exportProvider.buildNote(article, []);
+            if (note.error) {
+                // Rule 1 of the design doc: buildNote refuses a path that
+                // would escape the export root. Unreachable in practice --
+                // if a user ever sees this, it is a bug report worth having.
+                if (!firstBuildError)
+                    firstBuildError = (article && article.title) || "an article";
+                continue;
+            }
+            queue.push({
+                path: root.exportRoot.replace(/[\/\\]+$/, "") + "/" + note.relPath,
+                content: note.content,
+                title: (article && article.title) || "an article"
+            });
+        }
+
+        if (firstBuildError)
+            root.toastError("Could not export \"" + firstBuildError + "\": generated path escaped the export folder");
+
+        if (queue.length === 0)
+            return;
+
+        root._exportQueue = queue;
+        root._exportWritten = 0;
+        root._exportFirstFailure = "";
+        root._runNextExport();
+    }
+
+    function _runNextExport() {
+        if (root._exportQueue.length === 0) {
+            root._finishExport();
+            return;
+        }
+        exportFileView.path = root._exportQueue[0].path;
+        exportFileView.setText(root._exportQueue[0].content);
+    }
+
+    function _finishExport() {
+        if (root._exportFirstFailure) {
+            root.toastError(root._exportWritten + " note" + (root._exportWritten === 1 ? "" : "s") + " written, failed starting at \"" + root._exportFirstFailure + "\"");
+        } else if (root._exportWritten > 0) {
+            if (typeof ToastService !== "undefined")
+                ToastService.showInfo(root._exportWritten + " note" + (root._exportWritten === 1 ? "" : "s") + " written");
+        }
+    }
+
+    // blockWrites/atomicWrites match DMS's own cache writer exactly (see
+    // /usr/share/quickshell/dms/Common/CacheData.qml) -- no shell, no Proc,
+    // and a half-written note is never visible to Obsidian's indexer.
+    FileView {
+        id: exportFileView
+        blockWrites: true
+        atomicWrites: true
+
+        onSaved: {
+            root._exportWritten++;
+            root._exportQueue = root._exportQueue.slice(1);
+            root._runNextExport();
+        }
+
+        onSaveFailed: error => {
+            var failed = root._exportQueue[0];
+            if (!root._exportFirstFailure)
+                root._exportFirstFailure = failed ? failed.title : "an article";
+            root._exportQueue = root._exportQueue.slice(1);
+            root._runNextExport();
+        }
     }
 
     function markRead(itemId) {
@@ -1580,6 +1812,45 @@ DesktopPluginComponent {
                     }
                 }
 
+                // Export to notes -- only shown once a folder is configured
+                // (Notes export section of settings). With nothing set there
+                // must be no affordance at all, not a button that errors.
+                Rectangle {
+                    visible: root.exportRoot !== ""
+                    Layout.preferredWidth: exportRow.implicitWidth + Theme.spacingS * 2
+                    Layout.minimumWidth: 22 + Theme.spacingS * 2
+                    height: 22
+                    radius: Theme.cornerRadius
+                    color: exportArea.containsMouse ? Theme.withAlpha(Theme.primary, 0.15) : "transparent"
+
+                    RowLayout {
+                        id: exportRow
+                        anchors.centerIn: parent
+                        spacing: Theme.spacingXS
+
+                        DankIcon {
+                            name: "note_add"
+                            size: 14
+                            color: exportArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                        }
+
+                        StyledText {
+                            visible: root.widgetWidth >= 300
+                            text: "Export"
+                            font.pixelSize: root.fontSize - 2
+                            color: exportArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                        }
+                    }
+
+                    MouseArea {
+                        id: exportArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.exportSelected()
+                    }
+                }
+
                 // Mark read/unread -- flips label and action based on
                 // whether every selected item is already read, same as
                 // markAllRect does for the whole feed.
@@ -2226,56 +2497,12 @@ DesktopPluginComponent {
                         spacing: Theme.spacingXS
 
                         Repeater {
-                            model: [
-                                {
-                                    keys: ["j", "k"],
-                                    desc: "Move cursor down / up"
-                                },
-                                {
-                                    keys: ["o", "Enter"],
-                                    desc: "Open item"
-                                },
-                                {
-                                    keys: ["m"],
-                                    desc: "Toggle read / unread (whole selection, if any)"
-                                },
-                                {
-                                    keys: ["s"],
-                                    desc: "Toggle star (whole selection, if any)"
-                                },
-                                {
-                                    keys: ["Space"],
-                                    desc: "Toggle selection"
-                                },
-                                {
-                                    keys: ["g", "g"],
-                                    desc: "Jump to first item"
-                                },
-                                {
-                                    keys: ["G"],
-                                    desc: "Jump to last item"
-                                },
-                                {
-                                    keys: ["/"],
-                                    desc: "Focus search"
-                                },
-                                {
-                                    keys: ["Esc"],
-                                    desc: "Close search, clear selection, or clear cursor"
-                                },
-                                {
-                                    keys: ["r"],
-                                    desc: "Refresh feeds"
-                                },
-                                {
-                                    keys: ["A"],
-                                    desc: "Mark all read / unread"
-                                },
-                                {
-                                    keys: ["?"],
-                                    desc: "Toggle this help"
-                                }
-                            ]
+                            // The "e" row lives in root.helpBindingsModel
+                            // rather than a literal here, so it can be left
+                            // out entirely when no export folder is
+                            // configured -- same "no affordance" rule as the
+                            // selection bar's Export button.
+                            model: root.helpBindingsModel
 
                             RowLayout {
                                 Layout.fillWidth: true
