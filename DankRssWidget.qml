@@ -14,6 +14,7 @@ import "GoogleReader.js" as GoogleReader
 import "ChainRunner.js" as ChainRunner
 import "KeyMap.js" as KeyMap
 import "ExportProvider.js" as ExportProvider
+import "HtmlExtract.js" as HtmlExtract
 
 DesktopPluginComponent {
     id: root
@@ -65,6 +66,10 @@ DesktopPluginComponent {
     property string exportVault: pluginData.exportVault ?? ""
     property string exportTemplate: pluginData.exportTemplate ?? "{title}.md"
     property var exportTags: pluginData.exportTags ?? []
+    // Off by default: this makes one outbound HTTP request per exported
+    // article to whatever third-party site the feed links to, which is not
+    // something to do without the user having opted in.
+    property bool exportFullText: pluginData.exportFullText ?? false
 
     readonly property var exportProvider: ExportProvider.createExportProvider({
         kind: root.exportKind,
@@ -892,8 +897,15 @@ DesktopPluginComponent {
     // Shared entry point for both the "e" keyboard action and the selection
     // bar's Export button. `articles` is already the list of full article
     // objects to export -- callers resolve ids to root.allItems entries
-    // before calling this, since the queue itself only deals in
-    // already-built {path, content} writes.
+    // before calling this.
+    //
+    // Path validation happens up front and does NOT depend on the article's
+    // body text, so it runs before any network request -- a hostile or
+    // misconfigured title is rejected without ever fetching that article's
+    // page. Each surviving article then becomes one job; jobs that fetch
+    // full text resolve asynchronously and out of order, but _exportPending
+    // (shared with the write-completion path in _exportItemDone) still only
+    // reaches zero once every job -- fetched or not -- has been written.
     function exportArticles(articles) {
         if (!root.exportRoot || articles.length === 0)
             return;
@@ -903,12 +915,12 @@ DesktopPluginComponent {
         if (root._exportPending > 0)
             return;
 
-        var queue = [];
+        var jobs = [];
         var firstBuildError = "";
         for (var i = 0; i < articles.length; i++) {
             var article = articles[i];
-            var note = root.exportProvider.buildNote(article, []);
-            if (note.error) {
+            var probe = root.exportProvider.buildNote(article, []);
+            if (probe.error) {
                 // Rule 1 of the design doc: buildNote refuses a path that
                 // would escape the export root. Unreachable in practice --
                 // if a user ever sees this, it is a bug report worth having.
@@ -916,31 +928,69 @@ DesktopPluginComponent {
                     firstBuildError = (article && article.title) || "an article";
                 continue;
             }
-            queue.push({
-                path: root.exportRoot.replace(/[\/\\]+$/, "") + "/" + note.relPath,
-                content: note.content,
-                title: (article && article.title) || "an article"
-            });
+            jobs.push({ article: article, title: (article && article.title) || "an article" });
         }
 
         if (firstBuildError)
             root.toastError("Could not export \"" + firstBuildError + "\": generated path escaped the export folder");
 
-        if (queue.length === 0)
+        if (jobs.length === 0)
             return;
 
-        root._exportResults = new Array(queue.length);
-        root._exportPending = queue.length;
+        root._exportResults = new Array(jobs.length);
+        root._exportPending = jobs.length;
 
-        for (var j = 0; j < queue.length; j++) {
-            var item = queue[j];
-            var view = exportFileViewComponent.createObject(root, {
-                exportIndex: j,
-                exportTitle: item.title,
-                path: item.path
-            });
-            view.setText(item.content);
+        for (var j = 0; j < jobs.length; j++) {
+            root._prepareExportJob(jobs[j].article, jobs[j].title, j);
         }
+    }
+
+    // Fetches the article's own page and extracts it, when the user has
+    // opted into full-text export and the item actually has a link -- on
+    // demand only, once per article being exported right now, never on a
+    // feed refresh or a scroll. Falls through to the plain (no-extraction)
+    // path when the toggle is off or there is no link, so the request is
+    // never made unless it was asked for.
+    function _prepareExportJob(article, title, index) {
+        if (!root.exportFullText || !(article && article.link)) {
+            root._writeExportJob(article, title, index, null);
+            return;
+        }
+
+        var req = ExportProvider.buildArticleFetchRequest(article.link);
+        Proc.runCommand(null, req.argv, function (out, code) {
+            // A per-article fetch failure (bad host, 404, timeout, refused
+            // connection) must not abort the batch -- fall back to the
+            // summary for THIS note alone and keep going. `extracted` stays
+            // null here exactly like the toggle-off path above, so buildNote
+            // renders the honest "extracted: false" note either way.
+            var extracted = null;
+            if (code === 0 && out) {
+                extracted = HtmlExtract.extractArticle(out, { summary: ExportProvider.articleSummaryText(article) });
+            }
+            root._writeExportJob(article, title, index, extracted);
+        }, undefined, req.timeoutMs || undefined);
+    }
+
+    // Builds the final note (now that extraction, if any, has resolved) and
+    // hands it to the same one-FileView-per-write path as before.
+    function _writeExportJob(article, title, index, extracted) {
+        var note = root.exportProvider.buildNote(article, [], extracted);
+        if (note.error) {
+            // The path was already validated by the probe in exportArticles
+            // before any fetch started, so this is unreachable in practice --
+            // treated as a write failure so _exportPending still reaches
+            // zero and the batch still finishes reporting.
+            root._exportItemDone(index, false, title);
+            return;
+        }
+
+        var view = exportFileViewComponent.createObject(root, {
+            exportIndex: index,
+            exportTitle: title,
+            path: root.exportRoot.replace(/[\/\\]+$/, "") + "/" + note.relPath
+        });
+        view.setText(note.content);
     }
 
     // Called once per write, in whatever order writes actually finish

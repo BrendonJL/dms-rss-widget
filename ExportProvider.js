@@ -158,7 +158,17 @@ function yamlQuote(value) {
     return "\"" + out + "\"";
 }
 
-function buildFrontmatter(article, config) {
+// Did this note's body come from a full extraction of the article page, or
+// from the feed's own summary? `extracted` is whatever HtmlExtract.js's
+// extractArticle() returned (or null/undefined -- the toggle is off, the
+// item had no link, or the fetch was never attempted). A reader must be
+// able to tell a mangled extraction apart from a deliberate summary, so
+// this is recorded rather than left implicit.
+function wasExtracted(extracted) {
+    return !!(extracted && !extracted.usedFallback && extracted.markdown);
+}
+
+function buildFrontmatter(article, config, extracted) {
     var tags = (config && config.tags) || [];
     var tagStrs = [];
     for (var i = 0; i < tags.length; i++) tagStrs.push(yamlQuote(tags[i]));
@@ -169,6 +179,7 @@ function buildFrontmatter(article, config) {
         "source: " + yamlQuote((article && article.source) || ""),
         "link: " + yamlQuote((article && article.link) || ""),
         "date: " + yamlQuote(articleDate(article)),
+        "extracted: " + (wasExtracted(extracted) ? "true" : "false"),
         "tags: [" + tagStrs.join(", ") + "]",
         "---"
     ];
@@ -199,15 +210,25 @@ function renderAnnotations(annotations) {
     return blocks.join("\n\n");
 }
 
-function buildBody(article, annotations, caps, config) {
+// The feed's own summary text -- what the note falls back to when full-text
+// extraction is off, unavailable, or rejected the page (see HtmlExtract.js's
+// index-page guard). Shared with the caller so it can pass the SAME text to
+// extractArticle() as options.summary for its own fallback comparison.
+function articleSummaryText(article) {
+    return (article && (article.description || article.content)) || "";
+}
+
+function buildBody(article, annotations, caps, config, extracted) {
     var parts = [];
     parts.push("# " + ((article && article.title) || ""));
 
-    // The article itself. Feeds usually carry a summary rather than the full
-    // text, so this is whatever the feed gave us -- which is the honest thing
-    // to save. Fetching the full body needs the backends' fullText capability,
-    // which no backend implements yet.
-    var text = (article && (article.description || article.content)) || "";
+    // Prefer a successful full-text extraction over the feed's summary --
+    // but only when extraction actually produced usable article markdown.
+    // usedFallback:true means HtmlExtract.js already decided the extraction
+    // was worse than (or indistinguishable from junk versus) the summary,
+    // so falling through to the summary here is that decision, not a
+    // separate one.
+    var text = wasExtracted(extracted) ? extracted.markdown : articleSummaryText(article);
     if (text) parts.push(text);
 
     // A link back to the source, so the note is useful on its own once the
@@ -303,7 +324,10 @@ function buildRelPath(config, article) {
     return clampFilenameBytes(base, ext, 255);
 }
 
-function buildNote(config, article, annotations) {
+// `extracted` is optional and defaults to absent -- existing callers that
+// pass only (article, annotations) keep writing exactly the summary-only
+// note they always did, with `extracted: false` in the frontmatter.
+function buildNote(config, article, annotations, extracted) {
     if (!config || !config.root)
         return { error: "No export root configured" };
     if (!article)
@@ -319,7 +343,8 @@ function buildNote(config, article, annotations) {
     if (!isRelPathContained(relPath))
         return { error: "Generated path escapes the export root" };
 
-    var content = buildFrontmatter(article, config) + "\n\n" + buildBody(article, annotations, caps, config);
+    var content = buildFrontmatter(article, config, extracted) + "\n\n" +
+        buildBody(article, annotations, caps, config, extracted);
 
     return { relPath: relPath, content: content };
 }
@@ -351,6 +376,50 @@ function buildOpenRequest(config, relPath) {
     return null;
 }
 
+// ─── article fetch (stage 4c-b) ───
+//
+// Full-text export needs the article page itself, not just the feed's
+// summary. Same curl discipline as every other outbound request in this
+// widget: argv array (never a shell string, so nothing here is ever
+// vulnerable to shell injection), explicit connect/max timeouts, and the
+// protocol pinned to http/https on both the initial request and any
+// redirect.
+//
+// -L IS wanted here, unlike the authenticated Miniflux/Google-Reader calls
+// elsewhere in this widget (see minifluxCurlArgv in Backends.js): those
+// never follow a redirect because curl resends the same Authorization
+// header to whatever host the redirect names, handing a token to a third
+// party. An article fetch carries no credentials at all -- there is
+// nothing to leak -- and articles redirect constantly (AMP variants,
+// canonical-URL bounces, paywall interstitials), so refusing to follow
+// would silently break the common case instead of protecting anything.
+//
+// On demand only: this is called once per article the user has explicitly
+// chosen to export, never from a feed refresh or a scroll handler. Ten
+// selected articles is ten requests to ten different sites; that must
+// always be something the user asked for.
+var ARTICLE_FETCH_CONNECT_TIMEOUT_S = 5;
+var ARTICLE_FETCH_MAX_TIME_S = 15;
+var ARTICLE_FETCH_MAX_BYTES = 5000000;
+
+function buildArticleFetchRequest(url) {
+    return {
+        argv: [
+            "curl", "-sS",
+            "--connect-timeout", String(ARTICLE_FETCH_CONNECT_TIMEOUT_S),
+            "--max-time", String(ARTICLE_FETCH_MAX_TIME_S),
+            "-L",
+            "--proto", "=http,https",
+            "--proto-redir", "=http,https",
+            "--max-redirs", "5",
+            "--max-filesize", String(ARTICLE_FETCH_MAX_BYTES),
+            "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0",
+            String(url)
+        ],
+        timeoutMs: null
+    };
+}
+
 // ─── factory ───
 
 function createExportProvider(config) {
@@ -358,8 +427,8 @@ function createExportProvider(config) {
     var caps = capabilitiesFor(config.kind);
 
     return {
-        buildNote: function (article, annotations) {
-            return buildNote(config, article, annotations);
+        buildNote: function (article, annotations, extracted) {
+            return buildNote(config, article, annotations, extracted);
         },
 
         capabilities: caps,
@@ -372,6 +441,8 @@ function createExportProvider(config) {
 
 if (typeof module !== "undefined" && module.exports) {
     module.exports = {
-        createExportProvider: createExportProvider
+        createExportProvider: createExportProvider,
+        buildArticleFetchRequest: buildArticleFetchRequest,
+        articleSummaryText: articleSummaryText
     };
 }

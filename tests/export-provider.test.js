@@ -2,7 +2,7 @@ const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 
-const { createExportProvider } = require("../ExportProvider.js");
+const { createExportProvider, buildArticleFetchRequest, articleSummaryText } = require("../ExportProvider.js");
 
 var ROOT = "/home/user/vault";
 
@@ -413,6 +413,89 @@ describe("the ordinary case", () => {
         var r = provider.buildNote({ id: "i", title: "T" }, []);
         assert.match(r.content, /^date: ""$/m);
         assert.ok(r.content.indexOf("Invalid Date") === -1);
+    });
+});
+
+// ─── provenance (stage 4c-b) ───
+//
+// `extracted:` is a bare boolean, not a quoted YAML scalar (there's nothing
+// attacker-controlled about it -- it's computed, never templated from feed
+// content), so these check the line directly rather than through
+// parseFrontmatter's quoted-scalar-only parser.
+
+describe("buildNote: provenance of the body text", () => {
+    test("no extracted arg at all (old call signature): extracted: false, body is the summary", () => {
+        var p = createExportProvider(baseConfig());
+        var result = p.buildNote(article({ description: "The feed summary." }), []);
+        assert.ok(!result.error);
+        assert.match(result.content, /^extracted: false$/m);
+        assert.ok(result.content.indexOf("The feed summary.") !== -1);
+    });
+
+    test("extracted result with usedFallback: false -> extracted: true, body is the extracted markdown", () => {
+        var p = createExportProvider(baseConfig());
+        var extracted = { markdown: "Full article text goes here.", textLength: 28, usedFallback: false, reason: "" };
+        var result = p.buildNote(article({ description: "The feed summary." }), [], extracted);
+        assert.ok(!result.error);
+        assert.match(result.content, /^extracted: true$/m);
+        assert.ok(result.content.indexOf("Full article text goes here.") !== -1);
+        assert.equal(result.content.indexOf("The feed summary."), -1);
+    });
+
+    test("extracted result with usedFallback: true -> extracted: false, body is the summary, not the rejected markdown", () => {
+        var p = createExportProvider(baseConfig());
+        var extracted = { markdown: "The feed summary.", textLength: 18, usedFallback: true, reason: "looks like an index page" };
+        var result = p.buildNote(article({ description: "The feed summary." }), [], extracted);
+        assert.ok(!result.error);
+        assert.match(result.content, /^extracted: false$/m);
+    });
+
+    test("extracted result present but markdown empty -> extracted: false (nothing usable came back)", () => {
+        var p = createExportProvider(baseConfig());
+        var extracted = { markdown: "", textLength: 0, usedFallback: false, reason: "" };
+        var result = p.buildNote(article({ description: "The feed summary." }), [], extracted);
+        assert.match(result.content, /^extracted: false$/m);
+        assert.ok(result.content.indexOf("The feed summary.") !== -1);
+    });
+});
+
+// ─── article fetch request (stage 4c-b) ───
+
+describe("buildArticleFetchRequest", () => {
+    test("returns a spawnable argv, no shell string", () => {
+        var req = buildArticleFetchRequest("https://example.com/article");
+        assert.ok(Array.isArray(req.argv));
+        assert.equal(req.argv[0], "curl");
+        assert.equal(req.argv[req.argv.length - 1], "https://example.com/article");
+    });
+
+    test("follows redirects (-L) -- articles carry no credentials to leak", () => {
+        var req = buildArticleFetchRequest("https://example.com/article");
+        assert.ok(req.argv.indexOf("-L") !== -1);
+    });
+
+    test("pins protocol to http/https on request and redirect", () => {
+        var req = buildArticleFetchRequest("https://example.com/article");
+        assert.ok(req.argv.indexOf("--proto") !== -1);
+        assert.equal(req.argv[req.argv.indexOf("--proto") + 1], "=http,https");
+        assert.ok(req.argv.indexOf("--proto-redir") !== -1);
+        assert.equal(req.argv[req.argv.indexOf("--proto-redir") + 1], "=http,https");
+    });
+
+    test("bounds download size and time", () => {
+        var req = buildArticleFetchRequest("https://example.com/article");
+        assert.ok(req.argv.indexOf("--max-filesize") !== -1);
+        assert.ok(req.argv.indexOf("--connect-timeout") !== -1);
+        assert.ok(req.argv.indexOf("--max-time") !== -1);
+    });
+});
+
+describe("articleSummaryText", () => {
+    test("prefers description, falls back to content, then empty string", () => {
+        assert.equal(articleSummaryText({ description: "d", content: "c" }), "d");
+        assert.equal(articleSummaryText({ content: "c" }), "c");
+        assert.equal(articleSummaryText({}), "");
+        assert.equal(articleSummaryText(null), "");
     });
 });
 

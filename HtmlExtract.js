@@ -26,6 +26,92 @@ var DEFAULT_MAX_TOKENS = 80000;
 // failure, not an improvement.
 var FALLBACK_RATIO = 0.4;
 
+// ─── index-page guard ───
+//
+// Measured 2026-09-11 against real section fronts (bbc.com/news,
+// arstechnica.com/): where Mozilla Readability correctly returns almost
+// nothing for an index page, this extractor returned 13k characters of
+// headline soup -- a real container won the scoring pass, it just wasn't an
+// article. The scoring's link-density penalty alone doesn't catch it,
+// because a headline list interleaved with timestamps/bylines outside the
+// <a> rarely reaches 100% link density, only "dominated by links".
+//
+// Two independent signals, either one enough to reject:
+//
+// 1. Link density over half. An article's inline links are occasional (a
+//    citation, a related read); an index page's entire payload IS links, so
+//    anything at or above "half the text sits inside <a>" is definitionally
+//    navigation, not prose.
+var INDEX_LINK_DENSITY_THRESHOLD = 0.5;
+
+// 2. Fragment-dominated text. A headline or teaser is a sentence fragment:
+//    no terminal punctuation, and short because it has to fit a listing
+//    slot. A real paragraph almost always ends in ./!/?; a page that is
+//    mostly bare fragments is a listing, not an article.
+//
+//    Measured against real pages while tuning this: a plain per-LINE
+//    fraction false-positived on legitimate long articles, because a
+//    Wikipedia page's trailing navbox ("See also" template links) or an
+//    infobox contributes hundreds of short link lines below a handful of
+//    long prose paragraphs -- lots of lines, almost no text. Weighting by
+//    CHARACTERS instead fixes it: those fragments are individually tiny, so
+//    they can dominate a line count while remaining a small fraction of the
+//    actual text volume. An index page has the opposite shape -- little
+//    else BUT fragments -- so the character-weighted fraction stays high
+//    for it and drops for an article with boilerplate stapled on.
+//
+//    Fenced code blocks are stripped before this runs: a real code sample or
+//    a quoted plain-text document (an advisory, a changelog, an email
+//    header block) is legitimately full of short "Key: value" lines with no
+//    sentence punctuation, and that is a property of preformatted text, not
+//    evidence the page is an index.
+//
+//    80 chars is roughly one headline's worth of text (a full sentence of
+//    that length almost always still carries terminal punctuation); 70%
+//    keeps an article with a handful of short captions/datelines from
+//    tripping, while still catching a page that is overwhelmingly
+//    fragments. Markdown headings are excluded (both from the fragment tally
+//    and the total): a well-formed article legitimately has several short,
+//    unpunctuated section headings, and that is normal structure, not
+//    evidence of an index.
+var INDEX_SHORT_LINE_MAX_CHARS = 80;
+var INDEX_FRAGMENT_CHAR_FRACTION_THRESHOLD = 0.7;
+
+// Below this many characters of candidate text the fraction above is too
+// noisy to trust (a two-line article legitimately can be 100% "short" and
+// prove nothing).
+var INDEX_MIN_FRAGMENT_CHARS = 200;
+
+// Returns a rejection reason string, or null if the result reads as an
+// article. `linkDensity` is the winning container's own linkChars/charCount
+// (already computed once during scoring -- not recomputed here).
+function indexPageReason(markdown, linkDensity) {
+    var linkHeavy = linkDensity > INDEX_LINK_DENSITY_THRESHOLD;
+
+    var withoutCode = markdown.replace(/```[\s\S]*?```/g, "");
+    var lines = withoutCode.split("\n")
+        .map(function (l) { return l.replace(/^\s*(?:[-*]|\d+\.)\s+/, "").replace(/^>\s?/, "").trim(); })
+        .filter(function (l) { return l.length > 0 && l.charAt(0) !== "#"; });
+
+    var totalChars = 0;
+    var fragmentChars = 0;
+    for (var i = 0; i < lines.length; i++) {
+        var l = lines[i];
+        totalChars += l.length;
+        var endsWithSentencePunct = /[.!?]["'\u2019\u201d)\]]*$/.test(l);
+        if (l.length <= INDEX_SHORT_LINE_MAX_CHARS && !endsWithSentencePunct) fragmentChars += l.length;
+    }
+    var headlineSoup = totalChars >= INDEX_MIN_FRAGMENT_CHARS &&
+        (fragmentChars / totalChars) > INDEX_FRAGMENT_CHAR_FRACTION_THRESHOLD;
+
+    if (!linkHeavy && !headlineSoup) return null;
+
+    var bits = [];
+    if (linkHeavy) bits.push("link density " + Math.round(linkDensity * 100) + "%");
+    if (headlineSoup) bits.push("mostly short unpunctuated text");
+    return "looks like an index page, not an article (" + bits.join(", ") + ")";
+}
+
 // ─── tag tables ───
 
 var RAW_TEXT_TAGS = { script: 1, style: 1, noscript: 1, iframe: 1, textarea: 1 };
@@ -546,6 +632,14 @@ function extractArticle(html, options) {
         return fallbackResult(summary, "extraction produced no text");
     }
 
+    var winnerLinkDensity = best._stats && best._stats.charCount
+        ? Math.min(best._stats.linkChars / best._stats.charCount, 1)
+        : 0;
+    var indexReason = indexPageReason(markdown, winnerLinkDensity);
+    if (indexReason) {
+        return fallbackResult(summary, indexReason);
+    }
+
     var summaryLen = plainTextLength(summary);
     if (summaryLen > 0 && textLength < summaryLen * FALLBACK_RATIO) {
         return fallbackResult(
@@ -570,6 +664,7 @@ if (typeof module !== "undefined" && module.exports) {
         emitMarkdown: emitMarkdown,
         plainTextLength: plainTextLength,
         decodeEntities: decodeEntities,
-        isSafeHref: isSafeHref
+        isSafeHref: isSafeHref,
+        indexPageReason: indexPageReason
     };
 }

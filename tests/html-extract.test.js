@@ -13,7 +13,8 @@ const {
     emitMarkdown,
     plainTextLength,
     decodeEntities,
-    isSafeHref
+    isSafeHref,
+    indexPageReason
 } = require("../HtmlExtract.js");
 
 var FIXTURES = path.join(__dirname, "fixtures", "articles");
@@ -126,6 +127,73 @@ describe("synthetic fixtures", () => {
         ["World News", "Business", "Technology", "Advertise", "Terms of use"].forEach(function (phrase) {
             assert.ok(!res.markdown.includes(phrase), "nav label leaked into extraction: " + phrase);
         });
+    });
+});
+
+// ─── index-page guard ───
+//
+// Measured 2026-09-11: a real section front scores as a legitimate-looking
+// container (nonzero charCount, some structure) but is not an article --
+// Readability correctly refuses it and this extractor must too.
+
+describe("index-page guard", () => {
+    test("30 headline links: falls back instead of returning headline soup", () => {
+        var storiesHtml = "";
+        for (var i = 1; i <= 30; i++) {
+            storiesHtml += "<div class=\"story\"><a href=\"/story/" + i +
+                "\">Breaking update number " + i + " from the newsroom</a> <span>2h ago</span></div>";
+        }
+        var html = "<main>" + storiesHtml + "</main>";
+        var res = extractArticle(html, {});
+
+        assert.equal(res.usedFallback, true);
+        assert.match(res.reason, /index page/i);
+    });
+
+    test("indexPageReason: high link density alone is enough to reject", () => {
+        var reason = indexPageReason("[A link](x)\n\n[B link](y)", 0.9);
+        assert.ok(reason);
+        assert.match(reason, /link density 90%/);
+    });
+
+    test("indexPageReason: mostly short unpunctuated text is enough to reject", () => {
+        var lines = [];
+        for (var i = 0; i < 20; i++) lines.push("Short headline fragment number " + i + " right here");
+        var reason = indexPageReason(lines.join("\n"), 0);
+        assert.ok(reason);
+        assert.match(reason, /short unpunctuated/);
+    });
+
+    test("indexPageReason: markdown headings do not count against a real article", () => {
+        var md = "## Introduction\n\nA full sentence with proper punctuation right here.\n\n" +
+            "## Background\n\nAnother full sentence, also properly punctuated for good measure.\n\n" +
+            "## Conclusion\n\nA closing sentence that wraps things up nicely indeed.";
+        assert.equal(indexPageReason(md, 0), null);
+    });
+
+    test("indexPageReason: too little text to judge -> never rejects on shape alone", () => {
+        assert.equal(indexPageReason("One short line\n\nAnother short one", 0), null);
+    });
+
+    // Measured 2026-09-11: a real page (an LWN advisory digest, almost
+    // entirely one <pre> block of a forwarded email) false-positived here
+    // before fenced code was excluded -- "From:", "To:", "Subject:" are
+    // short and unpunctuated by nature, and that is a property of quoted
+    // plain text, not evidence of an index.
+    test("indexPageReason: fenced code content is excluded from the fragment tally", () => {
+        var codeLines = [];
+        for (var i = 0; i < 20; i++) codeLines.push("Key" + i + ": value " + i);
+        var md = "```\n" + codeLines.join("\n") + "\n```\n\n" +
+            "A single real paragraph with proper terminal punctuation right here.";
+        assert.equal(indexPageReason(md, 0), null);
+    });
+
+    test("real fixtures do not trip the guard", () => {
+        ["wikipedia-rss.html", "gutenberg-tomsawyer.html", "nav-heavy-article.html", "div-soup.html"]
+            .forEach(function (name) {
+                var res = extractArticle(fixture(name), {});
+                assert.equal(res.usedFallback, false, name + " unexpectedly fell back: " + res.reason);
+            });
     });
 });
 

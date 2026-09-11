@@ -673,6 +673,13 @@ PluginSettings {
         }
     }
 
+    ToggleSetting {
+        settingKey: "exportFullText"
+        label: "Fetch full article text on export"
+        description: "Fetches each exported item's own page and extracts the article body instead of using the feed's summary. Off by default -- this makes one outbound request per exported article to whatever site the feed links to, so it must be opt-in. A page that cannot be fetched, or that looks like a section front rather than an article, falls back to the summary automatically."
+        defaultValue: false
+    }
+
     // ─── Subscription List (read-only) ───
     // Shown for any backend that keeps subscriptions on the server rather
     // than in this plugin's own settings -- there is nothing local to add,
