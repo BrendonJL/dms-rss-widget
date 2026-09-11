@@ -398,6 +398,63 @@ describe("LIVE ollama (opt-in, self-skipping)", () => {
         assert.equal(typeof result.text, "string");
         assert.ok(result.text.length > 0, "expected a non-empty summary from the live model");
     });
+
+    // Shape-only: a model's prose is not a fixture, so this never asserts on
+    // wording. It exercises summariseRequest end-to-end against a real,
+    // fast, non-reasoning model and confirms parse() reads message.content
+    // ONLY -- an actual separate message.reasoning field (if the runtime
+    // sends one) must never end up concatenated into result.text.
+    test("summariseRequest against real ollama: result.text is clean, message.reasoning (if any) is not folded in, or skip", { timeout: 20000 }, async (t) => {
+        var ping = await pingOllama();
+        if (!ping.up) {
+            t.skip("no runtime reachable on localhost:11434");
+            return;
+        }
+
+        var provider = createAiProvider({
+            label: "Ollama", baseUrl: "http://localhost:11434/v1",
+            model: "qwen2.5-coder:7b", apiKey: "", timeoutMs: 15000
+        });
+        var article = {
+            title: "Small fixture article",
+            description: "A short paragraph about a cat that sat on a mat, used only to give the model something brief to summarise."
+        };
+        var req = provider.summariseRequest(article);
+        var bodyStr = req.argv[req.argv.indexOf("-d") + 1];
+
+        var stdout = await new Promise(function (resolve, reject) {
+            var httpReq = http.request("http://localhost:11434/v1/chat/completions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                timeout: 15000
+            }, function (res) {
+                var data = "";
+                res.on("data", function (chunk) { data += chunk; });
+                res.on("end", function () { resolve(data); });
+            });
+            httpReq.on("error", reject);
+            httpReq.on("timeout", function () { httpReq.destroy(); reject(new Error("timeout")); });
+            httpReq.write(bodyStr);
+            httpReq.end();
+        });
+
+        var result = req.parse(stdout);
+        assert.equal(result.error, null, "expected no error from a live, reachable, correctly-modeled request");
+        assert.equal(typeof result.text, "string");
+        assert.ok(result.text.length > 0, "expected a non-empty summary from the live model");
+
+        // Independently re-parse the raw response to see what the runtime
+        // actually sent, then check parse()'s output against it directly --
+        // this is what would catch a regression that concatenates reasoning
+        // into content.
+        var raw = JSON.parse(stdout);
+        var message = (raw.choices && raw.choices[0] && raw.choices[0].message) || {};
+        assert.equal(result.text, message.content, "result.text must be exactly message.content, nothing appended");
+        if (typeof message.reasoning === "string" && message.reasoning.length > 0) {
+            assert.equal(result.text.indexOf(message.reasoning), -1,
+                "message.reasoning must never be concatenated into the summary text");
+        }
+    });
 });
 
 // The argv tests above assert structure (method, url, body) but would not

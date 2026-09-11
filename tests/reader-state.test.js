@@ -615,6 +615,124 @@ describe("addAllBookmarked", () => {
     });
 });
 
+describe("AI summary cache", () => {
+    test("insert then read back", () => {
+        const r = R.addSummary([], {}, "a", "Summary of a.");
+        assert.deepStrictEqual(r.order, ["a"]);
+        assert.strictEqual(R.getSummary(r.map, "a"), "Summary of a.");
+    });
+
+    test("re-inserting an existing id moves it to newest, replaces text, no duplicate in order", () => {
+        let state = R.addSummary([], {}, "a", "first");
+        state = R.addSummary(state.order, state.map, "b", "second");
+        state = R.addSummary(state.order, state.map, "a", "updated");
+        assert.deepStrictEqual(state.order, ["a", "b"]);
+        assert.strictEqual(R.getSummary(state.map, "a"), "updated");
+        assert.strictEqual(R.getSummary(state.map, "b"), "second");
+    });
+
+    test("cap evicts oldest-first, and the evicted id is gone from map too (not just order)", () => {
+        let state = { order: [], map: {} };
+        state = R.addSummary(state.order, state.map, "a", "sa", 2);
+        state = R.addSummary(state.order, state.map, "b", "sb", 2);
+        state = R.addSummary(state.order, state.map, "c", "sc", 2);
+        assert.deepStrictEqual(state.order, ["c", "b"]);
+        assert.strictEqual(Object.prototype.hasOwnProperty.call(state.map, "a"), false,
+            "evicted id must not linger in the map -- that's exactly the leak that would grow the state file forever");
+        assert.strictEqual(R.getSummary(state.map, "a"), null);
+        assert.strictEqual(Object.keys(state.map).length, 2);
+    });
+
+    test("default cap is DEFAULT_SUMMARY_CAP", () => {
+        assert.strictEqual(R.DEFAULT_SUMMARY_CAP, 100);
+        let state = { order: [], map: {} };
+        for (let i = 0; i < 150; i++) {
+            state = R.addSummary(state.order, state.map, "id" + i, "s" + i);
+        }
+        assert.strictEqual(state.order.length, 100);
+        assert.strictEqual(Object.keys(state.map).length, 100);
+        assert.strictEqual(R.getSummary(state.map, "id0"), null, "oldest evicted");
+        assert.strictEqual(R.getSummary(state.map, "id149"), "s149");
+    });
+
+    test('"" is a real cached value, distinct from absent', () => {
+        const r = R.addSummary([], {}, "empty", "");
+        assert.strictEqual(R.getSummary(r.map, "empty"), "");
+        assert.strictEqual(R.hasSummary(r.map, "empty"), true);
+        assert.strictEqual(R.getSummary(r.map, "unknown"), null);
+        assert.strictEqual(R.hasSummary(r.map, "unknown"), false);
+    });
+
+    test("addSummary never throws on garbage input and does not corrupt the structure", () => {
+        assert.doesNotThrow(() => R.addSummary(null, null, "a", "text"));
+        assert.doesNotThrow(() => R.addSummary(undefined, undefined, "a", "text"));
+
+        let r = R.addSummary(null, null, "a", "text");
+        assert.deepStrictEqual(r.order, ["a"]);
+        assert.strictEqual(r.map.a, "text");
+
+        // non-string id
+        r = R.addSummary(["a"], { a: "x" }, 42, "text");
+        assert.deepStrictEqual(r.order, ["a"]);
+        assert.deepStrictEqual(r.map, { a: "x" });
+
+        // non-string text
+        r = R.addSummary(["a"], { a: "x" }, "b", { not: "a string" });
+        assert.deepStrictEqual(r.order, ["a"]);
+        assert.deepStrictEqual(r.map, { a: "x" });
+
+        // empty id
+        r = R.addSummary(["a"], { a: "x" }, "", "text");
+        assert.deepStrictEqual(r.order, ["a"]);
+        assert.deepStrictEqual(r.map, { a: "x" });
+
+        assert.doesNotThrow(() => R.getSummary(null, "a"));
+        assert.strictEqual(R.getSummary(null, "a"), null);
+        assert.strictEqual(R.getSummary({ a: "x" }, null), null);
+        assert.strictEqual(R.hasSummary(null, "a"), false);
+
+        assert.doesNotThrow(() => R.pruneSummaries(null, null, null));
+        assert.deepStrictEqual(R.pruneSummaries(null, null, null), { order: [], map: {} });
+    });
+
+    test("pruneSummaries drops ids absent from the items list and keeps the rest", () => {
+        let state = { order: [], map: {} };
+        state = R.addSummary(state.order, state.map, "a", "sa");
+        state = R.addSummary(state.order, state.map, "b", "sb");
+        state = R.addSummary(state.order, state.map, "c", "sc");
+        const items = [{ id: "a" }, { id: "c" }];
+        const pruned = R.pruneSummaries(state.order, state.map, items);
+        // state.order is newest-first ["c", "b", "a"]; pruning "b" preserves
+        // the remaining relative order.
+        assert.deepStrictEqual(pruned.order, ["c", "a"]);
+        assert.deepStrictEqual(pruned.map, { a: "sa", c: "sc" });
+    });
+
+    // Summaries key off the stable id, not object identity -- equivalent to
+    // the "bookmark state survives items being reparsed into new objects"
+    // test above.
+    test("a summary survives its item being reparsed into a brand-new object", () => {
+        const r = R.addSummary([], {}, "g:abc", "Cached summary.");
+        const refetched = [{ id: "g:abc", title: "Rebuilt object" }];
+        assert.strictEqual(R.hasSummary(r.map, refetched[0].id), true);
+        assert.strictEqual(R.getSummary(r.map, refetched[0].id), "Cached summary.");
+        // and it survives a prune against the refetched dataset too
+        const pruned = R.pruneSummaries(r.order, r.map, refetched);
+        assert.strictEqual(R.getSummary(pruned.map, "g:abc"), "Cached summary.");
+    });
+
+    // addSummary is the only writer and keeps the no-duplicates invariant
+    // itself, so a duplicate can only come from a corrupted or hand-edited
+    // state file. boundIdList -- which read and bookmark history use --
+    // self-heals that, and a cache that stayed corrupt where the other lists
+    // recover would be a surprising asymmetry.
+    test("addSummary heals pre-existing duplicates in order, like boundIdList", () => {
+        const r = R.addSummary(["a", "b", "a"], { a: "sa", b: "sb" }, "c", "sc");
+        assert.deepStrictEqual(r.order, ["c", "a", "b"]);
+        assert.deepStrictEqual(Object.keys(r.map).sort(), ["a", "b", "c"]);
+    });
+});
+
 describe("reconcileServerStatus", () => {
     test("server marks an id read that's currently absent -> added, readChanged true", () => {
         const result = R.reconcileServerStatus([], [], [{ id: "m:1", status: "read", starred: false }]);

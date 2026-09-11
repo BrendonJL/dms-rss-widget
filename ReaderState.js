@@ -477,11 +477,21 @@ function addSummary(order, map, id, text, cap) {
         return { order: (order || []).slice(), map: shallowCopy(map) };
     }
 
+    // `seen` guards against duplicates already present in `order`, not just
+    // against the id being inserted. addSummary is the only writer and keeps
+    // the invariant itself, so a duplicate can only arrive from a corrupted or
+    // hand-edited state file -- and boundIdList, which read and bookmark
+    // history use, self-heals exactly that case. A cache that stayed corrupt
+    // where the other lists recover would be a surprising asymmetry.
     var nextOrder = [id];
+    var seen = {};
+    seen[id] = true;
     var src = order || [];
     for (var i = 0; i < src.length && nextOrder.length < limit; i++) {
-        if (src[i] !== id && typeof src[i] === "string" && src[i].length > 0) {
-            nextOrder.push(src[i]);
+        var candidate = src[i];
+        if (typeof candidate === "string" && candidate.length > 0 && !seen[candidate]) {
+            seen[candidate] = true;
+            nextOrder.push(candidate);
         }
     }
 

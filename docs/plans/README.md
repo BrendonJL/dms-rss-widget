@@ -5,8 +5,11 @@ whether the doc describes current reality, not whether it's well-written.
 
 | Doc | Covers | Status |
 |---|---|---|
-| `2026-09-09-phase1-google-reader-design.md` | Google Reader API backend (chain fetch, session, id normalisation) | current — 1a/1b implemented, 1c (settings UI) pending |
-| `2026-09-08-phase4-export-provider-design.md` | Notes/export provider (Obsidian, Neovim, markdown dir) | current — 4a implemented, 4b (QML wiring) pending |
+| `2026-09-10-phase3b-summaries-design.md` | Per-article summaries (on-demand via AiProvider) | ready to implement |
+| `2026-09-10-phase2-keyboard-design.md` | Keyboard navigation (focus latching, key binding) | implemented |
+| `2026-09-09-phase1c-settings-design.md` | Google Reader settings UI (third source mode, connection section) | implemented |
+| `2026-09-09-phase1-google-reader-design.md` | Google Reader API backend (chain fetch, session, id normalisation) | 1a/1b/1c implemented |
+| `2026-09-08-phase4-export-provider-design.md` | Notes/export provider (Obsidian, Neovim, markdown dir) | current — 4a implemented, 4b (QML wiring) in progress |
 | `2026-09-08-phase3-ai-provider-design.md` | Local AI provider (OpenAI-compatible chat API) | current — 3a implemented, 3b-3d (UI features) pending |
 | `2026-09-08-phase0-backend-interface-design.md` | Backend provider interface (`Backends.js`, capabilities) | implemented |
 | `2026-09-07-roadmap-design.md` | Full v3 roadmap, all phases | current — see per-phase docs for what's actually done |
