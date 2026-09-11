@@ -161,3 +161,26 @@ Unit, all pure:
 - Provider differences: Obsidian emits wikilink tags, markdown-dir does not.
 
 Plus the QML DI round-trip in `tests/qml/`, as with the other two modules.
+
+---
+
+> **Correction, 2026-09-11.** The "Settings" section above says notes export is
+> global rather than per-instance. That was written without knowing how DMS
+> stores plugin settings, and it is wrong in a way worth recording.
+>
+> `DesktopPluginWrapper.qml`'s `loadPluginData` reads the widget instance's own
+> config and falls back to the shared store; `savePluginData` writes to the
+> instance config only. Global-as-default, instance-as-override. **Every**
+> setting this plugin has is already per-instance for an instanced widget.
+>
+> Making one section global required bypassing the plugin API to write
+> `SettingsData` directly, which also broke it away from the shared settings
+> components — `SelectionSetting` is wired to the instance-scoped path, so the
+> provider dropdown could not use it and looked different from every other
+> selector in the panel.
+>
+> So export settings follow the same mechanism as everything else. The stated
+> rationale — there is one vault — still holds as a preference; it just is not
+> worth one section that works and looks unlike the rest of the panel. If
+> per-instance vault paths ever actually bite, the fix belongs in DMS's
+> settings model, not in a workaround here.

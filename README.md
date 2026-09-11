@@ -163,6 +163,25 @@ Two rules that are easy to violate and hard to notice:
 
 Backends return **request descriptors** (`{ argv, parse, timeoutMs, meta }`) and perform no I/O, which is what makes a protocol testable without a server. Every backend takes the same arguments in the same order, because the caller invokes them positionally without knowing which one it holds; `tests/backend-interface.test.js` enforces that.
 
+### Settings are per-instance, with global as the default
+
+Verified in `/usr/share/quickshell/dms/Modules/Plugins/DesktopPluginWrapper.qml`:
+`loadPluginData` reads the widget instance's own config and falls back to the
+shared `pluginSettings` store; `savePluginData` writes to the instance config
+**only**, returning false when there is no instance.
+
+So for a desktop-widget instance, every setting this plugin has — feeds,
+source mode, Miniflux and Google Reader credentials, notes export — is
+per-instance, and the global store acts as a default. Two instances can show
+different feeds, which is the intended feature; they can also disagree about
+your vault path, which is not, but is the cost of a consistent mechanism.
+
+It is possible to write the global store directly via
+`SettingsData.setPluginSetting`. **Do not**: it bypasses the documented plugin
+API, and the shared settings components (`SelectionSetting` and friends) are
+wired to the instance-scoped path, so a bypassed field cannot use them and
+ends up looking different from every other field in the panel.
+
 ## Development
 
 `install.sh` symlinks the repo into `~/.config/DankMaterialShell/plugins/`, so **the branch you have checked out is the widget DMS loads**. There is no plugin hot-reload; `dms restart` picks up changes.
