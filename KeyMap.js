@@ -21,6 +21,7 @@ var Key_K = 0x4b;
 var Key_G = 0x47;
 var Key_A = 0x41;
 var Key_O = 0x4f;
+var Key_V = 0x56;
 var Key_R = 0x52;
 var Key_M = 0x4d;
 var Key_S = 0x53;
@@ -198,6 +199,12 @@ function resolveKey(event, state) {
     if (key === Key_O && !shift)
         return act("open", index);
 
+    // "v" (view) opens the cursor row in the reading window -- a row action
+    // like "o", not a whole-selection one like "m"/"s"/"e": a reading window
+    // shows exactly one article, so there is no sensible multi-item form.
+    if (key === Key_V)
+        return act("view", index);
+
     return noop(index);
 }
 
@@ -210,6 +217,7 @@ if (typeof module !== "undefined" && module.exports) {
         Key_G: Key_G,
         Key_A: Key_A,
         Key_O: Key_O,
+        Key_V: Key_V,
         Key_R: Key_R,
         Key_M: Key_M,
         Key_S: Key_S,

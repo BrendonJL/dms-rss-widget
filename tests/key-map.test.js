@@ -340,6 +340,12 @@ describe("one-shot bindings", () => {
         assert.equal(r.action, "open");
     });
 
+    test("v views the cursor row", () => {
+        var r = resolveKey(evt(KeyMap.Key_V), baseState({ index: 1 }));
+        assert.equal(r.action, "view");
+        assert.equal(r.index, 1);
+    });
+
     test("Enter (Return) opens", () => {
         var r = resolveKey(evt(KeyMap.Key_Return), baseState({ index: 1 }));
         assert.equal(r.action, "open");
@@ -414,6 +420,7 @@ describe("currentIndex === -1: row actions blocked, cursor-independent ones not"
     [
         ["Enter/open", KeyMap.Key_Return, 0],
         ["o", KeyMap.Key_O, 0],
+        ["v (view)", KeyMap.Key_V, 0],
         ["m (toggleRead)", KeyMap.Key_M, 0],
         ["s (toggleStar)", KeyMap.Key_S, 0],
         ["e (exportItem)", KeyMap.Key_E, 0],
@@ -481,6 +488,7 @@ describe("empty list (count === 0) never yields an out-of-range index", () => {
         ["Space", KeyMap.Key_Space, 0],
         ["Enter", KeyMap.Key_Return, 0],
         ["o", KeyMap.Key_O, 0],
+        ["v", KeyMap.Key_V, 0],
         ["m", KeyMap.Key_M, 0],
         ["s", KeyMap.Key_S, 0],
         ["e", KeyMap.Key_E, 0],

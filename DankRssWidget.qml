@@ -219,6 +219,10 @@ DesktopPluginComponent {
                 desc: "Open item"
             },
             {
+                keys: ["v"],
+                desc: "View in reader window"
+            },
+            {
                 keys: ["m"],
                 desc: "Toggle read / unread (whole selection, if any)"
             },
@@ -592,6 +596,27 @@ DesktopPluginComponent {
         }
     }
 
+    // Shared by the "v" keyboard action and the row's view button. Opening
+    // the reader window IS reading the article -- the same read-marking half
+    // of openItem() runs here -- but unlike openItem() it never opens the
+    // link externally; that is the reader window's own "o" binding once it's
+    // open.
+    function viewItem(itemId) {
+        if (!itemId)
+            return;
+        root.markRead(itemId);
+        if (root.syncReadOnOpen) {
+            var numId = root.backendItemId(itemId);
+            root.runRequest(root.backend.markReadRequest(root.backendConfig, root.backendSession, numId ? [numId] : []), function (output, code) {
+                if (code !== null && code !== 0)
+                    root.toastError("Failed to mark as read");
+            });
+        }
+        var article = root.itemById(itemId);
+        if (article)
+            readerWindow.openArticle(article);
+    }
+
     // Shared by the mark-read button and the "m" keyboard action. An
     // explicit toggle here ALWAYS syncs to the server, regardless of
     // syncReadOnOpen (that setting only gates openItem's "open" path above).
@@ -676,6 +701,12 @@ DesktopPluginComponent {
             {
                 var openRow = feedModel.get(result.index);
                 root.openItem(openRow.itemId, openRow.link);
+                break;
+            }
+        case "view":
+            {
+                var viewRow = feedModel.get(result.index);
+                root.viewItem(viewRow.itemId);
                 break;
             }
         case "toggleRead":
@@ -1597,6 +1628,16 @@ DesktopPluginComponent {
         id: feedModel
     }
 
+    // Reused by "v"/the row's view button. "e"/"s" pressed inside the window
+    // are forwarded here rather than duplicated, so exporting or starring
+    // from the reader behaves exactly like exporting or starring from the
+    // list -- same functions, same settings, same toasts.
+    ReaderWindow {
+        id: readerWindow
+        onExportRequested: article => root.exportArticles([article])
+        onStarRequested: itemId => root.toggleBookmark(itemId)
+    }
+
     // --- UI ---
     Rectangle {
         anchors.fill: parent
@@ -2410,6 +2451,32 @@ DesktopPluginComponent {
                                     if (root._clickFromOverview())
                                         return;
                                     root.toggleBookmark(model.itemId);
+                                }
+
+                                Behavior on opacity {
+                                    NumberAnimation {
+                                        duration: Theme.shortDuration
+                                    }
+                                }
+                            }
+
+                            // Trailing #3: open in the reader window. Never
+                            // touches read/bookmark state itself -- viewItem()
+                            // does the read-marking, same as the "v" key.
+                            DankActionButton {
+                                iconName: "menu_book"
+                                iconSize: 14
+                                buttonSize: itemDelegate.controlSize
+                                iconColor: Theme.surfaceVariantText
+                                Layout.alignment: Qt.AlignVCenter
+                                opacity: rowHover.hovered ? 1.0 : 0.45
+                                enabled: true
+                                // See the mark-read button's comment above.
+                                activeFocusOnTab: false
+                                onClicked: {
+                                    if (root._clickFromOverview())
+                                        return;
+                                    root.viewItem(model.itemId);
                                 }
 
                                 Behavior on opacity {
