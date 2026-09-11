@@ -203,8 +203,21 @@ function buildBody(article, annotations, caps, config) {
     var parts = [];
     parts.push("# " + ((article && article.title) || ""));
 
+    // The article itself. Feeds usually carry a summary rather than the full
+    // text, so this is whatever the feed gave us -- which is the honest thing
+    // to save. Fetching the full body needs the backends' fullText capability,
+    // which no backend implements yet.
+    var text = (article && (article.description || article.content)) || "";
+    if (text) parts.push(text);
+
+    // A link back to the source, so the note is useful on its own once the
+    // item has scrolled out of the feed. The frontmatter carries the url too,
+    // but frontmatter is metadata -- this is for a human reading the note.
+    if (article && article.link) parts.push("[Read the original](" + article.link + ")");
+
     var rendered = renderAnnotations(annotations);
     if (rendered) parts.push(rendered);
+
 
     var tags = (config && config.tags) || [];
     if (tags.length > 0) {
@@ -277,8 +290,14 @@ function buildRelPath(config, article) {
     if (!safeBase) {
         base = idForFallback || "untitled";
     } else {
-        var idSource = (article && (article.id || article.link || article.title)) || "";
-        base = safeBase + "-" + fnv1aHex(String(idSource));
+        // Clamp the TITLE, then append the hash -- not the other way round.
+        // Clamping the assembled "title-hash" truncates from the end, which
+        // eats the hash itself: two articles with long titles sharing a
+        // prefix then produce the SAME filename and one silently overwrites
+        // the other. Reserve the hash and extension first.
+        var suffix = "-" + fnv1aHex(String((article && (article.id || article.link || article.title)) || ""));
+        var reserved = suffix.length + ext.length;
+        base = clampUtf8Bytes(safeBase, 255 - reserved) + suffix;
     }
 
     return clampFilenameBytes(base, ext, 255);

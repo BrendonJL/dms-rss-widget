@@ -846,23 +846,24 @@ DesktopPluginComponent {
 
     // --- Notes export ---
     //
-    // FileView has exactly one `path` at a time, so exporting N articles is
-    // N sequential set-path/setText/wait-for-signal round trips, never N
-    // fired at once -- see exportFileView below. _exportQueue holds the
-    // writes not yet started; the item at index 0 is always the one
-    // exportFileView currently has in flight (or is about to).
+    // One FileView per file being written, created fresh for that write and
+    // destroyed when it finishes. A single shared FileView driven through a
+    // queue (set path, setText(), wait for onSaved, advance) was tried first
+    // and dropped: quickshell's own docs for FileView (fileview.hpp) say
+    // `preload` defaults to true and `blockLoading` only makes text()/data()
+    // *reads* block -- it does not make a `path` change itself synchronous.
+    // So reusing one FileView across N paths starts a background load of
+    // each new path while the previous write may still be in flight, and
+    // the second write can race that load. Giving every write its own
+    // FileView removes the shared `path`/`text` state those two operations
+    // would otherwise race over -- there is nothing left to interleave.
     //
-    // This queue is plain, mutable QML state rather than a pure function
-    // over a list, because driving it means calling into exportFileView (a
-    // real Quickshell.Io object) between every step -- there is no pure
-    // "next state" to compute without that side effect in the middle, and
-    // this file cannot add a new pure .js module to hold one (only
-    // DankRssWidget.qml, DankRssWidgetSettings.qml, KeyMap.js and its test
-    // file are this stage's to touch). See the stage 4b report for why this
-    // was left inline rather than contorted into something unit-testable.
-    property var _exportQueue: []
-    property int _exportWritten: 0
-    property string _exportFirstFailure: ""
+    // _exportResults is indexed by the original selection order (not
+    // completion order, since writes now finish in parallel) so the
+    // reported "first" failure always means first in the article list the
+    // user selected, matching the old sequential behaviour exactly.
+    property var _exportResults: []
+    property int _exportPending: 0
 
     function itemById(id) {
         for (var i = 0; i < root.allItems.length; i++) {
@@ -898,8 +899,8 @@ DesktopPluginComponent {
             return;
         // A batch is already running -- dropping a second trigger (a
         // double keypress, or the key firing while a click is still being
-        // processed) rather than interleaving two queues into one FileView.
-        if (root._exportQueue.length > 0)
+        // processed) rather than starting a second overlapping batch.
+        if (root._exportPending > 0)
             return;
 
         var queue = [];
@@ -928,50 +929,78 @@ DesktopPluginComponent {
         if (queue.length === 0)
             return;
 
-        root._exportQueue = queue;
-        root._exportWritten = 0;
-        root._exportFirstFailure = "";
-        root._runNextExport();
-    }
+        root._exportResults = new Array(queue.length);
+        root._exportPending = queue.length;
 
-    function _runNextExport() {
-        if (root._exportQueue.length === 0) {
-            root._finishExport();
-            return;
+        for (var j = 0; j < queue.length; j++) {
+            var item = queue[j];
+            var view = exportFileViewComponent.createObject(root, {
+                exportIndex: j,
+                exportTitle: item.title,
+                path: item.path
+            });
+            view.setText(item.content);
         }
-        exportFileView.path = root._exportQueue[0].path;
-        exportFileView.setText(root._exportQueue[0].content);
     }
 
-    function _finishExport() {
-        if (root._exportFirstFailure) {
-            root.toastError(root._exportWritten + " note" + (root._exportWritten === 1 ? "" : "s") + " written, failed starting at \"" + root._exportFirstFailure + "\"");
-        } else if (root._exportWritten > 0) {
+    // Called once per write, in whatever order writes actually finish
+    // (they run in parallel, one FileView each). Only the last one to
+    // finish reports -- _exportResults is filled in article order first,
+    // then walked in that order so "first failure" means first in the
+    // user's selection, not first to complete.
+    function _exportItemDone(index, success, title) {
+        root._exportResults[index] = {
+            success: success,
+            title: title
+        };
+        root._exportPending--;
+        if (root._exportPending > 0)
+            return;
+
+        var written = 0;
+        var firstFailure = "";
+        for (var i = 0; i < root._exportResults.length; i++) {
+            var result = root._exportResults[i];
+            if (result.success)
+                written++;
+            else if (!firstFailure)
+                firstFailure = result.title;
+        }
+
+        if (firstFailure) {
+            root.toastError(written + " note" + (written === 1 ? "" : "s") + " written, failed starting at \"" + firstFailure + "\"");
+        } else if (written > 0) {
             if (typeof ToastService !== "undefined")
-                ToastService.showInfo(root._exportWritten + " note" + (root._exportWritten === 1 ? "" : "s") + " written");
+                ToastService.showInfo(written + " note" + (written === 1 ? "" : "s") + " written");
         }
     }
 
     // blockWrites/atomicWrites match DMS's own cache writer exactly (see
     // /usr/share/quickshell/dms/Common/CacheData.qml) -- no shell, no Proc,
     // and a half-written note is never visible to Obsidian's indexer.
-    FileView {
-        id: exportFileView
-        blockWrites: true
-        atomicWrites: true
+    // preload is off since this FileView only ever writes -- it is never
+    // read from, so there is no reason to load the file it is about to
+    // overwrite.
+    Component {
+        id: exportFileViewComponent
 
-        onSaved: {
-            root._exportWritten++;
-            root._exportQueue = root._exportQueue.slice(1);
-            root._runNextExport();
-        }
+        FileView {
+            id: exportFileViewInstance
+            property int exportIndex: -1
+            property string exportTitle: ""
+            blockWrites: true
+            atomicWrites: true
+            preload: false
 
-        onSaveFailed: error => {
-            var failed = root._exportQueue[0];
-            if (!root._exportFirstFailure)
-                root._exportFirstFailure = failed ? failed.title : "an article";
-            root._exportQueue = root._exportQueue.slice(1);
-            root._runNextExport();
+            onSaved: {
+                root._exportItemDone(exportIndex, true, exportTitle);
+                exportFileViewInstance.destroy();
+            }
+
+            onSaveFailed: error => {
+                root._exportItemDone(exportIndex, false, exportTitle);
+                exportFileViewInstance.destroy();
+            }
         }
     }
 

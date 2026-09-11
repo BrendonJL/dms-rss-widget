@@ -362,6 +362,26 @@ describe("the ordinary case", () => {
         kind: "markdown", root: "Clippings", filenameTemplate: "{title}.md"
     });
 
+
+    // Notes are now written in PARALLEL (one FileView per file), so two
+    // articles resolving to one path is silent data loss rather than a
+    // cosmetic clash. Clamping the assembled "title-hash" truncated from the
+    // end and ate the hash, so any two long titles sharing a prefix collided.
+    test("long titles stay distinct: the hash is reserved, not truncated away", () => {
+        const p = createExportProvider({ kind: "markdown", root: "C", filenameTemplate: "{title}.md" });
+        const arts = [
+            { id: "m:7", title: "x".repeat(400) },
+            { id: "m:8", title: "x".repeat(400) },
+            { id: "m:9", title: "日".repeat(300) },
+            { id: "m:10", title: "日".repeat(300) }
+        ];
+        const paths = arts.map(a => p.buildNote(a, []).relPath);
+        assert.equal(new Set(paths).size, paths.length, "two articles must never share a path");
+        paths.forEach(pth => {
+            assert.ok(Buffer.byteLength(pth) <= 255, pth.length + " bytes exceeds NAME_MAX");
+            assert.match(pth, /-[0-9a-f]+\.md$/, "the disambiguating hash must survive clamping");
+        });
+    });
     test("a normal title yields one extension, hash before it", () => {
         var r = provider.buildNote({ id: "m:42", title: "Cloud licensing probe" }, []);
         assert.match(r.relPath, /^Cloud licensing probe-[0-9a-f]+\.md$/);

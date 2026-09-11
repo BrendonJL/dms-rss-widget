@@ -491,6 +491,188 @@ PluginSettings {
         }
     }
 
+    // ─── Notes Export ───
+    // DesktopPluginWrapper.qml's loadPluginData reads the instance config
+    // first and falls back to the global plugin-wide store; savePluginData
+    // writes to the instance config only. So these are per-instance for an
+    // instanced widget and global otherwise -- the same as every other
+    // setting in this file.
+
+    StyledRect {
+        width: parent.width
+        height: 1
+        color: Theme.outlineVariant
+    }
+
+    StyledText {
+        width: parent.width
+        text: "Notes Export"
+        font.pixelSize: Theme.fontSizeMedium
+        font.weight: Font.Medium
+        color: Theme.surfaceText
+    }
+
+    StyledText {
+        width: parent.width
+        text: "Send an article to a local notes folder, an Obsidian vault, or Neovim. Leave the folder empty to disable this entirely -- no export button or shortcut appears until one is set."
+        font.pixelSize: Theme.fontSizeSmall
+        color: Theme.surfaceVariantText
+        wrapMode: Text.WordWrap
+    }
+
+    SelectionSetting {
+        id: exportKindSetting
+        settingKey: "exportKind"
+        label: "Provider"
+        description: "Obsidian and Neovim add vault-aware paths and an optional jump-to-note callback on top of the plain markdown-directory case."
+        options: [
+            { label: "Markdown directory", value: "markdown" },
+            { label: "Obsidian", value: "obsidian" },
+            { label: "Neovim", value: "neovim" }
+        ]
+        defaultValue: "markdown"
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+
+        StyledText {
+            text: "Folder"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "Absolute path, or vault-relative for Obsidian."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        DankTextField {
+            id: exportRootField
+            width: parent.width
+            placeholderText: "/home/you/notes  or  Inbox"
+            text: root.loadValue("exportRoot", "")
+            onTextChanged: root.saveValue("exportRoot", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(exportRootField);
+            }
+        }
+    }
+
+    // Vault name is Obsidian-specific identity, not a behavioural question --
+    // Neovim's equivalent is a --server address, not a vault, so this is
+    // gated on the provider string directly (same reasoning as the Google
+    // Reader/Miniflux credential fields above, not a capability check).
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+        visible: exportKindSetting.value === "obsidian"
+
+        StyledText {
+            text: "Vault Name"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "Used only to build the obsidian://open callback after a note is written."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        DankTextField {
+            id: exportVaultField
+            width: parent.width
+            placeholderText: "My Vault"
+            text: root.loadValue("exportVault", "")
+            onTextChanged: root.saveValue("exportVault", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(exportVaultField);
+            }
+        }
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+
+        StyledText {
+            text: "Filename Template"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "{title}, {id} and {source} are substituted, then sanitised and disambiguated before writing -- see ExportProvider.js."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        DankTextField {
+            id: exportTemplateField
+            width: parent.width
+            placeholderText: "{title}.md"
+            text: root.loadValue("exportTemplate", "{title}.md")
+            onTextChanged: root.saveValue("exportTemplate", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(exportTemplateField);
+            }
+        }
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+
+        StyledText {
+            text: "Tags"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "Comma-separated. Applied to every exported note's frontmatter (and as wikilinks in the body, for Obsidian)."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        DankTextField {
+            id: exportTagsField
+            width: parent.width
+            placeholderText: "reading, rss"
+            text: (root.loadValue("exportTags", []) || []).join(", ")
+            // Parse and save on commit only, not on every keystroke. The
+            // field's `text:` above is a live binding to the saved value,
+            // so saving on every character re-runs that binding mid-type;
+            // a still-empty second tag ("news,") is dropped by the filter
+            // below, and the rebind then overwrites the field with "news"
+            // -- silently eating the comma the user just typed. Committing
+            // only on editingFinished (Enter, or focus lost) means the
+            // rebind never fires until the user is done typing.
+            onEditingFinished: {
+                var tags = text.split(",").map(function (t) {
+                    return t.trim();
+                }).filter(function (t) {
+                    return t.length > 0;
+                });
+                root.saveValue("exportTags", tags);
+            }
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(exportTagsField);
+            }
+        }
+    }
+
     // ─── Subscription List (read-only) ───
     // Shown for any backend that keeps subscriptions on the server rather
     // than in this plugin's own settings -- there is nothing local to add,
@@ -1443,179 +1625,5 @@ PluginSettings {
             { label: "Surface", value: "surface" }
         ]
         defaultValue: "primary"
-    }
-
-    // ─── Notes Export ───
-    // DesktopPluginWrapper.qml's loadPluginData reads the instance config
-    // first and falls back to the global plugin-wide store; savePluginData
-    // writes to the instance config only. So these are per-instance for an
-    // instanced widget and global otherwise -- the same as every other
-    // setting in this file.
-
-    StyledRect {
-        width: parent.width
-        height: 1
-        color: Theme.outlineVariant
-    }
-
-    StyledText {
-        width: parent.width
-        text: "Notes Export"
-        font.pixelSize: Theme.fontSizeMedium
-        font.weight: Font.Medium
-        color: Theme.surfaceText
-    }
-
-    StyledText {
-        width: parent.width
-        text: "Send an article to a local notes folder, an Obsidian vault, or Neovim. Leave the folder empty to disable this entirely -- no export button or shortcut appears until one is set."
-        font.pixelSize: Theme.fontSizeSmall
-        color: Theme.surfaceVariantText
-        wrapMode: Text.WordWrap
-    }
-
-    SelectionSetting {
-        id: exportKindSetting
-        settingKey: "exportKind"
-        label: "Provider"
-        description: "Obsidian and Neovim add vault-aware paths and an optional jump-to-note callback on top of the plain markdown-directory case."
-        options: [
-            { label: "Markdown directory", value: "markdown" },
-            { label: "Obsidian", value: "obsidian" },
-            { label: "Neovim", value: "neovim" }
-        ]
-        defaultValue: "markdown"
-    }
-
-    Column {
-        width: parent.width
-        spacing: Theme.spacingXS
-
-        StyledText {
-            text: "Folder"
-            font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
-        }
-
-        StyledText {
-            width: parent.width
-            text: "Absolute path, or vault-relative for Obsidian."
-            font.pixelSize: Theme.fontSizeSmall - 2
-            color: Theme.surfaceVariantText
-            wrapMode: Text.WordWrap
-        }
-
-        DankTextField {
-            id: exportRootField
-            width: parent.width
-            placeholderText: "/home/you/notes  or  Inbox"
-            text: root.loadValue("exportRoot", "")
-            onTextChanged: root.saveValue("exportRoot", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(exportRootField);
-            }
-        }
-    }
-
-    // Vault name is Obsidian-specific identity, not a behavioural question --
-    // Neovim's equivalent is a --server address, not a vault, so this is
-    // gated on the provider string directly (same reasoning as the Google
-    // Reader/Miniflux credential fields above, not a capability check).
-    Column {
-        width: parent.width
-        spacing: Theme.spacingXS
-        visible: exportKindSetting.value === "obsidian"
-
-        StyledText {
-            text: "Vault Name"
-            font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
-        }
-
-        StyledText {
-            width: parent.width
-            text: "Used only to build the obsidian://open callback after a note is written."
-            font.pixelSize: Theme.fontSizeSmall - 2
-            color: Theme.surfaceVariantText
-            wrapMode: Text.WordWrap
-        }
-
-        DankTextField {
-            id: exportVaultField
-            width: parent.width
-            placeholderText: "My Vault"
-            text: root.loadValue("exportVault", "")
-            onTextChanged: root.saveValue("exportVault", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(exportVaultField);
-            }
-        }
-    }
-
-    Column {
-        width: parent.width
-        spacing: Theme.spacingXS
-
-        StyledText {
-            text: "Filename Template"
-            font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
-        }
-
-        StyledText {
-            width: parent.width
-            text: "{title}, {id} and {source} are substituted, then sanitised and disambiguated before writing -- see ExportProvider.js."
-            font.pixelSize: Theme.fontSizeSmall - 2
-            color: Theme.surfaceVariantText
-            wrapMode: Text.WordWrap
-        }
-
-        DankTextField {
-            id: exportTemplateField
-            width: parent.width
-            placeholderText: "{title}.md"
-            text: root.loadValue("exportTemplate", "{title}.md")
-            onTextChanged: root.saveValue("exportTemplate", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(exportTemplateField);
-            }
-        }
-    }
-
-    Column {
-        width: parent.width
-        spacing: Theme.spacingXS
-
-        StyledText {
-            text: "Tags"
-            font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
-        }
-
-        StyledText {
-            width: parent.width
-            text: "Comma-separated. Applied to every exported note's frontmatter (and as wikilinks in the body, for Obsidian)."
-            font.pixelSize: Theme.fontSizeSmall - 2
-            color: Theme.surfaceVariantText
-            wrapMode: Text.WordWrap
-        }
-
-        DankTextField {
-            id: exportTagsField
-            width: parent.width
-            placeholderText: "reading, rss"
-            text: (root.loadValue("exportTags", []) || []).join(", ")
-            onTextChanged: {
-                var tags = text.split(",").map(function (t) {
-                    return t.trim();
-                }).filter(function (t) {
-                    return t.length > 0;
-                });
-                root.saveValue("exportTags", tags);
-            }
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(exportTagsField);
-            }
-        }
     }
 }
