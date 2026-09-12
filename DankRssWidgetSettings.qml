@@ -11,6 +11,7 @@ import "Backends.js" as Backends
 import "GoogleReader.js" as GoogleReader
 import "ExportProvider.js" as ExportProvider
 import "AiProvider.js" as AiProvider
+import "Palette.js" as Palette
 
 PluginSettings {
     id: root
@@ -20,6 +21,17 @@ PluginSettings {
     property string urlError: ""
     property var feedStatuses: []
     property var minifluxFeedsList: []
+
+    // Autodiscovery results (see the "Find Feed" button below). Cleared on
+    // every new search so a stale result from a previous site can never be
+    // mistaken for the current one.
+    property var discoveredFeeds: []
+    property bool discoverySearched: false
+
+    // Repeatable list editor state for notification rules -- there is no
+    // "editingIndex" like the feed form above because these are add/delete
+    // only (see the contract: a full rule builder is explicitly out of scope).
+    property string newRuleQuery: ""
 
     // null Proc id + curl hardening flags on every Miniflux call made from
     // settings, matching the widget's own request pattern -- a fixed id here
@@ -166,6 +178,82 @@ PluginSettings {
             return { ok: false, error: "Enter a valid URL (starting with http:// or https://)", url: "" };
         }
         return { ok: true, error: "", url: url };
+    }
+
+    // The ONE place a feed is actually written into the `feeds` array from
+    // the Add/Edit form -- both the form's own "Add Feed"/"Update Feed"
+    // button and the autodiscovery "Add" buttons below call this rather than
+    // each carrying their own copy, so validation and the add-vs-edit branch
+    // can never drift between the two entry points. Callers are expected to
+    // have already set nameField.text/urlField.text (or left them as typed).
+    function commitFeedForm() {
+        var validated = root.validateFeedUrl(urlField.text);
+        if (!validated.ok) {
+            root.urlError = validated.error;
+            return false;
+        }
+        root.urlError = "";
+
+        var url = validated.url;
+        var name = nameField.text.trim() || url;
+
+        var currentFeeds = root.loadValue("feeds", []);
+        if (root.editingIndex === -1) {
+            currentFeeds = currentFeeds.concat([{ name: name, url: url, enabled: true, addedAt: Date.now() }]);
+        } else {
+            var existing = currentFeeds[root.editingIndex] || {};
+            currentFeeds[root.editingIndex] = {
+                name: name,
+                url: url,
+                enabled: existing.enabled !== false,
+                addedAt: existing.addedAt
+            };
+            root.editingIndex = -1;
+        }
+        root.saveValue("feeds", currentFeeds);
+
+        nameField.text = "";
+        urlField.text = "";
+        return true;
+    }
+
+    // Same "resolve, don't store" reasoning as effectiveAiBaseUrl above,
+    // extended to the embedding model: a typed value always wins, otherwise
+    // the chosen preset's suggested embedModel is offered, and "custom" (no
+    // PRESETS entry) offers nothing because there is nothing to suggest.
+    // Deliberately NOT wired through an onValueChanged handler on the preset
+    // dropdown -- that is exactly the bug AiProvider.resolveBaseUrl's own
+    // comment documents (it does not fire on a fresh install).
+    function effectiveAiEmbedModel() {
+        var typed = (root.loadValue("aiEmbedModel", "") || "").trim();
+        if (typed)
+            return typed;
+        var preset = AiProvider.PRESETS[root.loadValue("aiPreset", "ollama")];
+        return (preset && preset.embedModel) || "";
+    }
+
+    // Snapshot of Theme's current colours, in Palette.js's role shape, for
+    // the colour-preset live preview below. Palette.js must never touch
+    // Theme itself (see its header comment) -- this is the one place that
+    // reads Theme and hands the values in. String(...) coerces Qt's `color`
+    // type to the "#aarrggbb" text Palette.parseColour expects; a QColor
+    // handed to it directly would fail isValidColour's typeof check.
+    function themeBasePalette() {
+        return {
+            primary: String(Theme.primary),
+            secondary: String(Theme.secondary),
+            surfaceText: String(Theme.surfaceText),
+            surfaceVariantText: String(Theme.surfaceVariantText),
+            error: String(Theme.error),
+            success: String(Theme.success),
+            warning: String(Theme.warning),
+            outlineVariant: String(Theme.outlineVariant),
+            surfaceContainer: String(Theme.surfaceContainer),
+            surfaceContainerHigh: String(Theme.surfaceContainerHigh),
+            surfaceContainerHighest: String(Theme.surfaceContainerHighest),
+            onPrimary: String(Theme.onPrimary),
+            onError: String(Theme.onError)
+        };
     }
 
     Component.onCompleted: {
@@ -762,6 +850,50 @@ PluginSettings {
         defaultValue: false
     }
 
+    // Gated on the export folder being set, same as the header comment above
+    // already promises for this whole section ("no export button or
+    // shortcut appears until one is set") -- an attachment folder is
+    // meaningless with nowhere to export notes into in the first place.
+    ToggleSetting {
+        id: exportImagesSetting
+        visible: exportRootField.text.trim() !== ""
+        settingKey: "exportImages"
+        label: "Download Images on Export"
+        description: "Downloads each exported article's images into an attachments folder next to the notes, so they render locally in Obsidian and Neovim instead of depending on the original site staying up."
+        defaultValue: false
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+        visible: exportRootField.text.trim() !== "" && exportImagesSetting.value
+
+        StyledText {
+            text: "Attachment Folder"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "Relative to the notes folder above."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        DankTextField {
+            id: attachmentDirField
+            width: parent.width
+            placeholderText: "attachments"
+            text: root.loadValue("attachmentDir", "attachments")
+            onTextChanged: root.saveValue("attachmentDir", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(attachmentDirField);
+            }
+        }
+    }
+
     // ─── Subscription List (read-only) ───
     // Shown for any backend that keeps subscriptions on the server rather
     // than in this plugin's own settings -- there is nothing local to add,
@@ -937,6 +1069,13 @@ PluginSettings {
     }
 
     ToggleSetting {
+        settingKey: "markReadOnScroll"
+        label: "Mark Read on Scroll"
+        description: "Mark items as read automatically as they scroll past, instead of only on click or open"
+        defaultValue: false
+    }
+
+    ToggleSetting {
         settingKey: "openInBrowser"
         label: "Open Links in Browser"
         description: "Click feed items to open them in your browser"
@@ -1041,35 +1180,7 @@ PluginSettings {
                     text: root.editingIndex === -1 ? "Add Feed" : "Update Feed"
                     iconName: root.editingIndex === -1 ? "add" : "save"
 
-                    onClicked: {
-                        var validated = root.validateFeedUrl(urlField.text);
-                        if (!validated.ok) {
-                            root.urlError = validated.error;
-                            return;
-                        }
-                        root.urlError = "";
-
-                        var url = validated.url;
-                        var name = nameField.text.trim() || url;
-
-                        var currentFeeds = root.loadValue("feeds", []);
-                        if (root.editingIndex === -1) {
-                            currentFeeds = currentFeeds.concat([{ name: name, url: url, enabled: true, addedAt: Date.now() }]);
-                        } else {
-                            var existing = currentFeeds[root.editingIndex] || {};
-                            currentFeeds[root.editingIndex] = {
-                                name: name,
-                                url: url,
-                                enabled: existing.enabled !== false,
-                                addedAt: existing.addedAt
-                            };
-                            root.editingIndex = -1;
-                        }
-                        root.saveValue("feeds", currentFeeds);
-
-                        nameField.text = "";
-                        urlField.text = "";
-                    }
+                    onClicked: root.commitFeedForm()
                 }
 
                 DankButton {
@@ -1081,6 +1192,152 @@ PluginSettings {
                         root.urlError = "";
                         nameField.text = "";
                         urlField.text = "";
+                    }
+                }
+            }
+        }
+    }
+
+    // ─── Feed Autodiscovery ───
+    // Finds a site's declared <link rel="alternate"> feed(s) the way a
+    // browser's own "subscribe" button would, so a user with only a site's
+    // homepage URL doesn't have to go hunting for the actual feed URL by
+    // hand. Discovering feeds does not add them -- "Add" below reuses
+    // commitFeedForm() (the exact same validate-and-save path the Add Feed
+    // button above uses), so a discovered URL gets the same URL validation
+    // and dedupe-on-edit behaviour as one typed in by hand.
+    StyledRect {
+        width: parent.width
+        height: discoveryColumn.implicitHeight + Theme.spacingL * 2
+        radius: Theme.cornerRadius
+        color: Theme.surfaceContainerHigh
+        visible: !currentBackend.capabilities.serverState
+
+        Column {
+            id: discoveryColumn
+            anchors.fill: parent
+            anchors.margins: Theme.spacingL
+            spacing: Theme.spacingM
+
+            StyledText {
+                text: "Find a Feed"
+                font.pixelSize: Theme.fontSizeMedium
+                font.weight: Font.Medium
+                color: Theme.surfaceText
+            }
+
+            StyledText {
+                width: parent.width
+                text: "Enter a site's homepage and this looks for the feed it declares, instead of you having to find the feed URL yourself."
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceVariantText
+                wrapMode: Text.WordWrap
+            }
+
+            Row {
+                width: parent.width
+                spacing: Theme.spacingM
+
+                DankTextField {
+                    id: discoverySiteField
+                    width: parent.width - findFeedButton.width - Theme.spacingM
+                    placeholderText: "e.g., https://example.com"
+                    onFocusStateChanged: hasFocus => {
+                        if (hasFocus) root.ensureItemVisible(discoverySiteField);
+                    }
+                }
+
+                DankButton {
+                    id: findFeedButton
+                    text: "Find Feed"
+                    iconName: "search"
+                    onClicked: {
+                        var validated = root.validateFeedUrl(discoverySiteField.text);
+                        if (!validated.ok) {
+                            if (typeof ToastService !== "undefined")
+                                ToastService.showError(validated.error);
+                            return;
+                        }
+                        root.discoverySearched = false;
+                        root.discoveredFeeds = [];
+                        var req = FeedParser.buildDiscoveryRequest(validated.url);
+                        // null Proc id -- see fetchMinifluxFeeds()'s comment
+                        // above for why a fixed id would be wrong here too.
+                        Proc.runCommand(null, req.argv,
+                            function(out, code) {
+                                root.discoveredFeeds = req.parse(out || "");
+                                root.discoverySearched = true;
+                            }, undefined, req.timeoutMs || 15000
+                        );
+                    }
+                }
+            }
+
+            // No results is stated plainly in-line, not a toast -- a failed
+            // discovery is an expected, common outcome (many sites declare no
+            // feed at all), not an error worth interrupting with a popup.
+            StyledText {
+                visible: root.discoverySearched && root.discoveredFeeds.length === 0
+                width: parent.width
+                text: "No feed found on that page."
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceVariantText
+                wrapMode: Text.WordWrap
+            }
+
+            Column {
+                width: parent.width
+                spacing: Theme.spacingXS
+                visible: root.discoveredFeeds.length > 0
+
+                Repeater {
+                    model: root.discoveredFeeds
+
+                    delegate: RowLayout {
+                        required property var modelData
+                        width: discoveryColumn.width
+                        spacing: Theme.spacingS
+
+                        DankIcon {
+                            name: "rss_feed"
+                            size: 14
+                            color: Theme.primary
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 1
+
+                            StyledText {
+                                text: modelData.title || modelData.url
+                                font.pixelSize: Theme.fontSizeSmall
+                                font.weight: Font.Medium
+                                color: Theme.surfaceText
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                            }
+
+                            StyledText {
+                                text: modelData.url
+                                font.pixelSize: Theme.fontSizeSmall - 2
+                                color: Theme.surfaceVariantText
+                                Layout.fillWidth: true
+                                elide: Text.ElideMiddle
+                            }
+                        }
+
+                        DankButton {
+                            text: "Add"
+                            iconName: "add"
+                            onClicked: {
+                                nameField.text = modelData.title || modelData.url;
+                                urlField.text = modelData.url;
+                                if (root.commitFeedForm()) {
+                                    if (typeof ToastService !== "undefined")
+                                        ToastService.showInfo("Added " + (modelData.title || modelData.url));
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1399,7 +1656,7 @@ PluginSettings {
             spacing: Theme.spacingM
 
             StyledText {
-                text: "Import from OPML"
+                text: "Import / Export OPML"
                 font.pixelSize: Theme.fontSizeMedium
                 font.weight: Font.Medium
                 color: Theme.surfaceText
@@ -1454,6 +1711,91 @@ PluginSettings {
                     opmlField.text = "";
                     if (typeof ToastService !== "undefined")
                         ToastService.showInfo("Imported " + added + " feed" + (added !== 1 ? "s" : "") + " (" + (imported.length - added) + " duplicates skipped)");
+                }
+            }
+
+            StyledRect {
+                width: parent.width
+                height: 1
+                color: Theme.outlineVariant
+            }
+
+            StyledText {
+                text: "Export Feeds to OPML"
+                font.pixelSize: Theme.fontSizeMedium
+                font.weight: Font.Medium
+                color: Theme.surfaceText
+            }
+
+            StyledText {
+                width: parent.width
+                // Written via a Quickshell FileView with atomicWrites, the
+                // SAME mechanism DankRssWidget.qml's notes export uses (see
+                // its "Notes export" section) -- no shell, no partial file
+                // ever visible, and no dependency on the notes-export folder
+                // being configured at all, since an OPML backup is a
+                // different (and independent) thing to want.
+                text: "Full path to write, including the filename (created or overwritten)."
+                font.pixelSize: Theme.fontSizeSmall - 2
+                color: Theme.surfaceVariantText
+                wrapMode: Text.WordWrap
+            }
+
+            DankTextField {
+                id: opmlExportPathField
+                width: parent.width
+                placeholderText: "/home/you/notes/feeds.opml"
+                text: root.loadValue("opmlExportPath", "")
+                onTextChanged: root.saveValue("opmlExportPath", text)
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus) root.ensureItemVisible(opmlExportPathField);
+                }
+            }
+
+            DankButton {
+                text: "Export OPML"
+                iconName: "upload"
+                onClicked: {
+                    var path = opmlExportPathField.text.trim();
+                    if (!path) {
+                        if (typeof ToastService !== "undefined")
+                            ToastService.showError("Enter a destination path first");
+                        return;
+                    }
+                    var xml = FeedParser.buildOpml(root.loadValue("feeds", []), { dateCreated: new Date().toUTCString() });
+                    var view = opmlExportFileViewComponent.createObject(root, { path: path });
+                    view.setText(xml);
+                }
+            }
+
+            // One-shot FileView per export click, created fresh and destroyed
+            // once it settles -- mirrors DankRssWidget.qml's per-write
+            // exportFileViewComponent exactly (and its comment on why: a
+            // shared FileView's path/text state races a second write started
+            // before the first one's load/save settles). blockWrites +
+            // atomicWrites match that same component too, so an interrupted
+            // export never leaves a half-written OPML file behind. preload is
+            // off since this is write-only.
+            Component {
+                id: opmlExportFileViewComponent
+
+                FileView {
+                    id: opmlExportFileViewInstance
+                    blockWrites: true
+                    atomicWrites: true
+                    preload: false
+
+                    onSaved: {
+                        if (typeof ToastService !== "undefined")
+                            ToastService.showInfo("Feeds exported to " + opmlExportFileViewInstance.path);
+                        opmlExportFileViewInstance.destroy();
+                    }
+
+                    onSaveFailed: error => {
+                        if (typeof ToastService !== "undefined")
+                            ToastService.showError("Export failed: could not write " + opmlExportFileViewInstance.path);
+                        opmlExportFileViewInstance.destroy();
+                    }
                 }
             }
         }
@@ -1932,6 +2274,49 @@ PluginSettings {
         }
     }
 
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+        visible: aiEnabledSetting.value
+
+        StyledText {
+            text: "Embedding Model"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        // A DIFFERENT model from "Model" above: that one answers chat
+        // completions (summaries/digests), this one answers /embeddings, and
+        // most chat models either don't serve that endpoint at all or serve
+        // it badly (see AiProvider.resolveEmbedModel's comment -- there is
+        // deliberately no fallback from one to the other). Only interest
+        // ranking below reads this; summaries and digests never touch it.
+        StyledText {
+            width: parent.width
+            text: "e.g., nomic-embed-text. Needed only if you turn on interest ranking below."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        DankTextField {
+            id: aiEmbedModelField
+            width: parent.width
+            // Seeded with the RESOLVED value (typed, else the preset's
+            // suggested default) -- same "resolve, don't store" reasoning as
+            // aiBaseUrlField above, via effectiveAiEmbedModel(). Never wired
+            // to aiPresetSetting.onValueChanged: that handler does not fire
+            // on a fresh install (see AiProvider.resolveBaseUrl's comment),
+            // so a value populated only there would silently stay empty.
+            placeholderText: "Set by the runtime preset above"
+            text: root.effectiveAiEmbedModel()
+            onTextChanged: root.saveValue("aiEmbedModel", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(aiEmbedModelField);
+            }
+        }
+    }
+
     Row {
         visible: aiEnabledSetting.value
         spacing: Theme.spacingM
@@ -1965,8 +2350,15 @@ PluginSettings {
                     function(out, code) {
                         var result = req.parse(out || "");
                         if (!result || !result.reachable) {
+                            // AiProvider now sends --fail-with-body, so a
+                            // 401/403 or a proxy's HTML error page comes back
+                            // as a populated result.error instead of an empty
+                            // .data array -- surface THAT instead of a blanket
+                            // "could not reach", which used to make a wrong
+                            // API key look identical to a dead host.
+                            var reason = (result && result.error) || ("could not reach " + root.effectiveAiBaseUrl());
                             if (typeof ToastService !== "undefined")
-                                ToastService.showError("Connection failed: could not reach " + root.effectiveAiBaseUrl());
+                                ToastService.showError("Connection failed: " + reason);
                             return;
                         }
                         if (!result.hasModel) {
@@ -1985,6 +2377,248 @@ PluginSettings {
                     }, undefined, req.timeoutMs
                 );
             }
+        }
+    }
+
+    // ─── Interest Ranking ───
+    // Off by default, deliberately: this is the riskiest feature in the
+    // project (see docs/plans/BACKLOG.md) -- it silently reorders the widget
+    // away from a plain, predictable reverse-chronological feed. The backlog
+    // asks for "a visible reason and an obvious way back" for exactly that
+    // reason; the description text below IS that way back -- read it before
+    // trimming it.
+
+    StyledRect {
+        width: parent.width
+        height: 1
+        color: Theme.outlineVariant
+    }
+
+    StyledText {
+        width: parent.width
+        text: "Interest Ranking"
+        font.pixelSize: Theme.fontSizeMedium
+        font.weight: Font.Medium
+        color: Theme.surfaceText
+    }
+
+    ToggleSetting {
+        id: rankingEnabledSetting
+        settingKey: "rankingEnabled"
+        label: "Rank by Interest"
+        description: "Reorders unread items by similarity to the articles you've starred, instead of showing them in plain reverse-chronological order. This needs starred articles to learn from (star a few things first) and an embedding model configured above -- with neither, ranking has nothing to work from and falls back to plain order. Off by default: turn it on to try it, and turn it back off any time to return to exactly the feed you had before."
+        defaultValue: false
+    }
+
+    SliderSetting {
+        visible: rankingEnabledSetting.value
+        settingKey: "rankingWeight"
+        label: "Ranking Weight"
+        description: "0 is exactly reverse-chronological (ranking has no effect at all); 100 is pure similarity to your starred articles, ignoring recency entirely. Start low and raise it only if the ordering feels right."
+        defaultValue: 50
+        minimum: 0
+        maximum: 100
+        unit: "%"
+    }
+
+    // ─── Colour Theme ───
+    // See Palette.js's header: the widget's owner has deuteranopia, and a
+    // matugen-generated theme has no reason to preserve contrast on the
+    // colours this widget uses to signal state (error/success). These
+    // presets fix that. Deliberately does NOT restyle anything else in this
+    // panel -- that is a separate, serialised pass (see the plan doc) and
+    // this file only owns the one setting plus its own preview swatches.
+
+    StyledRect {
+        width: parent.width
+        height: 1
+        color: Theme.outlineVariant
+    }
+
+    StyledText {
+        width: parent.width
+        text: "Colour Theme"
+        font.pixelSize: Theme.fontSizeMedium
+        font.weight: Font.Medium
+        color: Theme.surfaceText
+    }
+
+    SelectionSetting {
+        id: colourPresetSetting
+        settingKey: "colourPreset"
+        label: "Colour Theme"
+        description: "System follows your DMS theme as-is. The other three swap the widget's error/success/warning colours for a colour-vision-deficiency-safe palette (Okabe-Ito for deuteranopia/protanopia, Paul Tol's bright scheme for tritanopia) so those states stay distinguishable."
+        options: [
+            { label: "System", value: "system" },
+            { label: "Deuteranopia", value: "deuteranopia" },
+            { label: "Protanopia", value: "protanopia" },
+            { label: "Tritanopia", value: "tritanopia" }
+        ]
+        defaultValue: "system"
+    }
+
+    // Live preview: the three roles this feature actually exists to fix.
+    // Recomputed whenever the preset changes; resolvePalette is pure (no
+    // Theme access of its own), so themeBasePalette() supplies the "system"
+    // colours it's resolved against.
+    Row {
+        id: colourPreviewRow
+        width: parent.width
+        spacing: Theme.spacingL
+
+        property var previewPalette: Palette.resolvePalette(colourPresetSetting.value, root.themeBasePalette())
+
+        Repeater {
+            model: [
+                { role: "error", label: "Error" },
+                { role: "success", label: "Success" },
+                { role: "primary", label: "Primary" }
+            ]
+
+            delegate: Column {
+                required property var modelData
+                spacing: Theme.spacingXS
+
+                Rectangle {
+                    width: 48
+                    height: 24
+                    radius: Theme.cornerRadius
+                    color: colourPreviewRow.previewPalette[modelData.role]
+                }
+
+                StyledText {
+                    text: modelData.label
+                    font.pixelSize: Theme.fontSizeSmall - 2
+                    color: Theme.surfaceVariantText
+                }
+            }
+        }
+    }
+
+    // ─── Notification Rules ───
+    // Add/list/delete only -- a full rule builder is out of scope (see the
+    // design doc). Each rule is { query, sources }; sources stays [] here
+    // (meaning "all feeds") since a per-rule source picker is exactly the
+    // kind of scope this section is deliberately not taking on.
+
+    StyledRect {
+        width: parent.width
+        height: 1
+        color: Theme.outlineVariant
+    }
+
+    StyledText {
+        width: parent.width
+        text: "Notification Rules"
+        font.pixelSize: Theme.fontSizeMedium
+        font.weight: Font.Medium
+        color: Theme.surfaceText
+    }
+
+    StyledText {
+        width: parent.width
+        // The whole point of reusing the search syntax rather than inventing
+        // a separate rule language: whatever you already know from the
+        // widget's own search box works here unchanged.
+        text: "Get notified when an item matches a query, using the SAME search syntax as the widget's search box."
+        font.pixelSize: Theme.fontSizeSmall
+        color: Theme.surfaceVariantText
+        wrapMode: Text.WordWrap
+    }
+
+    Row {
+        width: parent.width
+        spacing: Theme.spacingM
+
+        DankTextField {
+            id: newRuleQueryField
+            width: parent.width - addRuleButton.width - Theme.spacingM
+            placeholderText: "e.g., kernel OR security"
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(newRuleQueryField);
+            }
+        }
+
+        DankButton {
+            id: addRuleButton
+            text: "Add Rule"
+            iconName: "add"
+            onClicked: {
+                var query = newRuleQueryField.text.trim();
+                if (!query) {
+                    if (typeof ToastService !== "undefined")
+                        ToastService.showError("Enter a query first");
+                    return;
+                }
+                var rules = root.loadValue("notificationRules", []);
+                rules = rules.concat([{ query: query, sources: [] }]);
+                root.saveValue("notificationRules", rules);
+                newRuleQueryField.text = "";
+            }
+        }
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+
+        Repeater {
+            model: root.loadValue("notificationRules", [])
+
+            delegate: RowLayout {
+                required property var modelData
+                required property int index
+                width: parent.width
+                spacing: Theme.spacingS
+
+                DankIcon {
+                    name: "notifications"
+                    size: 14
+                    color: Theme.primary
+                }
+
+                StyledText {
+                    Layout.fillWidth: true
+                    text: modelData.query || ""
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.surfaceText
+                    elide: Text.ElideRight
+                }
+
+                Rectangle {
+                    width: 28; height: 28; radius: 14
+                    color: deleteRuleArea.containsMouse ? Theme.error : "transparent"
+                    Accessible.role: Accessible.Button
+                    Accessible.name: "Delete notification rule " + (modelData.query || "")
+                    Accessible.onPressAction: deleteRuleArea.clicked(null)
+
+                    DankIcon {
+                        anchors.centerIn: parent
+                        name: "delete"
+                        size: 14
+                        color: deleteRuleArea.containsMouse ? Theme.onError : Theme.surfaceVariantText
+                    }
+
+                    MouseArea {
+                        id: deleteRuleArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            var rules = root.loadValue("notificationRules", []);
+                            rules = rules.filter(function(_, i) { return i !== index; });
+                            root.saveValue("notificationRules", rules);
+                        }
+                    }
+                }
+            }
+        }
+
+        StyledText {
+            text: "No notification rules yet"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+            visible: root.loadValue("notificationRules", []).length === 0
         }
     }
 }
