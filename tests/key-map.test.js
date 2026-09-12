@@ -573,3 +573,43 @@ describe("summarise (i)", () => {
         assert.equal(r.action, "summarise", "shift is simply ignored, not a second action");
     });
 });
+
+// ─── "d" opens the digest ───
+//
+// Cursor-independent, like "r": the digest is one call over the whole feed,
+// not a question about the row under the cursor, so it must work at rest.
+// That places it ABOVE the atRest gate, which is the only thing about it
+// worth pinning — get that wrong and the binding silently does nothing until
+// the user happens to have moved the cursor.
+
+describe("digest (d)", () => {
+    test("Key_D is exported with the Qt value for 'd'", () => {
+        assert.equal(KeyMap.Key_D, 0x44);
+    });
+
+    test("works with no cursor, unlike a row action", () => {
+        var r = resolveKey(evt(KeyMap.Key_D), baseState({ index: -1 }));
+        assert.equal(r.action, "digest");
+    });
+
+    test("works with a cursor too, and leaves it where it was", () => {
+        var r = resolveKey(evt(KeyMap.Key_D), baseState({ index: 3 }));
+        assert.equal(r.action, "digest");
+        assert.equal(r.index, 3);
+    });
+
+    test("a selection does not turn it into a bulk action", () => {
+        var r = resolveKey(evt(KeyMap.Key_D), baseState({ index: 2, hasSelection: true }));
+        assert.equal(r.action, "digest");
+    });
+
+    test("is swallowed by an active search", () => {
+        var r = resolveKey(evt(KeyMap.Key_D), baseState({ index: 2, searchActive: true }));
+        assert.notEqual(r.action, "digest");
+    });
+
+    test("still resolves on an empty list -- there is simply nothing to digest", () => {
+        var r = resolveKey(evt(KeyMap.Key_D), baseState({ index: -1, count: 0 }));
+        assert.equal(r.index, -1);
+    });
+});

@@ -16,6 +16,7 @@ import "KeyMap.js" as KeyMap
 import "ExportProvider.js" as ExportProvider
 import "HtmlExtract.js" as HtmlExtract
 import "AiProvider.js" as AiProvider
+import "Ranking.js" as Ranking
 
 DesktopPluginComponent {
     id: root
@@ -92,6 +93,31 @@ DesktopPluginComponent {
     // and conflating the two would either re-announce on every refresh or
     // silently swallow the first match.
     property var notifiedIds: []
+
+    // --- Interest ranking (stage 3d) ---
+    //
+    // Ships OFF, and stays off until it can actually work: it needs an
+    // embedding model configured AND enough starred articles to learn from.
+    // The backlog is explicit that a ranking which feels wrong is worse than
+    // no ranking, so every gate below fails closed and says why rather than
+    // quietly producing an arbitrary order.
+    property bool rankingEnabled: pluginData.rankingEnabled ?? false
+    property int rankingWeight: pluginData.rankingWeight ?? 50
+    property string aiEmbedModel: pluginData.aiEmbedModel ?? ""
+
+    // Vectors are held in memory and deliberately NOT persisted. A single
+    // embedding is a few hundred floats; a few hundred items of them is
+    // megabytes of JSON written into a state file shared with the rest of the
+    // shell, to save one batch request that takes about a second. Recomputing
+    // per session is the cheaper side of that trade by a wide margin.
+    property var vectorMap: ({})
+    property bool rankingBusy: false
+    // Why ranking is not currently applied, shown to the user rather than
+    // left as an unexplained ordering. Empty means it is working.
+    property string rankingReason: ""
+    property var rankedOrder: []
+
+    readonly property bool rankingConfigured: root.rankingEnabled && root.aiEnabled && root.aiProvider.canEmbed({ model: root.aiEmbedModel })
     property string attachmentDir: pluginData.attachmentDir ?? "attachments"
 
     // --- AI summaries (stage 3b) ---
@@ -115,7 +141,8 @@ DesktopPluginComponent {
     readonly property var aiProvider: AiProvider.createAiProvider({
         baseUrl: root.aiBaseUrl,
         model: root.aiModel,
-        apiKey: root.aiApiKey
+        apiKey: root.aiApiKey,
+        embedModel: root.aiEmbedModel
     })
 
     // The single gate on every summary affordance. "Enabled but unconfigured"
@@ -339,6 +366,11 @@ DesktopPluginComponent {
             rows.push({
                 keys: ["i"],
                 desc: "Summarise (opens the reader on the summary)"
+            });
+        if (root.aiReady)
+            rows.push({
+                keys: ["d"],
+                desc: "Digest of the last 24 hours"
             });
         rows.push({
             keys: ["Space"],
@@ -676,6 +708,188 @@ DesktopPluginComponent {
         root.summaryOrder = pruned.order;
         root.summaryMap = pruned.map;
         root.persistSummaries();
+    }
+
+    // One batch embedding call over whatever lacks a vector, then a profile
+    // from the starred items and a ranked order for everything else.
+    //
+    // Called on refresh completion and when the ranking settings change --
+    // never on scroll, never per item. One request for the whole set is the
+    // difference between a second of GPU and a minute of it.
+    function refreshRanking() {
+        if (!root.rankingConfigured) {
+            root.rankedOrder = [];
+            root.rankingReason = "";
+            return;
+        }
+        if (root.rankingBusy)
+            return;
+
+        var starred = [];
+        var i;
+        for (i = 0; i < root.allItems.length; i++) {
+            if (ReaderState.isBookmarked(root.bookmarkMap, root.allItems[i].id))
+                starred.push(root.allItems[i]);
+        }
+
+        if (starred.length < Ranking.MIN_STARRED_FOR_PROFILE) {
+            root.rankedOrder = [];
+            root.rankingReason = "Star at least " + Ranking.MIN_STARRED_FOR_PROFILE + " articles to teach it what you like (" + starred.length + " so far).";
+            return;
+        }
+
+        var needed = [];
+        var neededIds = [];
+        for (i = 0; i < root.allItems.length; i++) {
+            var it = root.allItems[i];
+            if (!it.id || root.vectorMap[it.id])
+                continue;
+            needed.push(root.aiProvider.prepareEmbedText(it));
+            neededIds.push(it.id);
+        }
+
+        if (needed.length === 0) {
+            root.applyRanking();
+            return;
+        }
+
+        var req = root.aiProvider.embedRequest(needed, { model: root.aiEmbedModel });
+        if (!req) {
+            root.rankingReason = "No embedding model configured.";
+            return;
+        }
+
+        root.rankingBusy = true;
+        root.runRequest(req, function (output, code) {
+            root.rankingBusy = false;
+
+            var parsed = (code === 0 || output) ? req.parse(output) : null;
+            if (!parsed || parsed.error || !parsed.vectors) {
+                root.rankedOrder = [];
+                root.rankingReason = (parsed && parsed.error) ? parsed.error : "Could not reach the embedding model.";
+                return;
+            }
+
+            // Index-matched to neededIds by position, which embedRequest's
+            // parse guarantees by reindexing on the API's own index field.
+            var next = {};
+            for (var k in root.vectorMap) {
+                if (Object.prototype.hasOwnProperty.call(root.vectorMap, k))
+                    next[k] = root.vectorMap[k];
+            }
+            for (var v = 0; v < parsed.vectors.length && v < neededIds.length; v++)
+                next[neededIds[v]] = parsed.vectors[v];
+            root.vectorMap = next;
+
+            root.applyRanking();
+        });
+    }
+
+    function applyRanking() {
+        var starredVectors = [];
+        var i;
+        for (i = 0; i < root.allItems.length; i++) {
+            var id = root.allItems[i].id;
+            if (id && root.vectorMap[id] && ReaderState.isBookmarked(root.bookmarkMap, id))
+                starredVectors.push(root.vectorMap[id]);
+        }
+
+        var built = Ranking.buildInterestProfile(starredVectors);
+        if (!built.profile) {
+            root.rankedOrder = [];
+            root.rankingReason = "Not enough starred articles with embeddings yet.";
+            return;
+        }
+
+        var ranked = Ranking.rankItems(root.allItems, root.vectorMap, built.profile);
+        // rankingWeight is a percentage in settings; the module takes 0..1.
+        // 0 is an exact reverse-chronological short-circuit in the module, so
+        // sliding all the way down really is "off", not "nearly off".
+        var blended = Ranking.blendWithRecency(ranked, { weight: root.rankingWeight / 100 });
+
+        var order = [];
+        for (i = 0; i < blended.length; i++)
+            order.push(blended[i].id);
+        root.rankedOrder = order;
+        root.rankingReason = "";
+        root.applyFilter();
+    }
+
+    // --- Digest (stage 3c) ---
+    //
+    // One call over the last 24 hours of titles and descriptions, rendered in
+    // the reading window. Cheaper per item than summarising each article, and
+    // the only AI feature here that is about the feed rather than one entry.
+    property int digestGeneration: 0
+    readonly property int digestWindowMs: 24 * 60 * 60 * 1000
+
+    function recentItemsForDigest() {
+        var cutoff = Date.now() - root.digestWindowMs;
+        var out = [];
+        for (var i = 0; i < root.allItems.length; i++) {
+            var it = root.allItems[i];
+            // timestamp 0 means the feed gave no usable date. Included rather
+            // than dropped: an undated item is far more likely to be a feed
+            // with sloppy dates than a genuinely ancient article, and
+            // silently omitting it from "the last 24 hours" is the kind of
+            // gap nobody notices until they miss something.
+            if (!it.timestamp || it.timestamp >= cutoff)
+                out.push(it);
+        }
+        return out;
+    }
+
+    function openDigest() {
+        if (!root.aiReady)
+            return;
+        readerWindow.openDigest(root.recentItemsForDigest().length);
+    }
+
+    function generateDigest() {
+        if (!root.aiReady)
+            return;
+
+        var items = root.recentItemsForDigest();
+        if (items.length === 0) {
+            readerWindow.digestLoading = false;
+            readerWindow.digestError = "Nothing published in the last 24 hours.";
+            return;
+        }
+
+        var req = root.aiProvider.digestRequest(items);
+        if (!req)
+            return;
+
+        readerWindow.digestError = "";
+        readerWindow.digestText = "";
+        readerWindow.digestLoading = true;
+        readerWindow.digestItemCount = items.length;
+
+        root.digestGeneration++;
+        var generation = root.digestGeneration;
+
+        root.runRequest(req, function (output, code) {
+            if (generation !== root.digestGeneration)
+                return;
+            readerWindow.digestLoading = false;
+
+            if (code !== null && code !== 0) {
+                var failure = output ? req.parse(output) : null;
+                readerWindow.digestError = code === 124 ? "The model timed out." : ((failure && failure.error) ? failure.error : "Could not reach the AI runtime.");
+                return;
+            }
+
+            var result = req.parse(output);
+            if (result.error) {
+                readerWindow.digestError = result.error;
+                return;
+            }
+            if (!result.text) {
+                readerWindow.digestError = "The model returned an empty digest.";
+                return;
+            }
+            readerWindow.digestText = result.text;
+        });
     }
 
     function persistSummaries() {
@@ -1035,6 +1249,9 @@ DesktopPluginComponent {
                 root.viewItem(viewRow.itemId, result.index);
                 break;
             }
+        case "digest":
+            root.openDigest();
+            break;
         case "summarise":
             {
                 var sumRow = feedModel.get(result.index);
@@ -1889,6 +2106,7 @@ DesktopPluginComponent {
 
         root.allItems = items;
         root.pruneSummaryCache(items);
+        root.refreshRanking();
         root.feedStatuses = ctx.statuses.slice();
         root.notifyForNewItems(items);
         root.applyFilter();
@@ -1978,6 +2196,27 @@ DesktopPluginComponent {
             bookmarkMap: root.bookmarkMap
         });
 
+        // Ranking reorders what the filter chose; it never changes WHAT is
+        // shown. Keeping the two separate matters: a ranking that also hid
+        // things would be impossible to tell apart from a broken filter, and
+        // the backlog's requirement is an obvious way back, which this gives
+        // for free -- switch ranking off and the same rows are simply in
+        // their old order. Items the ranking never scored keep their relative
+        // position at the end rather than disappearing.
+        if (root.rankingConfigured && root.rankedOrder.length > 0) {
+            var rank = {};
+            for (var r = 0; r < root.rankedOrder.length; r++)
+                rank[root.rankedOrder[r]] = r;
+            var unranked = root.rankedOrder.length;
+            visible = visible.slice().sort(function (a, b) {
+                var ra = (rank[a.id] === undefined) ? unranked : rank[a.id];
+                var rb = (rank[b.id] === undefined) ? unranked : rank[b.id];
+                if (ra !== rb)
+                    return ra - rb;
+                return (b.timestamp || 0) - (a.timestamp || 0);
+            });
+        }
+
         feedModel.clear();
         for (var i = 0; i < visible.length; i++) {
             var item = visible[i];
@@ -2038,6 +2277,7 @@ DesktopPluginComponent {
         onPrevRequested: root.readerAdvance(-1)
         summaryAvailable: root.aiReady
         onSummaryRequested: itemId => root.requestSummary(itemId)
+        onDigestRequested: root.generateDigest()
 
         // Closing this window cannot hand Wayland keyboard focus back to the
         // widget. forceActiveFocus() only sets Qt's own internal focus item,

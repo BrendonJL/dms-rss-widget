@@ -41,6 +41,11 @@ var Key_E = 0x45;
 // finger meaning two different things. "u" was the other free candidate; "i"
 // won on reach -- a middle-finger key rather than an index-finger stretch.
 var Key_I = 0x49;
+// "d" opens the digest: one summary of the last 24 hours across every feed.
+// Cursor-independent, like "r" -- it is a question about the whole list, not
+// about whichever row happens to be under the cursor, and it must work at
+// rest.
+var Key_D = 0x44;
 
 var Key_Space = 0x20;
 var Key_Slash = 0x2f;
@@ -165,6 +170,9 @@ function resolveKey(event, state) {
     if (key === Key_R)
         return act("refresh", index);
 
+    if (key === Key_D)
+        return act("digest", index);
+
     if (key === Key_A && shift)
         return act("markAllRead", index);
 
@@ -251,6 +259,7 @@ if (typeof module !== "undefined" && module.exports) {
         Key_S: Key_S,
         Key_E: Key_E,
         Key_I: Key_I,
+        Key_D: Key_D,
         Key_Space: Key_Space,
         Key_Slash: Key_Slash,
         Key_Question: Key_Question,

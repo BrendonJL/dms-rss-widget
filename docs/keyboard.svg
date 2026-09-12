@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 696" width="980" height="696" role="img" aria-label="Keyboard bindings for the Dank RSS Widget">
-  <rect x="0.5" y="0.5" width="979" height="695" rx="14" ry="14" fill="#1c2128" stroke="#30363d" stroke-width="1"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 738" width="980" height="738" role="img" aria-label="Keyboard bindings for the Dank RSS Widget">
+  <rect x="0.5" y="0.5" width="979" height="737" rx="14" ry="14" fill="#1c2128" stroke="#30363d" stroke-width="1"/>
   <text x="34" y="46" fill="#f0f6fc" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="19" font-weight="700">Dank RSS Widget &#183; keyboard</text>
   <text x="34" y="68" fill="#768390" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Click the widget once to give it focus. m, s and e act on the whole selection when one exists.</text>
   <g>
@@ -76,43 +76,47 @@
     <text x="600" y="266" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Mark all read / unread</text>
     <rect x="500" y="286" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
     <rect x="503" y="289" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
-    <text x="517" y="308" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">?</text>
-    <text x="600" y="308" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Toggle this cheatsheet in the widget</text>
-    <text x="500" y="348" fill="#6cb6ff" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="1.6">READING WINDOW  (v)</text>
-    <rect x="500" y="356" width="400" height="1" fill="#30363d"/>
-    <rect x="500" y="370" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
-    <rect x="503" y="373" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
-    <text x="517" y="392" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">j</text>
-    <rect x="542" y="370" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
-    <rect x="545" y="373" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
-    <text x="559" y="392" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">k</text>
-    <text x="600" y="392" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Scroll the article</text>
-    <rect x="500" y="412" width="52" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
-    <rect x="503" y="415" width="46" height="24" rx="4" ry="4" fill="#424a53"/>
-    <text x="526" y="434" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="600" text-anchor="middle">⇧J</text>
-    <rect x="560" y="412" width="52" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
-    <rect x="563" y="415" width="46" height="24" rx="4" ry="4" fill="#424a53"/>
-    <text x="586" y="434" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="600" text-anchor="middle">⇧K</text>
-    <text x="636" y="434" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Next / previous article</text>
-    <rect x="500" y="454" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
-    <rect x="503" y="457" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
-    <text x="517" y="476" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">o</text>
-    <text x="600" y="476" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Open in the browser</text>
+    <text x="517" y="308" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">d</text>
+    <text x="600" y="308" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Digest of the last 24 hours (needs AI)</text>
+    <rect x="500" y="328" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
+    <rect x="503" y="331" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
+    <text x="517" y="350" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">?</text>
+    <text x="600" y="350" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Toggle this cheatsheet in the widget</text>
+    <text x="500" y="390" fill="#6cb6ff" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="1.6">READING WINDOW  (v)</text>
+    <rect x="500" y="398" width="400" height="1" fill="#30363d"/>
+    <rect x="500" y="412" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
+    <rect x="503" y="415" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
+    <text x="517" y="434" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">j</text>
+    <rect x="542" y="412" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
+    <rect x="545" y="415" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
+    <text x="559" y="434" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">k</text>
+    <text x="600" y="434" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Scroll the article</text>
+    <rect x="500" y="454" width="52" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
+    <rect x="503" y="457" width="46" height="24" rx="4" ry="4" fill="#424a53"/>
+    <text x="526" y="476" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="600" text-anchor="middle">⇧J</text>
+    <rect x="560" y="454" width="52" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
+    <rect x="563" y="457" width="46" height="24" rx="4" ry="4" fill="#424a53"/>
+    <text x="586" y="476" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="600" text-anchor="middle">⇧K</text>
+    <text x="636" y="476" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Next / previous article</text>
     <rect x="500" y="496" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
     <rect x="503" y="499" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
-    <text x="517" y="518" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">e</text>
-    <text x="600" y="518" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Export to notes</text>
+    <text x="517" y="518" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">o</text>
+    <text x="600" y="518" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Open in the browser</text>
     <rect x="500" y="538" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
     <rect x="503" y="541" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
-    <text x="517" y="560" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">s</text>
-    <text x="600" y="560" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Toggle star</text>
+    <text x="517" y="560" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">e</text>
+    <text x="600" y="560" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Export to notes</text>
     <rect x="500" y="580" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
     <rect x="503" y="583" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
-    <text x="517" y="602" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">i</text>
-    <text x="600" y="602" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Summarise the article (needs AI set up)</text>
-    <rect x="500" y="622" width="46" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
-    <rect x="503" y="625" width="40" height="24" rx="4" ry="4" fill="#424a53"/>
-    <text x="523" y="644" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" text-anchor="middle">Esc</text>
-    <text x="600" y="644" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Close and return focus to the list</text>
+    <text x="517" y="602" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">s</text>
+    <text x="600" y="602" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Toggle star</text>
+    <rect x="500" y="622" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
+    <rect x="503" y="625" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
+    <text x="517" y="644" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">i</text>
+    <text x="600" y="644" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Summarise the article (needs AI set up)</text>
+    <rect x="500" y="664" width="46" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
+    <rect x="503" y="667" width="40" height="24" rx="4" ry="4" fill="#424a53"/>
+    <text x="523" y="686" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" text-anchor="middle">Esc</text>
+    <text x="600" y="686" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Close and return focus to the list</text>
   </g>
 </svg>

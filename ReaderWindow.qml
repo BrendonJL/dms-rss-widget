@@ -45,6 +45,12 @@ DankFloatingWindow {
     // summary* properties -- exactly the split already used for export and
     // starring. It deliberately holds no AiProvider reference of its own.
     signal summaryRequested(string itemId)
+    // Fired by the digest mode's refresh button. The widget owns
+    // AiProvider.digestRequest(), the 24-hour item window and whatever
+    // caching it wants around that -- this window only ever asks "make me
+    // one" and renders whatever lands on the digest* properties, the same
+    // split used for summaryRequested above.
+    signal digestRequested
 
     property string itemId: ""
     property string articleTitle: ""
@@ -93,6 +99,24 @@ DankFloatingWindow {
     // and on a laptop that only sometimes runs one it would fire constantly.
     property string summaryError: ""
 
+    // --- Digest mode (owned by the widget, displayed here) ---
+    //
+    // A digest is not about any one article -- it's one AI call over the
+    // last 24 hours of titles/descriptions, producing prose about what
+    // happened. That "not one article" is exactly why digestMode exists as
+    // its own flag rather than being inferred from itemId/link being empty:
+    // openArticle() already has legitimate reasons for those to be blank
+    // (e.g. no link in the feed), and this must not be confused with that.
+    property bool digestMode: false
+    property string digestText: ""
+    property bool digestLoading: false
+    // Shown on this window and nowhere else, same reasoning as summaryError:
+    // a failed digest call is not worth a toast.
+    property string digestError: ""
+    // The item count the digest was built from, for the header line that
+    // replaces source/date in this mode. 0 just means "not known yet".
+    property int digestItemCount: 0
+
     // Empty follows Theme.fontFamily -- this user's DMS font is a deliberate
     // choice, so the reader must default to it rather than to some other
     // "reading" font. A name that doesn't resolve just falls back to the
@@ -134,6 +158,13 @@ DankFloatingWindow {
 
         root.summaryOnly = summaryOnly === true;
 
+        // A digest cannot linger behind an article -- same reasoning as the
+        // summary fields being cleared just below.
+        root.digestMode = false;
+        root.digestText = "";
+        root.digestError = "";
+        root.digestLoading = false;
+
         root._article = article;
         root.itemId = article.id || "";
         root.articleTitle = article.title || "";
@@ -172,6 +203,40 @@ DankFloatingWindow {
         }
 
         root.loadFullText();
+    }
+
+    // Digest mode's entry point, parallel to openArticle() above. There is
+    // no article here, so everything article-shaped (itemId, link, source,
+    // the toolbar actions keyed off them) is cleared rather than left
+    // holding whatever the previous openArticle() call put there. The
+    // window does not generate the digest itself -- see the file header --
+    // it only asks via digestRequested() and displays whatever the widget
+    // sets on digestText/digestLoading/digestError afterwards.
+    function openDigest(itemCount) {
+        root.digestMode = true;
+        root.digestItemCount = itemCount || 0;
+        root.digestText = "";
+        root.digestError = "";
+        root.digestLoading = false;
+
+        root._article = null;
+        root.itemId = "";
+        root.link = "";
+        root.source = "";
+        root.timestamp = 0;
+        root.articleTitle = "Last 24 hours";
+        root.summaryOnly = false;
+        root.summaryText = "";
+        root.summaryError = "";
+        root.summaryLoading = false;
+        root.body = "";
+        root.loading = false;
+        root.usedFallback = false;
+        root.fallbackReason = "";
+
+        root.visible = true;
+        bodyFlickable.contentY = 0;
+        root.digestRequested();
     }
 
     // The fetch-and-extract half of openArticle(), split out so the "Load
@@ -264,7 +329,11 @@ DankFloatingWindow {
         return blocks;
     }
 
-    readonly property var _bodyBlocks: root._splitBlocks(root.body)
+    // The one rendering path for both markdown sources this window ever
+    // shows: an article's extracted/summary body, or a digest's prose.
+    // Deliberately a single switch here rather than two Repeaters -- see
+    // the digest mode comments above for why they must not drift apart.
+    readonly property var _bodyBlocks: root._splitBlocks(root.digestMode ? root.digestText : root.body)
 
     // Text.MarkdownText is still the right tool for INLINE formatting inside
     // a block -- bold, italic, links, inline code -- but its own per-level
@@ -371,41 +440,49 @@ DankFloatingWindow {
                 event.accepted = true;
                 break;
             case KeyMap.Key_J:
-                // Shift+J is "next article" -- j/k already mean move-by-one
-                // in the list, so the shifted form carries the same muscle
-                // memory over into the reader.
-                if (shift)
-                    root.nextRequested();
-                else
+                // Shift+J is "next article" -- meaningless in digest mode,
+                // since a digest isn't a position in the widget's list, so
+                // it's a no-op there rather than acting on a stale
+                // _article. Plain scrolling still works either way.
+                if (shift) {
+                    if (!root.digestMode)
+                        root.nextRequested();
+                } else
                     bodyFlickable.contentY = Math.min(bodyFlickable.contentY + root.scrollStep, Math.max(0, bodyFlickable.contentHeight - bodyFlickable.height));
                 event.accepted = true;
                 break;
             case KeyMap.Key_K:
-                if (shift)
-                    root.prevRequested();
-                else
+                if (shift) {
+                    if (!root.digestMode)
+                        root.prevRequested();
+                } else
                     bodyFlickable.contentY = Math.max(bodyFlickable.contentY - root.scrollStep, 0);
                 event.accepted = true;
                 break;
             case KeyMap.Key_O:
-                root._openExternal();
+                // No link in digest mode, so opening externally is a no-op
+                // rather than reaching for root.link left over from
+                // whatever article was open before.
+                if (!root.digestMode)
+                    root._openExternal();
                 event.accepted = true;
                 break;
             case KeyMap.Key_E:
-                if (root._article)
+                if (!root.digestMode && root._article)
                     root.exportRequested(root._article);
                 event.accepted = true;
                 break;
             case KeyMap.Key_S:
-                if (root.itemId)
+                if (!root.digestMode && root.itemId)
                     root.starRequested(root.itemId);
                 event.accepted = true;
                 break;
             case KeyMap.Key_I:
                 // Accepted only when the affordance exists, so "i" stays an
                 // ordinary unhandled key on an unconfigured widget rather
-                // than silently swallowing the keystroke.
-                if (root.summaryAvailable && root.itemId && !root.summaryLoading) {
+                // than silently swallowing the keystroke. Digests are
+                // already a summary of sorts, so "i" has nothing to do here.
+                if (!root.digestMode && root.summaryAvailable && root.itemId && !root.summaryLoading) {
                     root.summaryRequested(root.itemId);
                     event.accepted = true;
                 }
@@ -438,7 +515,7 @@ DankFloatingWindow {
 
                 StyledText {
                     text: root.source || ""
-                    visible: text !== ""
+                    visible: !root.digestMode && text !== ""
                     font.pixelSize: Theme.fontSizeSmall
                     font.weight: Font.Medium
                     color: Theme.primary
@@ -446,31 +523,44 @@ DankFloatingWindow {
 
                 StyledText {
                     text: "·"
-                    visible: root.source !== "" && root.timestamp > 0
+                    visible: !root.digestMode && root.source !== "" && root.timestamp > 0
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
                 }
 
                 StyledText {
                     text: root.timestamp > 0 ? Qt.formatDateTime(new Date(root.timestamp), "MMMM d, yyyy") : ""
-                    visible: text !== ""
+                    visible: !root.digestMode && text !== ""
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
                 }
 
                 StyledText {
                     text: "·"
-                    visible: root.positionCount > 0 && (root.source !== "" || root.timestamp > 0)
+                    visible: !root.digestMode && root.positionCount > 0 && (root.source !== "" || root.timestamp > 0)
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
                 }
 
                 // Where the open article sits in the widget's current list,
                 // plus the keys that move through it without closing this
-                // window -- see nextRequested/prevRequested above.
+                // window -- see nextRequested/prevRequested above. A digest
+                // isn't a position in that list, so the indicator (and the
+                // navigation it advertises) is hidden rather than shown
+                // against a stale index.
                 StyledText {
                     text: (root.positionIndex + 1) + " of " + root.positionCount + "  ·  shift+j / shift+k to navigate"
-                    visible: root.positionCount > 0
+                    visible: !root.digestMode && root.positionCount > 0
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.surfaceVariantText
+                }
+
+                // Digest mode's stand-in for the source/date/position line
+                // above -- all of which are article concepts that don't
+                // apply here.
+                StyledText {
+                    text: root.digestItemCount > 0 ? (root.digestItemCount + (root.digestItemCount === 1 ? " item" : " items") + " · last 24 hours") : "Last 24 hours"
+                    visible: root.digestMode
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
                 }
@@ -481,7 +571,9 @@ DankFloatingWindow {
 
                 DankActionButton {
                     activeFocusOnTab: false
-                    visible: root.summaryAvailable
+                    // A digest doesn't have an id to summarise -- it already
+                    // is one.
+                    visible: root.summaryAvailable && !root.digestMode
                     enabled: !root.summaryLoading && root.itemId !== ""
                     iconName: root.summaryLoading ? "hourglass_top" : "auto_awesome"
                     iconSize: Theme.iconSize - 4
@@ -493,6 +585,19 @@ DankFloatingWindow {
                     Accessible.role: Accessible.Button
                     Accessible.name: root.summaryLoading ? "Summarising article" : "Summarise article"
                     Accessible.onPressAction: root.summaryRequested(root.itemId)
+                }
+
+                DankActionButton {
+                    activeFocusOnTab: false
+                    visible: root.digestMode
+                    enabled: !root.digestLoading
+                    iconName: root.digestLoading ? "hourglass_top" : "refresh"
+                    iconSize: Theme.iconSize - 4
+                    iconColor: root.digestLoading ? Theme.surfaceVariantText : Theme.surfaceText
+                    onClicked: root.digestRequested()
+                    Accessible.role: Accessible.Button
+                    Accessible.name: root.digestLoading ? "Generating digest" : "Regenerate digest"
+                    Accessible.onPressAction: root.digestRequested()
                 }
 
                 DankActionButton {
@@ -552,7 +657,7 @@ DankFloatingWindow {
                 spacing: Theme.fontSizeLarge
 
                 StyledText {
-                    visible: root.loading
+                    visible: !root.digestMode && root.loading
                     text: "Loading full article…"
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
@@ -561,12 +666,71 @@ DankFloatingWindow {
                 // Quiet, not a toast: extraction fell back to the feed
                 // summary, or there was nothing to fetch at all.
                 StyledText {
-                    visible: !root.loading && root.usedFallback
+                    visible: !root.digestMode && !root.loading && root.usedFallback
                     text: "Showing the feed summary (" + root.fallbackReason + ")"
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
+                }
+
+                // Digest mode's loading/error/empty states, in the same
+                // quiet-notice idiom as the summary panel below (and the
+                // usedFallback notice above) -- no toasts, because a failed
+                // AI call is not worth interrupting anyone for, and this
+                // window is where it's shown and nowhere else. Hidden once
+                // digestText has content: from then on the digest reads
+                // through the ordinary body blocks below, same as an
+                // article.
+                Rectangle {
+                    Layout.fillWidth: true
+                    visible: root.digestMode && (root.digestLoading || root.digestError !== "" || root.digestText === "")
+                    implicitHeight: digestStatusColumn.implicitHeight + Theme.spacingM * 2
+                    radius: Theme.cornerRadius
+                    color: Theme.withAlpha(Theme.surfaceContainerHigh, 0.6)
+
+                    ColumnLayout {
+                        id: digestStatusColumn
+                        x: Theme.spacingM
+                        y: Theme.spacingM
+                        width: parent.width - Theme.spacingM * 2
+                        spacing: Theme.spacingXS
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingXS
+
+                            DankIcon {
+                                name: root.digestError !== "" ? "error" : "auto_awesome"
+                                size: 14
+                                color: root.digestError !== "" ? Theme.error : Theme.surfaceVariantText
+                            }
+
+                            StyledText {
+                                Layout.fillWidth: true
+                                text: {
+                                    if (root.digestError !== "")
+                                        return "Digest failed";
+                                    if (root.digestLoading)
+                                        return "Generating digest…";
+                                    return "No digest yet";
+                                }
+                                font.pixelSize: Theme.fontSizeSmall
+                                font.weight: Font.Medium
+                                color: Theme.surfaceVariantText
+                            }
+                        }
+
+                        StyledText {
+                            Layout.fillWidth: true
+                            visible: root.digestError !== ""
+                            text: root.digestError
+                            font.pixelSize: root.bodyFontSize - 2
+                            font.family: root.effectiveFontFamily
+                            color: Theme.error
+                            wrapMode: Text.WordWrap
+                        }
+                    }
                 }
 
                 // The summary sits above the article, not below it: its
@@ -576,7 +740,7 @@ DankFloatingWindow {
                 // page rather than a floating panel.
                 Rectangle {
                     Layout.fillWidth: true
-                    visible: root.summaryLoading || root.summaryText !== "" || root.summaryError !== ""
+                    visible: !root.digestMode && (root.summaryLoading || root.summaryText !== "" || root.summaryError !== "")
                     implicitHeight: summaryColumn.implicitHeight + Theme.spacingM * 2
                     radius: Theme.cornerRadius
                     color: Theme.withAlpha(Theme.surfaceContainerHigh, 0.6)
@@ -631,7 +795,7 @@ DankFloatingWindow {
                 // not necessarily learned the reader's keys yet.
                 Item {
                     Layout.fillWidth: true
-                    visible: root.summaryOnly && root.link !== ""
+                    visible: !root.digestMode && root.summaryOnly && root.link !== ""
                     implicitHeight: loadFullButton.implicitHeight + Theme.spacingM
 
                     DankButton {
