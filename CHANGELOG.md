@@ -7,6 +7,68 @@ version in the manifest has a matching `### <version>` heading in this file.
 
 Work on `develop` since 2.4.0.
 
+**New: per-article AI summaries**, off by default. A settings section
+(`aiEnabled`, a preset picker for ollama/vLLM/llama.cpp/LM Studio/Custom, plus
+model and API key fields) and a "Test Connection" button that tells apart an
+unreachable runtime, a reachable one missing the configured model (and lists
+up to five it does have), and success. A toolbar button in the reader, or `i` from
+either the list or the reader, requests a summary on demand — never on render, never on
+scroll, never prefetched, because a two-sentence summary of a ~120-word
+article measured ~4.8s on this machine, and a widget that quietly runs a
+five-second GPU job because it scrolled past an article would be a bad
+neighbour on a laptop. Summaries are cached by item id and survive restarts,
+since an article's summary doesn't go stale; a generation counter, separate
+from the one that guards feed fetches, discards a result that arrives after
+the user has moved to a different article rather than rendering it against
+the wrong one. With the feature off, or nothing configured, the widget is
+completely silent: no affordance, no probe, no error row, no toast.
+
+One thing shipped differently than designed: the feature toggle was meant to
+be per-instance, so a small ticker widget could stay dumb while a larger one
+summarises. It shipped global instead, because every setting in this plugin
+is keyed by plugin id, not by instance, and adding the DMS plugin-variant
+system for one boolean was disproportionate. Recorded as a known deviation in
+the design doc rather than fixed quietly. The connection settings (base URL,
+model, key) are global as designed — nobody wants to retype an endpoint into
+three instances of the same widget.
+
+The base URL is **resolved**, not stored: what you typed wins, otherwise the
+chosen preset supplies one. That is deliberate rather than incidental. The
+first cut filled the field from the preset dropdown's change handler, which on
+a fresh install never fires — the dropdown loads its default, which equals the
+default it already holds, so no change is emitted and nothing is written. The
+field then showed a placeholder that looks exactly like a value, so the form
+appeared complete while "Test Connection" correctly reported an empty base
+URL. A default has to be resolvable without an event having fired.
+`AiProvider.resolveBaseUrl` is that resolution, shared by the settings panel
+and the widget so the two cannot disagree, and pinned by tests.
+
+`i` means the same thing wherever you press it: summarise the article in
+front of you. In the reader that is the open article. In the list it opens the
+reader on the cursor row showing **only** the summary, with no fetch of the
+article's own page — the point of that mode is deciding whether the article is
+worth opening at all, and fetching it anyway would defeat the reason for the
+mode. A "Load full article" button is there if the summary earns it, and runs
+the same fetch-and-extract path `v` does rather than a second copy of it.
+
+Summarising from the list deliberately does **not** mark the item read. Reading
+a summary is not reading the article, and an item you skimmed and passed over
+must still be there next time you filter to unread — otherwise the feature
+quietly empties your unread list on your behalf. The cursor still moves, since
+you did look at that row.
+
+It is a row action, never a selection action, even though `m`/`s`/`e` all act
+on the whole selection when one exists. Summarising a forty-item selection
+from one keystroke would be forty GPU jobs, which is the single thing every
+other decision here is shaped to avoid.
+
+`i` rather than the mnemonic `s`: `s` already toggles a star everywhere else,
+and one finger meaning two different things depending on which window has
+focus is worse than a binding with no mnemonic. It is reader-only and
+deliberately not routed through `resolveKey`, so `i` stays unbound in the
+list; `tests/key-map.test.js` pins that, because the day `i` also means
+something in the list is the day the reader's binding becomes ambiguous.
+
 **New: notes export.** Select articles (or just put the cursor on one) and
 press `e`, or use the Export button in the selection bar. Notes are markdown
 files written to a folder you choose, with YAML frontmatter, the article text

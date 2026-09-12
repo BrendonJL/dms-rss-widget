@@ -18,6 +18,11 @@ the best place to start.
 
 ## Shipped on `develop`, awaiting release
 
+- **Phase 3b** — per-article summaries, wired to the UI: settings section,
+  Test Connection, cached and generation-guarded on-demand summaries in the
+  reader. One deviation from the design — the feature toggle shipped global
+  rather than per-instance; see `docs/plans/2026-09-10-phase3b-summaries-
+  design.md`.
 - **Phase 4b** — notes export wired into the widget: the `e` binding, the
   selection-bar action, and the Notes Export settings section.
 - **Phase 4c** — `HtmlExtract.js`, local full-text extraction, measured against
@@ -34,7 +39,6 @@ the best place to start.
 
 | Phase | Work | Depends on | Notes |
 |---|---|---|---|
-| 3b | Per-article summaries, on demand | 3a | The bounded summary cache in `ReaderState.js` is built; the UI is not |
 | 3c | Digest — one summary across the unread set | 3b | Design only |
 | 3d | Interest ranking | 3b | Design only |
 | 6 | Independent smaller items, below | — | |

@@ -10,6 +10,7 @@ import "ReaderState.js" as ReaderState
 import "Backends.js" as Backends
 import "GoogleReader.js" as GoogleReader
 import "ExportProvider.js" as ExportProvider
+import "AiProvider.js" as AiProvider
 
 PluginSettings {
     id: root
@@ -132,6 +133,14 @@ PluginSettings {
             console.warn("DankRssWidget settings: could not read feed status", e);
             feedStatuses = [];
         }
+    }
+
+    // The base URL actually in force: what was typed, else whatever the
+    // chosen preset supplies. Resolved rather than stored, so a fresh install
+    // that has never touched the dropdown still has a working endpoint --
+    // see AiProvider.resolveBaseUrl for the bug that made this necessary.
+    function effectiveAiBaseUrl() {
+        return AiProvider.resolveBaseUrl(root.loadValue("aiPreset", "ollama"), root.loadValue("aiBaseUrl", ""));
     }
 
     function statusForUrl(url) {
@@ -1194,6 +1203,13 @@ PluginSettings {
                         }
 
                         DankToggle {
+                            // State belongs in Accessible.checked, not folded
+                            // into the name -- a screen reader announces
+                            // checked state itself, so putting it in the name
+                            // too reads it out twice.
+                            Accessible.role: Accessible.CheckBox
+                            Accessible.name: "Enable " + (modelData.name || "feed") + " feed"
+                            Accessible.checked: modelData.enabled !== false
                             checked: modelData.enabled !== false
                             onToggled: isChecked => {
                                 var currentFeeds = root.loadValue("feeds", []);
@@ -1208,6 +1224,9 @@ PluginSettings {
                             id: moveUpButton
                             width: 32; height: 32; radius: 16
                             enabled: index > 0
+                            Accessible.role: Accessible.Button
+                            Accessible.name: "Move " + (modelData.name || "feed") + " up"
+                            Accessible.onPressAction: moveUpArea.clicked(null)
                             opacity: enabled ? 1.0 : 0.35
                             color: enabled && moveUpArea.containsMouse ? Theme.primary : "transparent"
 
@@ -1243,6 +1262,9 @@ PluginSettings {
                             id: moveDownButton
                             width: 32; height: 32; radius: 16
                             enabled: index < feedsListView.count - 1
+                            Accessible.role: Accessible.Button
+                            Accessible.name: "Move " + (modelData.name || "feed") + " down"
+                            Accessible.onPressAction: moveDownArea.clicked(null)
                             opacity: enabled ? 1.0 : 0.35
                             color: enabled && moveDownArea.containsMouse ? Theme.primary : "transparent"
 
@@ -1277,6 +1299,9 @@ PluginSettings {
                         Rectangle {
                             width: 32; height: 32; radius: 16
                             color: editArea.containsMouse ? Theme.primary : "transparent"
+                            Accessible.role: Accessible.Button
+                            Accessible.name: "Edit " + (modelData.name || "feed")
+                            Accessible.onPressAction: editArea.clicked(null)
 
                             DankIcon {
                                 anchors.centerIn: parent
@@ -1304,6 +1329,9 @@ PluginSettings {
                         Rectangle {
                             width: 32; height: 32; radius: 16
                             color: deleteArea.containsMouse ? Theme.error : "transparent"
+                            Accessible.role: Accessible.Button
+                            Accessible.name: "Delete " + (modelData.name || "feed")
+                            Accessible.onPressAction: deleteArea.clicked(null)
 
                             DankIcon {
                                 anchors.centerIn: parent
@@ -1750,6 +1778,212 @@ PluginSettings {
             onTextChanged: root.saveValue("readerFontFamily", text)
             onFocusStateChanged: hasFocus => {
                 if (hasFocus) root.ensureItemVisible(readerFontFamilyField);
+            }
+        }
+    }
+
+    // ─── AI Summaries ───
+    // The design doc wanted this toggle per-instance, but this plugin has
+    // never adopted the DMS plugin-variant system -- every setting here goes
+    // through root.loadValue/saveValue, which is savePluginData underneath
+    // and keyed on pluginId only (see the Notes Export comment above). So
+    // "AI Summaries" is a single global on/off for now, the same as every
+    // other setting in this file, not a per-widget-instance choice.
+
+    StyledRect {
+        width: parent.width
+        height: 1
+        color: Theme.outlineVariant
+    }
+
+    StyledText {
+        width: parent.width
+        text: "AI Summaries"
+        font.pixelSize: Theme.fontSizeMedium
+        font.weight: Font.Medium
+        color: Theme.surfaceText
+    }
+
+    ToggleSetting {
+        id: aiEnabledSetting
+        settingKey: "aiEnabled"
+        label: "AI Summaries"
+        description: "Summarise articles on demand using a local OpenAI-compatible runtime (Ollama, vLLM, llama.cpp, LM Studio, ...). Nothing is sent anywhere until you ask for a summary -- this never runs automatically in the background."
+        defaultValue: false
+    }
+
+    SelectionSetting {
+        id: aiPresetSetting
+        visible: aiEnabledSetting.value
+        settingKey: "aiPreset"
+        label: "Runtime"
+        description: "Picking a preset fills the Base URL below. Choose Custom to point at any other OpenAI-compatible endpoint."
+        options: [
+            { label: AiProvider.PRESETS.ollama.label, value: "ollama" },
+            { label: AiProvider.PRESETS.vllm.label, value: "vllm" },
+            { label: AiProvider.PRESETS.llamacpp.label, value: "llamacpp" },
+            { label: AiProvider.PRESETS.lmstudio.label, value: "lmstudio" },
+            { label: AiProvider.PRESETS.custom.label, value: "custom" }
+        ]
+        defaultValue: "ollama"
+        // Fills the Base URL field from the chosen preset -- this is the ONE
+        // place that happens, mirroring the Notes Export preset dropdown
+        // above. "custom" deliberately does nothing here so a URL the user
+        // typed while Custom is selected is never clobbered by this handler
+        // re-firing (e.g. on page reload, when this binding runs once with
+        // the loaded value).
+        onValueChanged: {
+            if (aiPresetSetting.value === "custom")
+                return;
+            var preset = AiProvider.PRESETS[aiPresetSetting.value];
+            if (preset)
+                aiBaseUrlField.text = preset.baseUrl;
+        }
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+        visible: aiEnabledSetting.value
+
+        StyledText {
+            text: "Base URL"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        DankTextField {
+            id: aiBaseUrlField
+            width: parent.width
+            // Seeded with the RESOLVED url, not a placeholder that merely
+            // looks like one. A greyed-out placeholder is indistinguishable
+            // from a real value at a glance, which is precisely how the
+            // original bug hid: the form looked complete and was not.
+            placeholderText: "Set by the runtime preset above"
+            text: root.effectiveAiBaseUrl()
+            onTextChanged: root.saveValue("aiBaseUrl", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(aiBaseUrlField);
+            }
+        }
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+        visible: aiEnabledSetting.value
+
+        StyledText {
+            text: "Model"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "Prefer an instruct-tagged model over a -base one -- base models are not tuned to follow the summarise/digest instructions. If summaries feel slow, try a non-reasoning model; a reasoning model spends extra tokens thinking before it answers."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        DankTextField {
+            id: aiModelField
+            width: parent.width
+            placeholderText: "e.g., qwen3:8b"
+            text: root.loadValue("aiModel", "")
+            onTextChanged: root.saveValue("aiModel", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(aiModelField);
+            }
+        }
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+        visible: aiEnabledSetting.value
+
+        StyledText {
+            text: "API Key"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "Most local runtimes need none -- leave this empty unless yours requires one."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        // Never logged and never appears in a toast, matching the Miniflux
+        // token and Google Reader password fields above.
+        DankTextField {
+            id: aiApiKeyField
+            width: parent.width
+            placeholderText: "Optional"
+            text: root.loadValue("aiApiKey", "")
+            onTextChanged: root.saveValue("aiApiKey", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(aiApiKeyField);
+            }
+        }
+    }
+
+    Row {
+        visible: aiEnabledSetting.value
+        spacing: Theme.spacingM
+
+        DankButton {
+            text: "Test Connection"
+            iconName: "wifi_tethering"
+            onClicked: {
+                var provider = AiProvider.createAiProvider({
+                    baseUrl: root.effectiveAiBaseUrl(),
+                    model: root.loadValue("aiModel", ""),
+                    apiKey: root.loadValue("aiApiKey", "")
+                });
+                if (!provider.isConfigured()) {
+                    if (typeof ToastService !== "undefined")
+                        ToastService.showError("Enter a Model first (and a Base URL, if the runtime is Custom)");
+                    return;
+                }
+                var req = provider.probeRequest();
+                // req is only null when unconfigured, which isConfigured()
+                // above already ruled out -- but AiProvider does no I/O of
+                // its own, so nothing stops this from calling Proc directly.
+                if (!req)
+                    return;
+                // Proc id is null, not a fixed string -- see
+                // fetchMinifluxFeeds()'s comment above and the matching
+                // reasoning at DankRssWidget.qml's Proc.runCommand calls: a
+                // fixed id would clobber this callback if the button is
+                // pressed again before the probe returns.
+                Proc.runCommand(null, req.argv,
+                    function(out, code) {
+                        var result = req.parse(out || "");
+                        if (!result || !result.reachable) {
+                            if (typeof ToastService !== "undefined")
+                                ToastService.showError("Connection failed: could not reach " + root.effectiveAiBaseUrl());
+                            return;
+                        }
+                        if (!result.hasModel) {
+                            // Capped: ollama installations routinely hold
+                            // dozens of models, and the point of this toast
+                            // is "your model name is wrong, here is the
+                            // shape of what is there", not a full inventory.
+                            var all = result.models || [];
+                            var available = all.length === 0 ? "none" : (all.slice(0, 5).join(", ") + (all.length > 5 ? " (+" + (all.length - 5) + " more)" : ""));
+                            if (typeof ToastService !== "undefined")
+                                ToastService.showWarning("Reachable, but model \"" + root.loadValue("aiModel", "") + "\" was not found. Available: " + available);
+                            return;
+                        }
+                        if (typeof ToastService !== "undefined")
+                            ToastService.showInfo("AI runtime connection successful!");
+                    }, undefined, req.timeoutMs
+                );
             }
         }
     }

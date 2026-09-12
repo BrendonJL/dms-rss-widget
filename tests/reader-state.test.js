@@ -797,3 +797,82 @@ describe("reconcileServerStatus", () => {
         assert.deepStrictEqual(result.bookmarkOrder, ["m:1"]);
     });
 });
+
+// ─── Summary cache: the persisted-state rebuild path ───
+//
+// DankRssWidget.loadReaderState() does not trust a persisted {order, map}
+// wholesale -- a state file written by an older build (or hand-edited) can
+// carry an order longer than the current cap, ids with no matching entry, or
+// non-string junk. It replays the order through addSummary() instead, walking
+// it BACKWARDS so that prepend-semantics reproduce the original order. These
+// tests pin that round-trip, because getting the direction wrong silently
+// reverses everyone's cache on the next restart rather than failing loudly.
+
+describe("summary cache rebuild from persisted state", () => {
+    function rebuild(persisted, cap) {
+        var out = { order: [], map: {} };
+        for (var i = persisted.order.length - 1; i >= 0; i--) {
+            var id = persisted.order[i];
+            if (typeof id === "string" && typeof persisted.map[id] === "string")
+                out = R.addSummary(out.order, out.map, id, persisted.map[id], cap);
+        }
+        return out;
+    }
+
+    test("a clean round-trip preserves order and text exactly", () => {
+        var built = { order: [], map: {} };
+        built = R.addSummary(built.order, built.map, "a", "text a");
+        built = R.addSummary(built.order, built.map, "b", "text b");
+        built = R.addSummary(built.order, built.map, "c", "text c");
+
+        var back = rebuild({ order: built.order, map: built.map });
+
+        assert.deepEqual(back.order, built.order);
+        assert.deepEqual(back.map, built.map);
+        assert.equal(R.getSummary(back.map, "c"), "text c");
+    });
+
+    test("newest-first order survives the rebuild rather than reversing", () => {
+        var built = { order: [], map: {} };
+        built = R.addSummary(built.order, built.map, "old", "o");
+        built = R.addSummary(built.order, built.map, "new", "n");
+        assert.equal(built.order[0], "new");
+
+        var back = rebuild({ order: built.order, map: built.map });
+        assert.equal(back.order[0], "new", "newest must still be first after a restart");
+    });
+
+    test("entries with no matching map text are dropped, not rebuilt as undefined", () => {
+        var back = rebuild({ order: ["a", "ghost", "b"], map: { a: "text a", b: "text b" } });
+        assert.deepEqual(back.order, ["a", "b"]);
+        assert.equal(R.getSummary(back.map, "ghost"), null);
+    });
+
+    test("non-string ids in a corrupted order are skipped", () => {
+        var back = rebuild({ order: ["a", null, 7, { id: "x" }, "b"], map: { a: "text a", b: "text b" } });
+        assert.deepEqual(back.order, ["a", "b"]);
+    });
+
+    test("an over-long persisted order is re-bounded to the current cap", () => {
+        var order = [];
+        var map = {};
+        for (var i = 0; i < 150; i++) {
+            order.push("id" + i);
+            map["id" + i] = "summary " + i;
+        }
+
+        var back = rebuild({ order: order, map: map }, 100);
+
+        assert.equal(back.order.length, 100);
+        // Replayed backwards, so the head of the persisted order is inserted
+        // last and must survive; the tail is what falls off the cap.
+        assert.equal(R.getSummary(back.map, "id0"), "summary 0");
+        assert.equal(R.getSummary(back.map, "id149"), null);
+    });
+
+    test("an empty persisted cache rebuilds to an empty cache, not a throw", () => {
+        var back = rebuild({ order: [], map: {} });
+        assert.deepEqual(back.order, []);
+        assert.deepEqual(back.map, {});
+    });
+});

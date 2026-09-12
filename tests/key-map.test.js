@@ -519,3 +519,57 @@ describe("robustness", () => {
         assert.equal(r.index, -1);
     });
 });
+
+// ─── "i" summarises the cursor row ───
+//
+// "i" was originally reader-only and this suite asserted it did nothing in
+// the list. That changed deliberately: "i" now opens the reader on the cursor
+// row showing only the summary. What has NOT changed is that it is a row
+// action, never a selection action -- summarising a forty-item selection from
+// one keystroke would be forty GPU jobs, which is the single thing this
+// feature is shaped to avoid. These tests pin that distinction.
+
+describe("summarise (i)", () => {
+    test("Key_I is exported with the Qt value for 'i'", () => {
+        assert.equal(KeyMap.Key_I, 0x49);
+    });
+
+    test("summarises the row under the cursor", () => {
+        var r = resolveKey(evt(KeyMap.Key_I), baseState({ index: 2 }));
+        assert.equal(r.action, "summarise");
+        assert.equal(r.index, 2);
+    });
+
+    test("does nothing with no cursor, like every other row action", () => {
+        var r = resolveKey(evt(KeyMap.Key_I), baseState({ index: -1 }));
+        assert.equal(r.action, null);
+        assert.equal(r.index, -1);
+    });
+
+    test("acts on the CURSOR ROW even during a selection, never the selection", () => {
+        var r = resolveKey(evt(KeyMap.Key_I), baseState({ index: 2, hasSelection: true }));
+        assert.equal(r.action, "summarise", "must not become a bulk action");
+        assert.equal(r.index, 2);
+    });
+
+    test("unlike m/s/e, a selection does not let it bypass the no-cursor gate", () => {
+        var r = resolveKey(evt(KeyMap.Key_I), baseState({ index: -1, hasSelection: true }));
+        assert.equal(r.action, null);
+    });
+
+    test("is swallowed by an active search, like any other printable key", () => {
+        var r = resolveKey(evt(KeyMap.Key_I), baseState({ index: 2, searchActive: true }));
+        assert.notEqual(r.action, "summarise");
+    });
+
+    test("does nothing on an empty list", () => {
+        var r = resolveKey(evt(KeyMap.Key_I), baseState({ index: -1, count: 0 }));
+        assert.equal(r.action, null);
+        assert.equal(r.index, -1);
+    });
+
+    test("shift+i is not a separate binding", () => {
+        var r = resolveKey(evt(KeyMap.Key_I, KeyMap.ShiftModifier), baseState({ index: 2 }));
+        assert.equal(r.action, "summarise", "shift is simply ignored, not a second action");
+    });
+});

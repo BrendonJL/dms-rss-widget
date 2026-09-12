@@ -15,6 +15,7 @@ import "ChainRunner.js" as ChainRunner
 import "KeyMap.js" as KeyMap
 import "ExportProvider.js" as ExportProvider
 import "HtmlExtract.js" as HtmlExtract
+import "AiProvider.js" as AiProvider
 
 DesktopPluginComponent {
     id: root
@@ -83,6 +84,36 @@ DesktopPluginComponent {
 
     // Empty means follow Theme.fontFamily -- see ReaderWindow.qml.
     property string readerFontFamily: pluginData.readerFontFamily ?? ""
+
+    // --- AI summaries (stage 3b) ---
+    //
+    // All four are global rather than per-instance. The design doc asked for
+    // the toggle to be per-instance so a small ticker could stay dumb while a
+    // large widget summarises, but every setting in this plugin goes through
+    // savePluginData(pluginId, ...), which is keyed by plugin and not by
+    // instance. Per-instance would mean adopting the DMS plugin-variant
+    // system, which this widget has never used, for one boolean. Recorded as
+    // a deviation rather than done quietly.
+    property bool aiEnabled: pluginData.aiEnabled ?? false
+    // Resolved exactly as the settings panel resolves it, through the same
+    // pure function -- a second copy of "what does empty mean" is how the two
+    // sides drift apart and the widget disagrees with its own settings page.
+    property string aiPreset: pluginData.aiPreset ?? "ollama"
+    property string aiBaseUrl: AiProvider.resolveBaseUrl(root.aiPreset, pluginData.aiBaseUrl ?? "")
+    property string aiModel: pluginData.aiModel ?? ""
+    property string aiApiKey: pluginData.aiApiKey ?? ""
+
+    readonly property var aiProvider: AiProvider.createAiProvider({
+        baseUrl: root.aiBaseUrl,
+        model: root.aiModel,
+        apiKey: root.aiApiKey
+    })
+
+    // The single gate on every summary affordance. "Enabled but unconfigured"
+    // must look exactly like "disabled": no button, no key, no error. An AI
+    // feature that advertises itself while unusable is the failure mode the
+    // design doc calls the most important behavioural requirement in the phase.
+    readonly property bool aiReady: root.aiEnabled && root.aiProvider.isConfigured()
 
     readonly property var exportProvider: ExportProvider.createExportProvider({
         kind: root.exportKind,
@@ -243,6 +274,14 @@ DesktopPluginComponent {
                 keys: ["e"],
                 desc: "Export to notes (whole selection, if any)"
             });
+        // Gated on aiReady for the same reason "e" is gated on exportRoot:
+        // with no runtime configured "i" does nothing, and documenting a key
+        // that silently fails is worse than not documenting it.
+        if (root.aiReady)
+            rows.push({
+                keys: ["i"],
+                desc: "Summarise (opens the reader on the summary)"
+            });
         rows.push({
             keys: ["Space"],
             desc: "Toggle selection"
@@ -283,6 +322,18 @@ DesktopPluginComponent {
     // insertion order so the persisted list can be bounded predictably.
     property var readMap: ({})
     property var readOrder: []
+
+    // Bounded summary cache, persisted like readIds/bookmarkedIds. Capped far
+    // lower than idHistoryCap because these store paragraphs rather than ids:
+    // the whole map is rewritten on every change, so the cap is a write-cost
+    // decision, not just a memory one.
+    property var summaryMap: ({})
+    property var summaryOrder: []
+    // Discards a summary that arrives after the user moved on, so a 5s
+    // response can never render against the article they are looking at now.
+    // Same pattern as fetchGeneration, deliberately a separate counter: a
+    // feed refresh must not invalidate an in-flight summary or vice versa.
+    property int summaryGeneration: 0
     property var seenIds: []
     property bool readerStateLoaded: false
 
@@ -329,6 +380,7 @@ DesktopPluginComponent {
     property var feedStatuses: []
 
     readonly property int idHistoryCap: 1000
+    readonly property int summaryCap: ReaderState.DEFAULT_SUMMARY_CAP
 
     readonly property int unreadCount: ReaderState.countUnread(root.allItems, root.readMap)
 
@@ -516,7 +568,96 @@ DesktopPluginComponent {
         root.bookmarkMap = ReaderState.buildIdMap(bookmarks);
         root.bookmarkOrder = bookmarks;
 
+        var summaries = root.readState("summaries", null);
+        if (summaries && typeof summaries === "object" && Array.isArray(summaries.order)) {
+            // Rebuilt through addSummary rather than trusted wholesale: a
+            // state file hand-edited or written by an older build could carry
+            // an order longer than the current cap, or ids with no entry.
+            var rebuilt = { order: [], map: {} };
+            for (var si = summaries.order.length - 1; si >= 0; si--) {
+                var sid = summaries.order[si];
+                if (typeof sid === "string" && typeof summaries.map[sid] === "string")
+                    rebuilt = ReaderState.addSummary(rebuilt.order, rebuilt.map, sid, summaries.map[sid], root.summaryCap);
+            }
+            root.summaryOrder = rebuilt.order;
+            root.summaryMap = rebuilt.map;
+        }
+
         root.readerStateLoaded = true;
+    }
+
+    function persistSummaries() {
+        root.writeState("summaries", {
+            order: root.summaryOrder,
+            map: root.summaryMap
+        });
+    }
+
+    // Called by the reader window's "i" / Summarise button. Everything the
+    // window needs comes back on its summary* properties -- it never sees the
+    // provider, the cache or Proc.
+    function requestSummary(itemId) {
+        if (!root.aiReady || !itemId)
+            return;
+
+        var cached = ReaderState.getSummary(root.summaryMap, itemId);
+        if (cached !== null) {
+            readerWindow.summaryLoading = false;
+            readerWindow.summaryError = "";
+            readerWindow.summaryText = cached;
+            return;
+        }
+
+        var article = root.itemById(itemId);
+        if (!article)
+            return;
+
+        var req = root.aiProvider.summariseRequest(article);
+        if (!req)
+            return;
+
+        readerWindow.summaryError = "";
+        readerWindow.summaryText = "";
+        readerWindow.summaryLoading = true;
+
+        root.summaryGeneration++;
+        var generation = root.summaryGeneration;
+
+        root.runRequest(req, function (output, code) {
+            if (generation !== root.summaryGeneration)
+                return;
+
+            readerWindow.summaryLoading = false;
+
+            if (code !== null && code !== 0) {
+                // No toast, by design. The reader window shows this and
+                // nothing else does -- a local runtime that is simply not
+                // running is not an event worth interrupting anyone for.
+                readerWindow.summaryError = code === 124 ? "The model timed out." : "Could not reach the AI runtime.";
+                return;
+            }
+
+            var result = req.parse(output);
+            if (result.error) {
+                readerWindow.summaryError = result.error;
+                return;
+            }
+            if (result.text === null || result.text === "") {
+                readerWindow.summaryError = "The model returned an empty summary.";
+                return;
+            }
+
+            var next = ReaderState.addSummary(root.summaryOrder, root.summaryMap, itemId, result.text, root.summaryCap);
+            root.summaryOrder = next.order;
+            root.summaryMap = next.map;
+            root.persistSummaries();
+
+            // Only render if the reader is still on the article that asked.
+            // The generation check above catches a newer request; this catches
+            // the user navigating to an article that has never been asked for.
+            if (readerWindow.itemId === itemId)
+                readerWindow.summaryText = result.text;
+        });
     }
 
     function saveReadState() {
@@ -627,8 +768,45 @@ DesktopPluginComponent {
             });
         }
         var article = root.itemById(itemId);
-        if (article)
+        if (article) {
             readerWindow.openArticle(article);
+            // openArticle() clears the summary fields; put a cached one back
+            // straight away so revisiting an article already summarised is
+            // instant and never re-runs the model.
+            var cached = root.aiReady ? ReaderState.getSummary(root.summaryMap, itemId) : null;
+            if (cached !== null)
+                readerWindow.summaryText = cached;
+        }
+    }
+
+    // "i" from the list: open the reader on this row showing only the summary,
+    // and ask for that summary immediately.
+    //
+    // Deliberately NOT routed through viewItem() the way the reader's own
+    // navigation is, for one reason: viewItem() marks the article read, and
+    // reading a summary is not reading the article. An item you skimmed and
+    // passed over must still be there next time you filter to unread --
+    // otherwise this feature quietly empties your unread list on your behalf.
+    // That is also why the cursor still moves: you looked at this row, so the
+    // cursor should be on it, but you have not consumed it.
+    function summariseItem(itemId, index) {
+        if (!root.aiReady || !itemId)
+            return;
+        if (index !== undefined && index >= 0)
+            root.keyboardIndex = index;
+
+        var article = root.itemById(itemId);
+        if (!article)
+            return;
+
+        readerWindow.openArticle(article, true);
+
+        var cached = ReaderState.getSummary(root.summaryMap, itemId);
+        if (cached !== null) {
+            readerWindow.summaryText = cached;
+            return;
+        }
+        root.requestSummary(itemId);
     }
 
     // Wired to the reader window's shift+j/shift+k (nextRequested/prevRequested).
@@ -738,6 +916,12 @@ DesktopPluginComponent {
             {
                 var viewRow = feedModel.get(result.index);
                 root.viewItem(viewRow.itemId, result.index);
+                break;
+            }
+        case "summarise":
+            {
+                var sumRow = feedModel.get(result.index);
+                root.summariseItem(sumRow.itemId, result.index);
                 break;
             }
         case "toggleRead":
@@ -1646,6 +1830,23 @@ DesktopPluginComponent {
         // selectedMap rather than the visible model, so this is safe, and the
         // selection-bar label below surfaces the hidden portion explicitly.
         root.selectedMap = ReaderState.pruneSelected(root.selectedMap, root.allItems);
+
+        // Same reasoning as the selection prune above, against the same full
+        // dataset: a cached summary for an item that has aged out of every
+        // feed is unreachable, so it is only occupying the cap. Guarded on
+        // the length actually changing because this function also runs on
+        // every search keystroke and filter-chip click, and persisting the
+        // whole summary map on each of those would be a real write cost --
+        // this is the one cache in the widget whose entries are paragraphs.
+        if (root.summaryOrder.length > 0) {
+            var pruned = ReaderState.pruneSummaries(root.summaryOrder, root.summaryMap, root.allItems);
+            if (pruned.order.length !== root.summaryOrder.length) {
+                root.summaryOrder = pruned.order;
+                root.summaryMap = pruned.map;
+                root.persistSummaries();
+            }
+        }
+
         root.visibleItems = visible;
 
         // feedModel was just rebuilt from scratch -- the cursor must never
@@ -1678,6 +1879,8 @@ DesktopPluginComponent {
         onStarRequested: itemId => root.toggleBookmark(itemId)
         onNextRequested: root.readerAdvance(1)
         onPrevRequested: root.readerAdvance(-1)
+        summaryAvailable: root.aiReady
+        onSummaryRequested: itemId => root.requestSummary(itemId)
 
         // Closing this window cannot hand Wayland keyboard focus back to the
         // widget. forceActiveFocus() only sets Qt's own internal focus item,
@@ -1801,6 +2004,10 @@ DesktopPluginComponent {
                         buttonSize: 22
                         enabled: !root.isLoading && root.activeFeedCount > 0
                         onClicked: root.refreshNow()
+
+                        Accessible.role: Accessible.Button
+                        Accessible.name: "Refresh feeds"
+                        Accessible.onPressAction: root.refreshNow()
                     }
                 }
 
@@ -1847,6 +2054,15 @@ DesktopPluginComponent {
                         else
                             root.searchActive = true;
                     }
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: root.searchActive ? "Close search" : "Search"
+                    Accessible.onPressAction: {
+                        if (root.searchActive)
+                            root.closeSearch();
+                        else
+                            root.searchActive = true;
+                    }
                 }
             }
 
@@ -1880,6 +2096,12 @@ DesktopPluginComponent {
                         height: 22
                         radius: Theme.cornerRadius
                         color: active ? Theme.withAlpha(Theme.primary, 0.18) : (filterArea.containsMouse ? Theme.withAlpha(Theme.primary, 0.08) : "transparent")
+
+                        // filterLabel already gives this a name via ordinary
+                        // Text -- only role/checked are needed to expose the
+                        // segmented-toggle semantics.
+                        Accessible.role: Accessible.Button
+                        Accessible.checked: active
 
                         StyledText {
                             id: filterLabel
@@ -1961,6 +2183,14 @@ DesktopPluginComponent {
                                 root.applyFilter();
                         }
                     }
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: markAllRect.allRead ? "Mark all unread" : "Mark all read"
+                    Accessible.onPressAction: {
+                        root.setAllRead(!markAllRect.allRead);
+                        if (root.filterMode === "unread")
+                            root.applyFilter();
+                    }
                 }
             }
 
@@ -2023,6 +2253,10 @@ DesktopPluginComponent {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.bulkSaveSelected()
                     }
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: "Bookmark selected items"
+                    Accessible.onPressAction: root.bulkSaveSelected()
                 }
 
                 // Export to notes -- only shown once a folder is configured
@@ -2062,6 +2296,10 @@ DesktopPluginComponent {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.exportSelected()
                     }
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: "Export selected items"
+                    Accessible.onPressAction: root.exportSelected()
                 }
 
                 // Mark read/unread -- flips label and action based on
@@ -2102,6 +2340,10 @@ DesktopPluginComponent {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.selectedAllRead ? root.bulkMarkUnreadSelected() : root.bulkMarkReadSelected()
                     }
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: root.selectedAllRead ? "Mark selected unread" : "Mark selected read"
+                    Accessible.onPressAction: root.selectedAllRead ? root.bulkMarkUnreadSelected() : root.bulkMarkReadSelected()
                 }
 
                 // The header's filter/search row is replaced by this bar
@@ -2124,6 +2366,10 @@ DesktopPluginComponent {
                     Layout.preferredWidth: 22
                     Layout.preferredHeight: 22
                     onClicked: root.clearSelection()
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: "Clear selection"
+                    Accessible.onPressAction: root.clearSelection()
                 }
             }
 
@@ -2328,6 +2574,19 @@ DesktopPluginComponent {
                                     root.toggleSelected(model.itemId);
                                 }
 
+                                // Checked state is a first-class AT property
+                                // here, not folded into the name string --
+                                // avoids a doubled "checked, Select X,
+                                // checked" announcement.
+                                Accessible.role: Accessible.CheckBox
+                                Accessible.checked: itemDelegate.isSelected
+                                Accessible.name: "Select " + (model.title || "item")
+                                Accessible.onPressAction: {
+                                    if (root._clickFromOverview())
+                                        return;
+                                    root.toggleSelected(model.itemId);
+                                }
+
                                 Behavior on opacity {
                                     NumberAnimation {
                                         duration: Theme.shortDuration
@@ -2479,6 +2738,18 @@ DesktopPluginComponent {
                                     root.toggleReadSynced(model.itemId, itemDelegate.isRead);
                                 }
 
+                                // Names the action the press will perform
+                                // (not the current state), matching the
+                                // phrasing the bulk mark-read label already
+                                // uses.
+                                Accessible.role: Accessible.Button
+                                Accessible.name: "Mark \"" + (model.title || "item") + "\" as " + (itemDelegate.isRead ? "unread" : "read")
+                                Accessible.onPressAction: {
+                                    if (root._clickFromOverview())
+                                        return;
+                                    root.toggleReadSynced(model.itemId, itemDelegate.isRead);
+                                }
+
                                 Behavior on opacity {
                                     NumberAnimation {
                                         duration: Theme.shortDuration
@@ -2507,6 +2778,14 @@ DesktopPluginComponent {
                                     root.toggleBookmark(model.itemId);
                                 }
 
+                                Accessible.role: Accessible.Button
+                                Accessible.name: (itemDelegate.isBookmarked ? "Remove bookmark from \"" : "Bookmark \"") + (model.title || "item") + "\""
+                                Accessible.onPressAction: {
+                                    if (root._clickFromOverview())
+                                        return;
+                                    root.toggleBookmark(model.itemId);
+                                }
+
                                 Behavior on opacity {
                                     NumberAnimation {
                                         duration: Theme.shortDuration
@@ -2528,6 +2807,14 @@ DesktopPluginComponent {
                                 // See the mark-read button's comment above.
                                 activeFocusOnTab: false
                                 onClicked: {
+                                    if (root._clickFromOverview())
+                                        return;
+                                    root.viewItem(model.itemId, index);
+                                }
+
+                                Accessible.role: Accessible.Button
+                                Accessible.name: "Open \"" + (model.title || "item") + "\" in reader"
+                                Accessible.onPressAction: {
                                     if (root._clickFromOverview())
                                         return;
                                     root.viewItem(model.itemId, index);
@@ -2716,6 +3003,10 @@ DesktopPluginComponent {
                         Layout.preferredWidth: 22
                         Layout.preferredHeight: 22
                         onClicked: root.helpVisible = false
+
+                        Accessible.role: Accessible.Button
+                        Accessible.name: "Close keyboard shortcuts"
+                        Accessible.onPressAction: root.helpVisible = false
                     }
                 }
 

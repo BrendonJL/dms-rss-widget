@@ -39,6 +39,12 @@ DankFloatingWindow {
     // this window and the widget is never crossed in the first place.
     signal nextRequested
     signal prevRequested
+    // Fired by "i" / the Summarise button. The widget owns the AI provider,
+    // the bounded summary cache and the persistence tier, so this window
+    // asks for a summary by id and renders whatever comes back on its
+    // summary* properties -- exactly the split already used for export and
+    // starring. It deliberately holds no AiProvider reference of its own.
+    signal summaryRequested(string itemId)
 
     property string itemId: ""
     property string articleTitle: ""
@@ -65,6 +71,27 @@ DankFloatingWindow {
     // the design calls for saying so quietly, not interrupting.
     property bool usedFallback: false
     property string fallbackReason: ""
+
+    // --- AI summary (owned by the widget, displayed here) ---
+    //
+    // summaryAvailable gates the affordance entirely: with no runtime
+    // configured, or the feature switched off, there is no button, no key
+    // and no error row -- the design's hardest requirement is that an
+    // unconfigured widget stays completely silent rather than advertising a
+    // feature the user cannot use.
+    // True when the window was opened by "i" from the list rather than by
+    // "v": show the summary, and do NOT fetch the article's page. The body is
+    // then something the reader asks for explicitly, because the point of
+    // this mode is to decide whether the article is worth opening at all --
+    // fetching it anyway would defeat the reason for the mode.
+    property bool summaryOnly: false
+    property bool summaryAvailable: false
+    property string summaryText: ""
+    property bool summaryLoading: false
+    // Shown on this window and nowhere else. A failed summary never toasts:
+    // a local model being unreachable is not worth interrupting someone for,
+    // and on a laptop that only sometimes runs one it would fire constantly.
+    property string summaryError: ""
 
     // Empty follows Theme.fontFamily -- this user's DMS font is a deliberate
     // choice, so the reader must default to it rather than to some other
@@ -101,9 +128,11 @@ DankFloatingWindow {
 
     // Shared entry point: the "v" keyboard action and the row's view button
     // both call this with the same article object the list already has.
-    function openArticle(article) {
+    function openArticle(article, summaryOnly) {
         if (!article)
             return;
+
+        root.summaryOnly = summaryOnly === true;
 
         root._article = article;
         root.itemId = article.id || "";
@@ -113,11 +142,27 @@ DankFloatingWindow {
         root.timestamp = article.timestamp || 0;
         root.usedFallback = false;
         root.fallbackReason = "";
+        // Cleared per article, then repopulated by the widget from its cache
+        // if it already holds one for this id. Without this a summary would
+        // linger visibly against the next article for as long as the widget
+        // took to answer.
+        root.summaryText = "";
+        root.summaryError = "";
+        root.summaryLoading = false;
 
         var summary = ExportProvider.articleSummaryText(article);
-        root.body = HtmlExtract.normalizeForReader(summary, root.articleTitle);
+        // In summary-only mode the body starts empty rather than holding the
+        // feed's own blurb: showing the feed summary above the AI summary is
+        // two summaries of the same article stacked on each other, which
+        // reads as a bug even though both are correct.
+        root.body = root.summaryOnly ? "" : HtmlExtract.normalizeForReader(summary, root.articleTitle);
         root.visible = true;
         bodyFlickable.contentY = 0;
+
+        if (root.summaryOnly) {
+            root.loading = false;
+            return;
+        }
 
         if (!article.link) {
             root.loading = false;
@@ -126,6 +171,25 @@ DankFloatingWindow {
             return;
         }
 
+        root.loadFullText();
+    }
+
+    // The fetch-and-extract half of openArticle(), split out so the "Load
+    // full article" button in summary-only mode runs exactly the same path
+    // rather than a second copy of it. Guarded by the same generation counter,
+    // so a load started here and then superseded by opening another article
+    // cannot land on the wrong one.
+    function loadFullText() {
+        var article = root._article;
+        if (!article || !article.link || root.loading)
+            return;
+
+        root.summaryOnly = false;
+        root.usedFallback = false;
+        root.fallbackReason = "";
+
+        var summary = ExportProvider.articleSummaryText(article);
+        root.body = HtmlExtract.normalizeForReader(summary, root.articleTitle);
         root.loading = true;
         root._fetchGeneration++;
         var generation = root._fetchGeneration;
@@ -337,6 +401,15 @@ DankFloatingWindow {
                     root.starRequested(root.itemId);
                 event.accepted = true;
                 break;
+            case KeyMap.Key_I:
+                // Accepted only when the affordance exists, so "i" stays an
+                // ordinary unhandled key on an unconfigured widget rather
+                // than silently swallowing the keystroke.
+                if (root.summaryAvailable && root.itemId && !root.summaryLoading) {
+                    root.summaryRequested(root.itemId);
+                    event.accepted = true;
+                }
+                break;
             }
         }
 
@@ -408,11 +481,30 @@ DankFloatingWindow {
 
                 DankActionButton {
                     activeFocusOnTab: false
+                    visible: root.summaryAvailable
+                    enabled: !root.summaryLoading && root.itemId !== ""
+                    iconName: root.summaryLoading ? "hourglass_top" : "auto_awesome"
+                    iconSize: Theme.iconSize - 4
+                    iconColor: root.summaryLoading ? Theme.surfaceVariantText : Theme.surfaceText
+                    onClicked: root.summaryRequested(root.itemId)
+                    // The name tracks the in-flight state because the icon
+                    // does: a control that has visibly changed but reads out
+                    // identically is worse than one that never changes.
+                    Accessible.role: Accessible.Button
+                    Accessible.name: root.summaryLoading ? "Summarising article" : "Summarise article"
+                    Accessible.onPressAction: root.summaryRequested(root.itemId)
+                }
+
+                DankActionButton {
+                    activeFocusOnTab: false
                     visible: windowControls.canMaximize
                     iconName: root.maximized ? "fullscreen_exit" : "fullscreen"
                     iconSize: Theme.iconSize - 4
                     iconColor: Theme.surfaceText
                     onClicked: windowControls.tryToggleMaximize()
+                    Accessible.role: Accessible.Button
+                    Accessible.name: root.maximized ? "Restore window" : "Maximize window"
+                    Accessible.onPressAction: windowControls.tryToggleMaximize()
                 }
 
                 DankActionButton {
@@ -421,6 +513,9 @@ DankFloatingWindow {
                     iconSize: Theme.iconSize - 4
                     iconColor: Theme.surfaceText
                     onClicked: root.dismiss()
+                    Accessible.role: Accessible.Button
+                    Accessible.name: "Close reader"
+                    Accessible.onPressAction: root.dismiss()
                 }
             }
 
@@ -472,6 +567,84 @@ DankFloatingWindow {
                     color: Theme.surfaceVariantText
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
+                }
+
+                // The summary sits above the article, not below it: its
+                // whole purpose is to help decide whether to read what
+                // follows, which is no use underneath. Bounded by the same
+                // measure column as the body so it reads as part of the
+                // page rather than a floating panel.
+                Rectangle {
+                    Layout.fillWidth: true
+                    visible: root.summaryLoading || root.summaryText !== "" || root.summaryError !== ""
+                    implicitHeight: summaryColumn.implicitHeight + Theme.spacingM * 2
+                    radius: Theme.cornerRadius
+                    color: Theme.withAlpha(Theme.surfaceContainerHigh, 0.6)
+
+                    ColumnLayout {
+                        id: summaryColumn
+                        x: Theme.spacingM
+                        y: Theme.spacingM
+                        width: parent.width - Theme.spacingM * 2
+                        spacing: Theme.spacingXS
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingXS
+
+                            DankIcon {
+                                name: root.summaryError !== "" ? "error" : "auto_awesome"
+                                size: 14
+                                color: root.summaryError !== "" ? Theme.error : Theme.surfaceVariantText
+                            }
+
+                            StyledText {
+                                Layout.fillWidth: true
+                                text: {
+                                    if (root.summaryError !== "")
+                                        return "Summary failed";
+                                    if (root.summaryLoading)
+                                        return "Summarising…";
+                                    return "Summary";
+                                }
+                                font.pixelSize: Theme.fontSizeSmall
+                                font.weight: Font.Medium
+                                color: Theme.surfaceVariantText
+                            }
+                        }
+
+                        StyledText {
+                            Layout.fillWidth: true
+                            visible: root.summaryError !== "" || root.summaryText !== ""
+                            text: root.summaryError !== "" ? root.summaryError : root.summaryText
+                            font.pixelSize: root.bodyFontSize - 2
+                            font.family: root.effectiveFontFamily
+                            color: root.summaryError !== "" ? Theme.error : Theme.surfaceText
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+
+                // Summary-only mode's way back to the article. Deliberately a
+                // real control rather than an invisible keybinding: this mode
+                // is reached from the list, so the reader arriving here has
+                // not necessarily learned the reader's keys yet.
+                Item {
+                    Layout.fillWidth: true
+                    visible: root.summaryOnly && root.link !== ""
+                    implicitHeight: loadFullButton.implicitHeight + Theme.spacingM
+
+                    DankButton {
+                        id: loadFullButton
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        y: Theme.spacingM
+                        text: "Load full article"
+                        iconName: "download"
+                        onClicked: root.loadFullText()
+                        Accessible.role: Accessible.Button
+                        Accessible.name: "Load the full article text"
+                        Accessible.onPressAction: root.loadFullText()
+                    }
                 }
 
                 Repeater {

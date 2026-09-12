@@ -98,6 +98,20 @@ mutation-checked by reverting the fix and confirming the test fails:
   grants keyboard focus only on a click landing while the surface is *already*
   focus-eligible. Anything that asks for focus is a request to the compositor,
   not a guarantee.
+- Quickshell caches compiled QML in `~/.cache/quickshell/qmlcache/`, and
+  restarting `dms.service` is not always enough to pick up a plugin edit.
+  Observed 2026-09-12: the settings panel picked up an edit immediately (it is
+  freshly instantiated each time it's opened), while the desktop widget
+  instance kept running old code across a full service restart. There were no
+  QML errors, and diagnostics added to the widget produced no output at
+  all — which is what identified it: the new code was never executing. Plain
+  `console.log` does reach the journal, as `INFO qml:` lines visible with
+  `journalctl --user -u dms.service`, so no output means the code isn't
+  running, not that logging is being filtered. Fix: `mv
+  ~/.cache/quickshell/qmlcache ~/.cache/quickshell/qmlcache.bak &&
+  systemctl --user restart dms.service`. The general lesson: when a plugin
+  edit seems to have no effect, first prove the new code runs at all before
+  spending time debugging its logic.
 
 ## See also
 

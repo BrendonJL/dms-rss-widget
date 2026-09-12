@@ -5,13 +5,19 @@ for items that have one are in this directory; `README.md` here indexes them.
 
 ## AI features
 
-`AiProvider.js` is built and measured; the bounded summary cache is in
-`ReaderState.js`. Nothing is wired to a UI yet.
+`AiProvider.js` is built and measured. 3b is now implemented, on `develop`,
+unreleased — see below and its design doc's status block. Nothing beyond it
+is wired to a UI yet.
 
-- **3b — per-article summaries.** On demand only: ~4.8s per summary measured on
-  an RTX 2070 Super with qwen3:8b, which rules out anything automatic. Cached by
-  item id, generation-guarded so a late result cannot render against the article
-  the user has since moved to. Design: `2026-09-10-phase3b-summaries-design.md`.
+- **3b — per-article summaries. Implemented, unreleased.** On demand only:
+  ~4.8s per summary measured on an RTX 2070 Super with qwen3:8b, which ruled
+  out anything automatic. Cached by item id, generation-guarded so a late
+  result cannot render against the article the user has since moved to.
+  Shipped with one deviation from the design: the feature toggle is global,
+  not per-instance (the connection settings were always meant to be global,
+  and are). Design: `2026-09-10-phase3b-summaries-design.md`. Unverified at
+  runtime — no `qml` binary on this machine — so still needs the owner's
+  manual test pass from that doc's checklist.
 - **3c — digest.** One call over the last 24h of titles and descriptions.
   Cheaper per item than 3b once its plumbing exists.
 - **3d — interest ranking.** Embeddings, ranking unread by similarity to
@@ -21,19 +27,54 @@ for items that have one are in this directory; `README.md` here indexes them.
 
 ## Accessibility
 
-- **Never signal state by hue alone.** The owner has deuteranopia. Today the
-  settings status list uses `Theme.error` red against `Theme.success` green for
-  failed versus ok feeds, and unread/read leans on colour. Every state that
-  uses colour should also differ in weight, shape or an icon.
+- **Never signal state by hue alone — already satisfied, verified by audit.**
+  This item used to claim the settings status list paired `Theme.error` red
+  against `Theme.success` green with no other distinction, and that unread/
+  read leaned on colour. An audit (2026-09-12) found that's no longer true,
+  and possibly never was as badly as described:
+  - `DankRssWidgetSettings.qml:1157-1171` — the ok/error status pairs
+    `Theme.success`/`Theme.error` with different icon shapes (`check_circle`
+    vs `error`) *and* different status text ("N items" / the actual error
+    string / "Disabled" / "Not fetched yet"). Colour there is decorative.
+  - `DankRssWidget.qml:2229` — `opacity: isRead ? 0.5 : 1.0` on the whole row;
+    `:2369` — the title swaps `surfaceVariantText`/`surfaceText`, a greyscale
+    change with no hue shift. Read state survives total colour loss.
+  - `DankRssWidget.qml:2236` carries a deliberate comment explaining the
+    cursor indicator is a border rather than another fill, because hover and
+    selection already use background tints and a third tint would be
+    indistinguishable from them.
+  - Selection checkbox, bookmark and mark-read toggles all swap icon shape
+    (`check_box`/`check_box_outline_blank`, `bookmark`/`bookmark_border`,
+    `mark_email_read`/`mark_email_unread`), not just colour.
+  - The one remaining hue-only site is the feed-source label at
+    `DankRssWidget.qml:2353` (`isRead ? Theme.surfaceVariantText :
+    Theme.primary`), and it free-rides on the row's own opacity dimming, so
+    it isn't a defect on its own.
 
-  Do this **before** the AI features if possible: it is a small change now and
-  three more things to retrofit once summary and ranking indicators exist.
-- **Colour themes.** Presets for deuteranopia, protanopia and tritanopia, plus
-  custom colours, over the current matugen-only setup. Bigger than it sounds --
-  it touches every colour reference in three QML files. Note that a generated
-  palette has no reason to preserve contrast between hues a given person cannot
-  distinguish, which is why the redundancy rule above matters more than the
-  palettes.
+  Closing this out; what's actually left is the two items below.
+
+- **Accessible names for icon-only controls.** Zero `Accessible.*` or
+  tooltips exist across all three QML files — this is a real, unrelated gap
+  from the colour question above: sighted mouse users infer icon meaning
+  from shape and hover text (itself width-gated), screen reader users get
+  nothing. Design written: `2026-09-12-accessibility-names-design.md`. Not
+  yet implemented; no `qml` binary on this machine to verify against, so it
+  will need manual/live testing regardless of who implements it.
+- **Colour theme presets.** Still wanted — deuteranopia/protanopia/
+  tritanopia presets plus custom colours, over the current matugen-only
+  setup. Research verdict: feasible and safe, but `Theme` is a `pragma
+  Singleton` at `/usr/share/quickshell/dms/Common/Theme.qml`, shared
+  process-wide — the plugin must never write to `Theme.*` itself, since that
+  would leak into the whole shell (bar, popups, other plugins). The correct
+  shape is a plugin-owned palette indirection that reads `Theme` for
+  defaults, with two first-party precedents already on this machine:
+  `dankDesktopWeather`'s `accentColor`/`customColor`, and
+  `bongoCat/dms-common/ColorSettingPlus.qml`. Scope is smaller than
+  originally feared: 318 `Theme.` references across the three QML files, but
+  only ~177 of those are colours, collapsing into roughly a dozen distinct
+  semantic roles. Not yet implemented. `2026-09-11-phase5b-reader-typography-
+  design.md` already recorded the decision to do this via indirection, and
+  named the hue-redundancy item above as its prerequisite.
 
 ## Formerly "good first issues", now ours
 

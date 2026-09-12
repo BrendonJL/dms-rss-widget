@@ -503,3 +503,61 @@ describe("SECURITY: curl hardening flags", () => {
         assert.equal(argv[argv.indexOf("--max-time") + 1], "8");
     });
 });
+
+// ─── resolveBaseUrl ───
+//
+// Regression cover for a shipped bug: the settings panel filled the base URL
+// from the preset dropdown's CHANGE handler, so on a fresh install -- where
+// the dropdown loads its default and therefore never changes -- nothing was
+// ever written. The field showed a placeholder that looked exactly like a
+// value, and Test Connection reported "enter a base URL and model" against
+// what the user could see was a filled form. Resolution must not depend on
+// an event having fired.
+
+describe("resolveBaseUrl", () => {
+    const { resolveBaseUrl, PRESETS } = require("../AiProvider.js");
+
+    test("a preset resolves even when nothing was ever typed or stored", () => {
+        assert.equal(resolveBaseUrl("ollama", ""), "http://localhost:11434/v1");
+        assert.equal(resolveBaseUrl("ollama", undefined), "http://localhost:11434/v1");
+        assert.equal(resolveBaseUrl("ollama", null), "http://localhost:11434/v1");
+    });
+
+    test("every non-custom preset resolves to its own documented base URL", () => {
+        Object.keys(PRESETS).forEach(function (key) {
+            assert.equal(resolveBaseUrl(key, ""), PRESETS[key].baseUrl, key);
+        });
+    });
+
+    test("an explicitly typed URL always wins over the preset", () => {
+        assert.equal(resolveBaseUrl("ollama", "http://gpu-box:9999/v1"), "http://gpu-box:9999/v1");
+    });
+
+    test("custom resolves to empty, because there is nothing sensible to guess", () => {
+        assert.equal(resolveBaseUrl("custom", ""), "");
+    });
+
+    test("custom still honours whatever the user typed", () => {
+        assert.equal(resolveBaseUrl("custom", "http://10.0.0.5:8000/v1"), "http://10.0.0.5:8000/v1");
+    });
+
+    test("whitespace-only input counts as empty and falls back to the preset", () => {
+        assert.equal(resolveBaseUrl("ollama", "   "), "http://localhost:11434/v1");
+    });
+
+    test("surrounding whitespace is trimmed off a real URL", () => {
+        assert.equal(resolveBaseUrl("ollama", "  http://localhost:1234/v1  "), "http://localhost:1234/v1");
+    });
+
+    test("an unknown or missing preset resolves to empty rather than throwing", () => {
+        assert.equal(resolveBaseUrl("nonesuch", ""), "");
+        assert.equal(resolveBaseUrl(undefined, ""), "");
+        assert.equal(resolveBaseUrl(null, null), "");
+    });
+
+    test("the resolved preset URL is enough to make a provider configured", () => {
+        const { createAiProvider } = require("../AiProvider.js");
+        const p = createAiProvider({ baseUrl: resolveBaseUrl("ollama", ""), model: "qwen3:8b" });
+        assert.equal(p.isConfigured(), true);
+    });
+});

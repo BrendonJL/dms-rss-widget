@@ -4,21 +4,22 @@ Design docs and historical records, newest work first. "Status" here is about
 whether the doc describes current reality, not whether it's well-written.
 
 **Shipped in 2.4.0:** search fixes, Phase 0, Phase 1 (1a/1b/1c), Phase 2.
-**On `develop`, unreleased:** Phase 4 (4a/4b/4c/4d), Phase 5 (5, 5b).
-**Not built:** 3b, 3c, 3d.
+**On `develop`, unreleased:** Phase 4 (4a/4b/4c/4d), Phase 5 (5, 5b), Phase 3b.
+**Not built:** 3c, 3d.
 
 | Doc | Covers | Status |
 |---|---|---|
+| `2026-09-12-accessibility-names-design.md` | Accessible names for icon-only controls (`Accessible.role`/`name`/`onPressAction`) | designed, not built |
 | `2026-09-11-phase5b-reader-typography-design.md` | Reader typography (block classification, explicit metrics, colour theming) | implemented — unreleased |
 | `2026-09-11-phase5-reader-app-design.md` | The reading window (measure, markdown rendering, focus return) | implemented — unreleased; supersedes the annotation-app design of the same date |
 | `2026-09-11-phase4d-editor-presets-design.md` | Editor open presets (`{path}` template, legacy config migration) | implemented — unreleased |
 | `2026-09-11-phase4c-fulltext-design.md` | Local full-text extraction (`HtmlExtract.js`, index-page guard, the Readability oracle) | implemented — unreleased |
-| `2026-09-10-phase3b-summaries-design.md` | Per-article summaries (on-demand via AiProvider) | partly built — the bounded summary cache in `ReaderState.js` exists, the UI does not |
+| `2026-09-10-phase3b-summaries-design.md` | Per-article summaries (on-demand via AiProvider) | implemented — unreleased; one deviation, the feature toggle shipped global rather than per-instance, see its status block |
 | `2026-09-10-phase2-keyboard-design.md` | Keyboard navigation (focus latching, key binding) | implemented — 2.4.0 |
 | `2026-09-09-phase1c-settings-design.md` | Google Reader settings UI (third source mode, connection section) | implemented — 2.4.0 |
 | `2026-09-09-phase1-google-reader-design.md` | Google Reader API backend (chain fetch, session, id normalisation) | implemented (1a/1b/1c) — 2.4.0 |
 | `2026-09-08-phase4-export-provider-design.md` | Notes/export provider (Obsidian, Neovim, markdown dir) | implemented (4a–4d) — unreleased; two decisions changed en route, see its status block |
-| `2026-09-08-phase3-ai-provider-design.md` | Local AI provider (OpenAI-compatible chat API) | 3a implemented; 3b–3d not built and unwired |
+| `2026-09-08-phase3-ai-provider-design.md` | Local AI provider (OpenAI-compatible chat API) | 3a implemented; 3b implemented — unreleased (see its own doc); 3c/3d not built |
 | `2026-09-08-phase0-backend-interface-design.md` | Backend provider interface (`Backends.js`, capabilities) | implemented — 2.4.0 |
 | `2026-09-07-roadmap-design.md` | Full v3 roadmap, all phases | current — but Phase 5 was redesigned after it was written; see per-phase docs |
 | `2026-09-07-search-fixes-design.md` | Search focus bug, search-during-selection | implemented — 2.4.0 |
