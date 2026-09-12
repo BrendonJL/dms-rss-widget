@@ -9,15 +9,20 @@ for items that have one are in this directory; `README.md` here indexes them.
 unreleased — see below and its design doc's status block. Nothing beyond it
 is wired to a UI yet.
 
-- **3b — per-article summaries. Implemented, unreleased.** On demand only:
-  ~4.8s per summary measured on an RTX 2070 Super with qwen3:8b, which ruled
-  out anything automatic. Cached by item id, generation-guarded so a late
-  result cannot render against the article the user has since moved to.
-  Shipped with one deviation from the design: the feature toggle is global,
-  not per-instance (the connection settings were always meant to be global,
-  and are). Design: `2026-09-10-phase3b-summaries-design.md`. Unverified at
-  runtime — no `qml` binary on this machine — so still needs the owner's
-  manual test pass from that doc's checklist.
+- **3b — per-article summaries. Implemented, unreleased, manually verified.**
+  On demand only — though note the *reason* changed: the original ~4.8s
+  measurement (RTX 2070 Super, qwen3:8b) no longer rules anything out, since
+  llama3.2:3b measures 0.5s warm. Summaries stay on demand because running a
+  GPU job per article that merely scrolled past is rude regardless of how fast
+  it is. Cached by item id, generation-guarded so a late result cannot render
+  against the article the user has since moved to. `i` summarises from the
+  reader, or from the list into a summary-only view that does not fetch the
+  article's page. Shipped with one deviation from the design: the feature
+  toggle is global, not per-instance (the connection settings were always
+  meant to be global, and are). Design:
+  `2026-09-10-phase3b-summaries-design.md`, whose measurement section was
+  rebuilt rather than patched. Manually verified against a live ollama on
+  2026-09-12; there is still no automated coverage of QML runtime behaviour.
 - **3c — digest.** One call over the last 24h of titles and descriptions.
   Cheaper per item than 3b once its plumbing exists.
 - **3d — interest ranking.** Embeddings, ranking unread by similarity to
@@ -53,13 +58,18 @@ is wired to a UI yet.
 
   Closing this out; what's actually left is the two items below.
 
-- **Accessible names for icon-only controls.** Zero `Accessible.*` or
-  tooltips exist across all three QML files — this is a real, unrelated gap
-  from the colour question above: sighted mouse users infer icon meaning
-  from shape and hover text (itself width-gated), screen reader users get
-  nothing. Design written: `2026-09-12-accessibility-names-design.md`. Not
-  yet implemented; no `qml` binary on this machine to verify against, so it
-  will need manual/live testing regardless of who implements it.
+- **Accessible names for icon-only controls. Implemented, unreleased.**
+  There were no `Accessible.*` properties and no tooltips anywhere across the
+  three QML files — a real gap, unrelated to the colour question above:
+  sighted mouse users infer an icon's meaning from its shape and from hover
+  text (itself width-gated), and screen reader users got nothing at all.
+  Sixty-four bindings now name every icon-only control, with names that track
+  state where the control has state, and `Accessible.checked` carrying
+  checkbox state rather than being folded into the name text. Design:
+  `2026-09-12-accessibility-names-design.md`. Still unverified against real
+  assistive tech — there is no `qml` binary here and no screen reader was
+  driven against it — so the names are known to be *present* and not known to
+  be *good*. Worth one pass with an actual reader before release.
 - **Colour theme presets.** Still wanted — deuteranopia/protanopia/
   tritanopia presets plus custom colours, over the current matugen-only
   setup. Research verdict: feasible and safe, but `Theme` is a `pragma
