@@ -44,6 +44,21 @@ describe("PRESETS", () => {
     test("custom preset has an empty baseUrl for the user to fill in", () => {
         assert.equal(PRESETS.custom.baseUrl, "");
     });
+
+    test("ollama preset suggests a default embed model, others leave it for the user", () => {
+        assert.equal(PRESETS.ollama.embedModel, "nomic-embed-text");
+        assert.equal(PRESETS.vllm.embedModel, "");
+        assert.equal(PRESETS.llamacpp.embedModel, "");
+        assert.equal(PRESETS.lmstudio.embedModel, "");
+        assert.equal(PRESETS.custom.embedModel, "");
+    });
+
+    test("existing .label/.baseUrl shape is unchanged -- adding embedModel doesn't break older readers", () => {
+        Object.keys(PRESETS).forEach(function (key) {
+            assert.equal(typeof PRESETS[key].label, "string");
+            assert.equal(typeof PRESETS[key].baseUrl, "string");
+        });
+    });
 });
 
 // ─── isConfigured ───
@@ -272,6 +287,175 @@ describe("digestRequest", () => {
     });
 });
 
+// ─── embedRequest ───
+
+describe("embedRequest", () => {
+    function embedConfig(overrides) {
+        return baseConfig(Object.assign({ embedModel: "nomic-embed-text" }, overrides || {}));
+    }
+
+    test("POST {baseUrl}/embeddings with model + input array, order preserved in the body", () => {
+        var provider = createAiProvider(embedConfig());
+        var req = provider.embedRequest(["first text", "second text"]);
+        assert.ok(req);
+        assert.equal(req.argv[req.argv.length - 1], "http://localhost:11434/v1/embeddings");
+        var xIdx = req.argv.indexOf("-X");
+        assert.equal(req.argv[xIdx + 1], "POST");
+        var body = JSON.parse(req.argv[req.argv.indexOf("-d") + 1]);
+        assert.equal(body.model, "nomic-embed-text");
+        assert.deepEqual(body.input, ["first text", "second text"]);
+    });
+
+    test("returns null when texts is not an array", () => {
+        var provider = createAiProvider(embedConfig());
+        assert.equal(provider.embedRequest(null), null);
+        assert.equal(provider.embedRequest("just a string"), null);
+        assert.equal(provider.embedRequest(undefined), null);
+    });
+
+    test("returns null when texts is empty", () => {
+        var provider = createAiProvider(embedConfig());
+        assert.equal(provider.embedRequest([]), null);
+    });
+
+    test("returns null when there is no embed model configured at all (no config.embedModel, no options.model)", () => {
+        var provider = createAiProvider(baseConfig());
+        assert.equal(provider.embedRequest(["text"]), null);
+    });
+
+    test("does NOT fall back to the chat model -- an unconfigured embedModel is null even though model (chat) is set", () => {
+        var provider = createAiProvider(baseConfig({ model: "qwen2.5-coder:7b" }));
+        assert.equal(provider.embedRequest(["text"]), null);
+    });
+
+    test("options.model overrides config.embedModel for a single call", () => {
+        var provider = createAiProvider(embedConfig({ embedModel: "nomic-embed-text" }));
+        var req = provider.embedRequest(["text"], { model: "mxbai-embed-large" });
+        var body = JSON.parse(req.argv[req.argv.indexOf("-d") + 1]);
+        assert.equal(body.model, "mxbai-embed-large");
+    });
+
+    test("options.model alone is enough even when config.embedModel is unset", () => {
+        var provider = createAiProvider(baseConfig());
+        var req = provider.embedRequest(["text"], { model: "mxbai-embed-large" });
+        assert.ok(req);
+        var body = JSON.parse(req.argv[req.argv.indexOf("-d") + 1]);
+        assert.equal(body.model, "mxbai-embed-large");
+    });
+
+    test("returns null when not configured (no baseUrl) even with an embed model set", () => {
+        var provider = createAiProvider(embedConfig({ baseUrl: "" }));
+        assert.equal(provider.embedRequest(["text"]), null);
+    });
+
+    test("canEmbed() is false with no embed model, true once config.embedModel or options.model is present", () => {
+        var noEmbed = createAiProvider(baseConfig());
+        assert.equal(noEmbed.canEmbed(), false);
+        assert.equal(noEmbed.canEmbed({ model: "mxbai-embed-large" }), true);
+
+        var withEmbed = createAiProvider(embedConfig());
+        assert.equal(withEmbed.canEmbed(), true);
+    });
+
+    test("canEmbed() does not change isConfigured()'s existing meaning (chat-only config)", () => {
+        var provider = createAiProvider(baseConfig());
+        assert.equal(provider.isConfigured(), true);
+        assert.equal(provider.canEmbed(), false);
+    });
+
+    test("parse: well-formed multi-vector response", () => {
+        var provider = createAiProvider(embedConfig());
+        var body = JSON.stringify({
+            data: [
+                { embedding: [0.1, 0.2], index: 0 },
+                { embedding: [0.3, 0.4], index: 1 }
+            ]
+        });
+        var result = provider.embedRequest(["a", "b"]).parse(body);
+        assert.equal(result.error, null);
+        assert.deepEqual(result.vectors, [[0.1, 0.2], [0.3, 0.4]]);
+    });
+
+    test("parse: order preservation when the API returns entries out of order, using .index not array position", () => {
+        var provider = createAiProvider(embedConfig());
+        var body = JSON.stringify({
+            data: [
+                { embedding: [9, 9], index: 2 },
+                { embedding: [1, 1], index: 0 },
+                { embedding: [5, 5], index: 1 }
+            ]
+        });
+        var result = provider.embedRequest(["first", "second", "third"]).parse(body);
+        assert.equal(result.error, null);
+        assert.deepEqual(result.vectors, [[1, 1], [5, 5], [9, 9]]);
+    });
+
+    test("parse: malformed JSON", () => {
+        var provider = createAiProvider(embedConfig());
+        var result = provider.embedRequest(["a"]).parse("{not json");
+        assert.equal(result.vectors, null);
+        assert.equal(typeof result.error, "string");
+    });
+
+    test("parse: error field in the response", () => {
+        var provider = createAiProvider(embedConfig());
+        var body = JSON.stringify({ error: { message: "model 'nomic-embed-text' not found" } });
+        var result = provider.embedRequest(["a"]).parse(body);
+        assert.equal(result.vectors, null);
+        assert.ok(result.error.indexOf("not found") !== -1);
+    });
+
+    test("parse: empty data array", () => {
+        var provider = createAiProvider(embedConfig());
+        var result = provider.embedRequest(["a"]).parse(JSON.stringify({ data: [] }));
+        assert.equal(result.vectors, null);
+        assert.equal(typeof result.error, "string");
+    });
+
+    test("parse: missing data field entirely", () => {
+        var provider = createAiProvider(embedConfig());
+        var result = provider.embedRequest(["a"]).parse(JSON.stringify({ object: "list" }));
+        assert.equal(result.vectors, null);
+        assert.equal(typeof result.error, "string");
+    });
+});
+
+// ─── prepareEmbedText ───
+
+describe("prepareEmbedText", () => {
+    test("joins title and description", () => {
+        var provider = createAiProvider(baseConfig());
+        var text = provider.prepareEmbedText({ title: "A Title", description: "Some description text." });
+        assert.ok(text.indexOf("A Title") !== -1);
+        assert.ok(text.indexOf("Some description text.") !== -1);
+    });
+
+    test("falls back to .content when .description is absent, matching summarisePrompt's convention", () => {
+        var provider = createAiProvider(baseConfig());
+        var text = provider.prepareEmbedText({ title: "T", content: "Body via content field." });
+        assert.ok(text.indexOf("Body via content field.") !== -1);
+    });
+
+    test("caps at the default character limit for a very long article body", () => {
+        var provider = createAiProvider(baseConfig());
+        var longBody = new Array(20001).join("x"); // 20,000 chars
+        var text = provider.prepareEmbedText({ title: "T", description: longBody });
+        assert.ok(text.length <= 2000, "expected the default cap to apply, got length " + text.length);
+    });
+
+    test("cap is overridable via maxChars", () => {
+        var provider = createAiProvider(baseConfig());
+        var longBody = new Array(1000).join("x");
+        var text = provider.prepareEmbedText({ title: "", description: longBody }, 50);
+        assert.equal(text.length, 50);
+    });
+
+    test("handles a missing/null article without throwing", () => {
+        var provider = createAiProvider(baseConfig());
+        assert.equal(provider.prepareEmbedText(null), "\n\n");
+    });
+});
+
 // ─── SECURITY: apiKey never concatenated into a larger string ───
 
 describe("SECURITY: apiKey isolation in argv", () => {
@@ -306,6 +490,11 @@ describe("SECURITY: apiKey isolation in argv", () => {
     test("digestRequest isolates the apiKey", () => {
         var provider = createAiProvider(baseConfig({ apiKey: KEY }));
         assertKeyIsolated(provider.digestRequest(items).argv);
+    });
+
+    test("embedRequest isolates the apiKey", () => {
+        var provider = createAiProvider(baseConfig({ apiKey: KEY, embedModel: "nomic-embed-text" }));
+        assertKeyIsolated(provider.embedRequest(["text"]).argv);
     });
 
     test("a key containing shell metacharacters is still a single opaque argv element", () => {
@@ -455,6 +644,52 @@ describe("LIVE ollama (opt-in, self-skipping)", () => {
                 "message.reasoning must never be concatenated into the summary text");
         }
     });
+
+    // A real embedding model (nomic-embed-text) may well not be pulled on
+    // this machine even when ollama itself is up and serving a chat model --
+    // unlike the chat tests above, this must ALSO skip cleanly on a
+    // model-not-found error, not just on "nothing is listening".
+    test("embedRequest against a real ollama with nomic-embed-text, or skip if unreachable/model absent", { timeout: 20000 }, async (t) => {
+        var ping = await pingOllama();
+        if (!ping.up) {
+            t.skip("no runtime reachable on localhost:11434");
+            return;
+        }
+
+        var provider = createAiProvider({
+            label: "Ollama", baseUrl: "http://localhost:11434/v1",
+            model: "qwen2.5-coder:7b", embedModel: "nomic-embed-text", apiKey: "", timeoutMs: 15000
+        });
+        var req = provider.embedRequest(["a short local test sentence", "a second one"]);
+        var bodyStr = req.argv[req.argv.indexOf("-d") + 1];
+
+        var stdout = await new Promise(function (resolve, reject) {
+            var httpReq = http.request("http://localhost:11434/v1/embeddings", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                timeout: 15000
+            }, function (res) {
+                var data = "";
+                res.on("data", function (chunk) { data += chunk; });
+                res.on("end", function () { resolve(data); });
+            });
+            httpReq.on("error", reject);
+            httpReq.on("timeout", function () { httpReq.destroy(); reject(new Error("timeout")); });
+            httpReq.write(bodyStr);
+            httpReq.end();
+        });
+
+        var result = req.parse(stdout);
+        if (result.error) {
+            // Most likely "model not found" -- nomic-embed-text isn't
+            // pulled here. That's an environment fact, not a test failure.
+            t.skip("embedding model unavailable: " + result.error);
+            return;
+        }
+        assert.equal(result.vectors.length, 2);
+        assert.ok(Array.isArray(result.vectors[0]) && result.vectors[0].length > 0);
+        assert.ok(Array.isArray(result.vectors[1]) && result.vectors[1].length > 0);
+    });
 });
 
 // The argv tests above assert structure (method, url, body) but would not
@@ -462,7 +697,7 @@ describe("LIVE ollama (opt-in, self-skipping)", () => {
 // regression that has no other tripwire. Assert the set explicitly.
 describe("SECURITY: curl hardening flags", () => {
     var provider = createAiProvider({
-        baseUrl: "http://localhost:11434/v1", model: "m"
+        baseUrl: "http://localhost:11434/v1", model: "m", embedModel: "nomic-embed-text"
     });
 
     function flagPairs(argv) {
@@ -476,7 +711,8 @@ describe("SECURITY: curl hardening flags", () => {
     [
         ["probe", function () { return provider.probeRequest(); }],
         ["summarise", function () { return provider.summariseRequest({ title: "t", description: "d" }); }],
-        ["digest", function () { return provider.digestRequest([{ title: "t", description: "d" }]); }]
+        ["digest", function () { return provider.digestRequest([{ title: "t", description: "d" }]); }],
+        ["embed", function () { return provider.embedRequest(["t"]); }]
     ].forEach(function (pair) {
         test(pair[0] + " carries the hardening flags", () => {
             var f = flagPairs(pair[1]().argv);

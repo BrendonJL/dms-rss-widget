@@ -68,12 +68,17 @@ var DIGEST_SYSTEM_PROMPT =
 // port, taken on faith and not exercised against a running instance. Treat
 // a bug report about any of those three as plausibly a wrong default here.
 
+// embedModel is a SUGGESTED default only -- settings UI may offer it as a
+// starting point, nothing here reads it automatically. nomic-embed-text is
+// the ollama default that was actually pulled and tried on this machine
+// alongside qwen3:8b; the others are the same "documented default, not
+// measured" honesty as the baseUrls above.
 var PRESETS = {
-    ollama: { label: "Ollama", baseUrl: "http://localhost:11434/v1" },
-    vllm: { label: "vLLM", baseUrl: "http://localhost:8000/v1" },
-    llamacpp: { label: "llama.cpp", baseUrl: "http://localhost:8080/v1" },
-    lmstudio: { label: "LM Studio", baseUrl: "http://localhost:1234/v1" },
-    custom: { label: "Custom", baseUrl: "" }
+    ollama: { label: "Ollama", baseUrl: "http://localhost:11434/v1", embedModel: "nomic-embed-text" },
+    vllm: { label: "vLLM", baseUrl: "http://localhost:8000/v1", embedModel: "" },
+    llamacpp: { label: "llama.cpp", baseUrl: "http://localhost:8080/v1", embedModel: "" },
+    lmstudio: { label: "LM Studio", baseUrl: "http://localhost:1234/v1", embedModel: "" },
+    custom: { label: "Custom", baseUrl: "", embedModel: "" }
 };
 
 // ─── shared curl argv builder ───
@@ -161,6 +166,63 @@ function parseChatResponse(stdout) {
     return { text: content, error: null };
 }
 
+// parse for /embeddings. Follows parseChatResponse's convention: errors are
+// data, never thrown.
+//
+// The API returns { data: [{ embedding: [...], index: N }, ...] }. index is
+// authoritative -- some runtimes/proxies (and definitely a batched request
+// retried through a load balancer) may not return entries in request order,
+// and the whole point of a batch call is that the caller matches vectors
+// back to articles by position, so trusting array position here would
+// silently mismatch article <-> vector. Reindex by .index when it is a
+// number; only fall back to array position for a response that omits index
+// entirely (a runtime that doesn't send it will send it in order anyway).
+function parseEmbeddingsResponse(stdout) {
+    var parsed;
+    try {
+        parsed = JSON.parse(stdout);
+    } catch (e) {
+        return { vectors: null, error: "Parse failed" };
+    }
+
+    if (parsed && parsed.error) {
+        var msg = (parsed.error && parsed.error.message) || (typeof parsed.error === "string" ? parsed.error : "Unknown error");
+        return { vectors: null, error: "AI: " + msg };
+    }
+
+    if (!parsed || !Array.isArray(parsed.data) || parsed.data.length === 0)
+        return { vectors: null, error: "No embeddings from model" };
+
+    var vectors = new Array(parsed.data.length);
+    for (var i = 0; i < parsed.data.length; i++) {
+        var entry = parsed.data[i] || {};
+        var idx = typeof entry.index === "number" ? entry.index : i;
+        vectors[idx] = Array.isArray(entry.embedding) ? entry.embedding : null;
+    }
+    return { vectors: vectors, error: null };
+}
+
+// ─── embedding text preparation ───
+//
+// Bounded on purpose: embedding endpoints have their own context/token
+// limits, and a full article body can run past 20k characters -- past that
+// limit a request either errors outright or gets silently truncated
+// server-side, which would embed a partial (and misleadingly-weighted)
+// article without any signal that it happened. 2000 characters (~500 tokens
+// at the usual ~4 chars/token rule of thumb) comfortably clears every
+// embedding model's limit encountered in the design doc's research while
+// keeping title + lede, which is what similarity ranking actually needs --
+// callers with a runtime known to allow more can override via maxChars.
+var DEFAULT_EMBED_TEXT_MAX_CHARS = 2000;
+
+function prepareEmbedText(article, maxChars) {
+    var cap = typeof maxChars === "number" && maxChars > 0 ? maxChars : DEFAULT_EMBED_TEXT_MAX_CHARS;
+    var title = (article && article.title) || "";
+    var description = (article && (article.description || article.content)) || "";
+    var text = title + "\n\n" + description;
+    return text.length > cap ? text.slice(0, cap) : text;
+}
+
 // ─── prompt building ───
 
 function summarisePrompt(article) {
@@ -193,12 +255,46 @@ function chatCompletionsBody(model, systemPrompt, userPrompt) {
 
 // ─── factory ───
 
+// Model precedence for an embed call: a per-call options.model wins (a
+// caller doing a one-off embed against a different model shouldn't need a
+// new provider instance), otherwise config.embedModel. Deliberately NO
+// fallback to config.model: that is the CHAT model, usually a generation
+// model that doesn't serve /embeddings at all (or serves it badly), and
+// silently sending chat-model traffic to /embeddings on the assumption it's
+// "close enough" is exactly the kind of wrong-default bug this file's
+// PRESETS comment already warns about. Absent an explicit embed model, the
+// right answer is "not configured", not a guess.
+function resolveEmbedModel(config, options) {
+    if (options && options.model)
+        return options.model;
+    return (config && config.embedModel) || "";
+}
+
 function createAiProvider(config) {
     config = config || {};
 
     return {
         isConfigured: function () {
             return isConfigured(config);
+        },
+
+        // Separate from isConfigured() rather than overloading it: a
+        // provider can be fully configured for chat (baseUrl + model) with
+        // no embedModel set at all, or vice versa -- they are independent
+        // capabilities of the same runtime, and other code already depends
+        // on isConfigured() meaning "chat is usable". Overloading it would
+        // either break that meaning or force every existing caller to pass
+        // an options bag it doesn't have. options.model lets a caller check
+        // "would THIS specific model work" without mutating config.
+        canEmbed: function (options) {
+            return !!(config.baseUrl && resolveEmbedModel(config, options));
+        },
+
+        // Exposed so callers building a batch can prepare each article's
+        // text the same bounded way this file does internally, without
+        // duplicating the cap logic.
+        prepareEmbedText: function (article, maxChars) {
+            return prepareEmbedText(article, maxChars);
         },
 
         // GET {baseUrl}/models -- answers "is a runtime reachable and does
@@ -244,6 +340,29 @@ function createAiProvider(config) {
                 argv: aiCurlArgv("POST", url, config.apiKey, body, config.timeoutMs),
                 timeoutMs: config.timeoutMs || DEFAULT_TIMEOUT_MS,
                 parse: parseChatResponse
+            };
+        },
+
+        // POST {baseUrl}/embeddings for phase 3d's interest ranking:
+        // similarity between unread items and starred ones. texts: array of
+        // already-prepared strings (see prepareEmbedText above) -- one
+        // vector comes back per input, order-preserved by parse() below.
+        // options.model overrides config.embedModel for this one call; see
+        // resolveEmbedModel's comment for why there is no fallback to the
+        // chat model.
+        embedRequest: function (texts, options) {
+            if (!Array.isArray(texts) || texts.length === 0)
+                return null;
+            var model = resolveEmbedModel(config, options);
+            if (!config.baseUrl || !model)
+                return null;
+
+            var body = JSON.stringify({ model: model, input: texts });
+            var url = config.baseUrl + "/embeddings";
+            return {
+                argv: aiCurlArgv("POST", url, config.apiKey, body, config.timeoutMs),
+                timeoutMs: config.timeoutMs || DEFAULT_TIMEOUT_MS,
+                parse: parseEmbeddingsResponse
             };
         }
     };

@@ -187,6 +187,55 @@ DesktopPluginComponent {
         return (typeof CompositorService !== "undefined" && typeof NiriService !== "undefined" && CompositorService.isNiri) ? (NiriService.inOverview || root._overviewGuard) : false;
     }
 
+    // Row actions, each defined once and invoked from BOTH onClicked and
+    // Accessible.onPressAction.
+    //
+    // These used to be duplicated: the accessibility handler carried a
+    // verbatim copy of the pointer handler's body. That is the shape that
+    // rots, and it already had -- the mark-all pair had drifted to reading
+    // its state through two different names. Assistive tech activates via the
+    // press action rather than a synthesised click, so the two paths must
+    // stay identical by construction, not by discipline.
+    //
+    // Every one of them keeps the overview guard: under Niri a click landing
+    // while the overview is open must not act on the row underneath it.
+    function rowToggleSelected(itemId) {
+        if (root._clickFromOverview())
+            return;
+        root.toggleSelected(itemId);
+    }
+
+    function rowToggleRead(itemId, isRead) {
+        if (root._clickFromOverview())
+            return;
+        root.toggleReadSynced(itemId, isRead);
+    }
+
+    function rowToggleBookmark(itemId) {
+        if (root._clickFromOverview())
+            return;
+        root.toggleBookmark(itemId);
+    }
+
+    function rowViewItem(itemId, index) {
+        if (root._clickFromOverview())
+            return;
+        root.viewItem(itemId, index);
+    }
+
+    function toggleSearch() {
+        if (root.searchActive)
+            root.closeSearch();
+        else
+            root.searchActive = true;
+    }
+
+    function toggleAllRead(currentlyAllRead) {
+        root.setAllRead(!currentlyAllRead);
+        if (root.filterMode === "unread")
+            root.applyFilter();
+    }
+
     Connections {
         target: (typeof NiriService !== "undefined") ? NiriService : null
         function onInOverviewChanged() {
@@ -586,6 +635,38 @@ DesktopPluginComponent {
         root.readerStateLoaded = true;
     }
 
+    // Drops cached summaries for items that have aged out of the feed.
+    //
+    // This lives on the refresh-completion path and NOWHERE else. It used to
+    // sit in applyFilter() next to pruneSelected(), which was wrong twice
+    // over. applyFilter() runs on every search keystroke and filter-chip
+    // click, so the prune re-walked the whole dataset for a question that can
+    // only change on a refresh. Worse, applyFilter() also runs immediately
+    // after `allItems` is emptied -- when every feed is disabled or deleted
+    // (see finalizeFetch's descriptors.length === 0 path) and on a
+    // sourceMode switch -- and "prune against an empty dataset" means "delete
+    // every summary", which was then persisted and unrecoverable. A summary
+    // costs a GPU job; losing the lot because a feed was toggled off is not a
+    // recoverable mistake.
+    //
+    // Hence both guards below. The empty check is the important one; the
+    // length check merely avoids rewriting a map of paragraphs when nothing
+    // actually changed.
+    function pruneSummaryCache(items) {
+        if (!items || items.length === 0)
+            return;
+        if (root.summaryOrder.length === 0)
+            return;
+
+        var pruned = ReaderState.pruneSummaries(root.summaryOrder, root.summaryMap, items);
+        if (pruned.order.length === root.summaryOrder.length)
+            return;
+
+        root.summaryOrder = pruned.order;
+        root.summaryMap = pruned.map;
+        root.persistSummaries();
+    }
+
     function persistSummaries() {
         root.writeState("summaries", {
             order: root.summaryOrder,
@@ -624,38 +705,49 @@ DesktopPluginComponent {
         var generation = root.summaryGeneration;
 
         root.runRequest(req, function (output, code) {
-            if (generation !== root.summaryGeneration)
-                return;
-
             readerWindow.summaryLoading = false;
 
+            // Article identity, not generation, decides whether ANY of this
+            // may be shown. summaryGeneration only advances when a new
+            // summary is asked for, so navigating away without asking again
+            // leaves it satisfied -- which used to let a failure from the
+            // previous article render against the one now on screen.
+            var stillOnThisArticle = readerWindow.itemId === itemId;
+            var superseded = generation !== root.summaryGeneration;
+
             if (code !== null && code !== 0) {
-                // No toast, by design. The reader window shows this and
-                // nothing else does -- a local runtime that is simply not
-                // running is not an event worth interrupting anyone for.
-                readerWindow.summaryError = code === 124 ? "The model timed out." : "Could not reach the AI runtime.";
+                if (!superseded && stillOnThisArticle) {
+                    // No toast, by design. The reader window shows this and
+                    // nothing else does -- a local runtime that is simply not
+                    // running is not an event worth interrupting anyone for.
+                    readerWindow.summaryError = code === 124 ? "The model timed out." : "Could not reach the AI runtime.";
+                }
                 return;
             }
 
             var result = req.parse(output);
             if (result.error) {
-                readerWindow.summaryError = result.error;
+                if (!superseded && stillOnThisArticle)
+                    readerWindow.summaryError = result.error;
                 return;
             }
             if (result.text === null || result.text === "") {
-                readerWindow.summaryError = "The model returned an empty summary.";
+                if (!superseded && stillOnThisArticle)
+                    readerWindow.summaryError = "The model returned an empty summary.";
                 return;
             }
 
+            // Cached unconditionally, BEFORE any supersede check. The summary
+            // is keyed by item id, so a result that arrived too late to show
+            // is still a correct answer for the article that asked -- and it
+            // cost a real GPU job. Throwing it away meant asking again later
+            // re-ran the model for an answer we had already paid for.
             var next = ReaderState.addSummary(root.summaryOrder, root.summaryMap, itemId, result.text, root.summaryCap);
             root.summaryOrder = next.order;
             root.summaryMap = next.map;
             root.persistSummaries();
 
-            // Only render if the reader is still on the article that asked.
-            // The generation check above catches a newer request; this catches
-            // the user navigating to an article that has never been asked for.
-            if (readerWindow.itemId === itemId)
+            if (!superseded && stillOnThisArticle)
                 readerWindow.summaryText = result.text;
         });
     }
@@ -792,6 +884,10 @@ DesktopPluginComponent {
     function summariseItem(itemId, index) {
         if (!root.aiReady || !itemId)
             return;
+        // Key-repeat guard, matching the reader's own "i" handler. Without it,
+        // holding "i" spawns one model run per keypress.
+        if (readerWindow.summaryLoading && readerWindow.itemId === itemId)
+            return;
         if (index !== undefined && index >= 0)
             root.keyboardIndex = index;
 
@@ -800,12 +896,8 @@ DesktopPluginComponent {
             return;
 
         readerWindow.openArticle(article, true);
-
-        var cached = ReaderState.getSummary(root.summaryMap, itemId);
-        if (cached !== null) {
-            readerWindow.summaryText = cached;
-            return;
-        }
+        // requestSummary already serves from cache when it can, so there is
+        // no second cache lookup here.
         root.requestSummary(itemId);
     }
 
@@ -1731,6 +1823,7 @@ DesktopPluginComponent {
         }
 
         root.allItems = items;
+        root.pruneSummaryCache(items);
         root.feedStatuses = ctx.statuses.slice();
         root.notifyForNewItems(items);
         root.applyFilter();
@@ -1830,22 +1923,6 @@ DesktopPluginComponent {
         // selectedMap rather than the visible model, so this is safe, and the
         // selection-bar label below surfaces the hidden portion explicitly.
         root.selectedMap = ReaderState.pruneSelected(root.selectedMap, root.allItems);
-
-        // Same reasoning as the selection prune above, against the same full
-        // dataset: a cached summary for an item that has aged out of every
-        // feed is unreachable, so it is only occupying the cap. Guarded on
-        // the length actually changing because this function also runs on
-        // every search keystroke and filter-chip click, and persisting the
-        // whole summary map on each of those would be a real write cost --
-        // this is the one cache in the widget whose entries are paragraphs.
-        if (root.summaryOrder.length > 0) {
-            var pruned = ReaderState.pruneSummaries(root.summaryOrder, root.summaryMap, root.allItems);
-            if (pruned.order.length !== root.summaryOrder.length) {
-                root.summaryOrder = pruned.order;
-                root.summaryMap = pruned.map;
-                root.persistSummaries();
-            }
-        }
 
         root.visibleItems = visible;
 
@@ -2048,21 +2125,11 @@ DesktopPluginComponent {
                     iconSize: 14
                     buttonSize: root.searchToggleSize
                     iconColor: (root.searchActive || root.searching) ? Theme.primary : Theme.surfaceVariantText
-                    onClicked: {
-                        if (root.searchActive)
-                            root.closeSearch();
-                        else
-                            root.searchActive = true;
-                    }
+                    onClicked: root.toggleSearch()
 
                     Accessible.role: Accessible.Button
                     Accessible.name: root.searchActive ? "Close search" : "Search"
-                    Accessible.onPressAction: {
-                        if (root.searchActive)
-                            root.closeSearch();
-                        else
-                            root.searchActive = true;
-                    }
+                    Accessible.onPressAction: root.toggleSearch()
                 }
             }
 
@@ -2177,20 +2244,12 @@ DesktopPluginComponent {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            root.setAllRead(!parent.allRead);
-                            if (root.filterMode === "unread")
-                                root.applyFilter();
-                        }
+                        onClicked: root.toggleAllRead(markAllRect.allRead)
                     }
 
                     Accessible.role: Accessible.Button
                     Accessible.name: markAllRect.allRead ? "Mark all unread" : "Mark all read"
-                    Accessible.onPressAction: {
-                        root.setAllRead(!markAllRect.allRead);
-                        if (root.filterMode === "unread")
-                            root.applyFilter();
-                    }
+                    Accessible.onPressAction: root.toggleAllRead(markAllRect.allRead)
                 }
             }
 
@@ -2568,11 +2627,7 @@ DesktopPluginComponent {
                                 // activeFocusOnTab comment on the two
                                 // trailing buttons below for why.
                                 activeFocusOnTab: false
-                                onClicked: {
-                                    if (root._clickFromOverview())
-                                        return;
-                                    root.toggleSelected(model.itemId);
-                                }
+                                onClicked: root.rowToggleSelected(model.itemId)
 
                                 // Checked state is a first-class AT property
                                 // here, not folded into the name string --
@@ -2581,11 +2636,7 @@ DesktopPluginComponent {
                                 Accessible.role: Accessible.CheckBox
                                 Accessible.checked: itemDelegate.isSelected
                                 Accessible.name: "Select " + (model.title || "item")
-                                Accessible.onPressAction: {
-                                    if (root._clickFromOverview())
-                                        return;
-                                    root.toggleSelected(model.itemId);
-                                }
+                                Accessible.onPressAction: root.rowToggleSelected(model.itemId)
 
                                 Behavior on opacity {
                                     NumberAnimation {
@@ -2732,11 +2783,7 @@ DesktopPluginComponent {
                                 // by their own key ("m"/"s"/Space) on the
                                 // cursor row.
                                 activeFocusOnTab: false
-                                onClicked: {
-                                    if (root._clickFromOverview())
-                                        return;
-                                    root.toggleReadSynced(model.itemId, itemDelegate.isRead);
-                                }
+                                onClicked: root.rowToggleRead(model.itemId, itemDelegate.isRead)
 
                                 // Names the action the press will perform
                                 // (not the current state), matching the
@@ -2744,11 +2791,7 @@ DesktopPluginComponent {
                                 // uses.
                                 Accessible.role: Accessible.Button
                                 Accessible.name: "Mark \"" + (model.title || "item") + "\" as " + (itemDelegate.isRead ? "unread" : "read")
-                                Accessible.onPressAction: {
-                                    if (root._clickFromOverview())
-                                        return;
-                                    root.toggleReadSynced(model.itemId, itemDelegate.isRead);
-                                }
+                                Accessible.onPressAction: root.rowToggleRead(model.itemId, itemDelegate.isRead)
 
                                 Behavior on opacity {
                                     NumberAnimation {
@@ -2772,19 +2815,11 @@ DesktopPluginComponent {
                                 enabled: true
                                 // See the mark-read button's comment above.
                                 activeFocusOnTab: false
-                                onClicked: {
-                                    if (root._clickFromOverview())
-                                        return;
-                                    root.toggleBookmark(model.itemId);
-                                }
+                                onClicked: root.rowToggleBookmark(model.itemId)
 
                                 Accessible.role: Accessible.Button
                                 Accessible.name: (itemDelegate.isBookmarked ? "Remove bookmark from \"" : "Bookmark \"") + (model.title || "item") + "\""
-                                Accessible.onPressAction: {
-                                    if (root._clickFromOverview())
-                                        return;
-                                    root.toggleBookmark(model.itemId);
-                                }
+                                Accessible.onPressAction: root.rowToggleBookmark(model.itemId)
 
                                 Behavior on opacity {
                                     NumberAnimation {
@@ -2806,19 +2841,11 @@ DesktopPluginComponent {
                                 enabled: true
                                 // See the mark-read button's comment above.
                                 activeFocusOnTab: false
-                                onClicked: {
-                                    if (root._clickFromOverview())
-                                        return;
-                                    root.viewItem(model.itemId, index);
-                                }
+                                onClicked: root.rowViewItem(model.itemId, index)
 
                                 Accessible.role: Accessible.Button
                                 Accessible.name: "Open \"" + (model.title || "item") + "\" in reader"
-                                Accessible.onPressAction: {
-                                    if (root._clickFromOverview())
-                                        return;
-                                    root.viewItem(model.itemId, index);
-                                }
+                                Accessible.onPressAction: root.rowViewItem(model.itemId, index)
 
                                 Behavior on opacity {
                                     NumberAnimation {

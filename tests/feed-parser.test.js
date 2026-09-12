@@ -17,6 +17,9 @@ const {
     rootElementPrefix,
     stripNamespacePrefix,
     parseOpml,
+    buildOpml,
+    discoverFeeds,
+    buildDiscoveryRequest,
     dedupeItems,
     parseMinifluxEntries
 } = require("../FeedParser.js");
@@ -1300,5 +1303,257 @@ describe("parseMinifluxEntries", () => {
             { id: "m:1", status: "read", starred: true },
             { id: "m:2", status: "unread", starred: false }
         ]);
+    });
+});
+
+// ─── buildOpml ───
+
+describe("buildOpml", () => {
+    test("round-trips a plain feed list through parseOpml", () => {
+        const feeds = [
+            { name: "Example Feed", url: "https://example.com/rss.xml", enabled: true },
+            { name: "Second Feed", url: "http://second.example.com/feed", enabled: false }
+        ];
+        const xml = buildOpml(feeds);
+        const back = parseOpml(xml);
+        assert.deepEqual(back, [
+            { name: "Example Feed", url: "https://example.com/rss.xml" },
+            { name: "Second Feed", url: "http://second.example.com/feed" }
+        ]);
+    });
+
+    test("round-trips a title containing an ampersand", () => {
+        const feeds = [{ name: "Tom & Jerry", url: "https://example.com/feed", enabled: true }];
+        const xml = buildOpml(feeds);
+        assert.match(xml, /text="Tom &amp; Jerry"/);
+        assert.deepEqual(parseOpml(xml), [{ name: "Tom & Jerry", url: "https://example.com/feed" }]);
+    });
+
+    test("round-trips a URL with an already-encoded-looking & query separator", () => {
+        const feeds = [{ name: "Query Feed", url: "https://example.com/feed?a=1&b=2&c=3", enabled: true }];
+        const xml = buildOpml(feeds);
+        assert.match(xml, /xmlUrl="https:\/\/example\.com\/feed\?a=1&amp;b=2&amp;c=3"/);
+        assert.deepEqual(parseOpml(xml), feeds.map(({ name, url }) => ({ name, url })));
+    });
+
+    test("round-trips titles containing double quotes, single quotes, and angle brackets", () => {
+        const feeds = [
+            { name: 'The "Best" Feed', url: "https://example.com/a", enabled: true },
+            { name: "Reader's Digest", url: "https://example.com/b", enabled: true },
+            { name: "5 < 10 & 10 > 5", url: "https://example.com/c", enabled: true }
+        ];
+        const xml = buildOpml(feeds);
+        assert.deepEqual(parseOpml(xml), feeds.map(({ name, url }) => ({ name, url })));
+    });
+
+    test("falls back to url as name when name is missing", () => {
+        const xml = buildOpml([{ url: "https://example.com/feed", enabled: true }]);
+        assert.deepEqual(parseOpml(xml), [{ name: "https://example.com/feed", url: "https://example.com/feed" }]);
+    });
+
+    test("empty array produces a valid, empty OPML document", () => {
+        const xml = buildOpml([]);
+        assert.match(xml, /<opml version="2.0">/);
+        assert.match(xml, /<body>\s*<\/body>/);
+        assert.deepEqual(parseOpml(xml), []);
+    });
+
+    test("null/undefined input does not throw and produces empty OPML", () => {
+        assert.doesNotThrow(() => buildOpml(null));
+        assert.doesNotThrow(() => buildOpml(undefined));
+        assert.deepEqual(parseOpml(buildOpml(null)), []);
+    });
+
+    test("garbage entries (missing url, non-objects, null) are skipped without throwing", () => {
+        const feeds = [
+            null,
+            {},
+            { name: "no url here" },
+            "just a string",
+            { name: "Valid", url: "https://example.com/ok", enabled: true }
+        ];
+        const xml = buildOpml(feeds);
+        assert.deepEqual(parseOpml(xml), [{ name: "Valid", url: "https://example.com/ok" }]);
+    });
+
+    test("default title is used when options is omitted", () => {
+        const xml = buildOpml([]);
+        assert.match(xml, /<title>Dank RSS Widget Feeds<\/title>/);
+    });
+
+    test("options.title overrides the default", () => {
+        const xml = buildOpml([], { title: "My Backup" });
+        assert.match(xml, /<title>My Backup<\/title>/);
+    });
+
+    test("options.dateCreated is embedded verbatim and is injectable, not clock-read", () => {
+        const xml = buildOpml([], { dateCreated: "Fri, 01 Jan 2026 00:00:00 GMT" });
+        assert.match(xml, /<dateCreated>Fri, 01 Jan 2026 00:00:00 GMT<\/dateCreated>/);
+
+        // Calling twice with no dateCreated must be byte-identical -- nothing
+        // in here may read the clock.
+        const a = buildOpml([{ name: "X", url: "https://x.com" }]);
+        const b = buildOpml([{ name: "X", url: "https://x.com" }]);
+        assert.equal(a, b);
+        assert.doesNotMatch(a, /dateCreated/);
+    });
+
+    test("enabled is ignored -- a disabled feed is still exported", () => {
+        const xml = buildOpml([{ name: "Disabled", url: "https://example.com/x", enabled: false }]);
+        assert.deepEqual(parseOpml(xml), [{ name: "Disabled", url: "https://example.com/x" }]);
+    });
+});
+
+// ─── discoverFeeds ───
+
+describe("discoverFeeds", () => {
+    test("finds an RSS link with double-quoted attributes", () => {
+        const html = '<html><head><link rel="alternate" type="application/rss+xml" href="/feed.xml" title="Main Feed"></head><body></body></html>';
+        const result = discoverFeeds(html, "https://example.com/blog/");
+        assert.deepEqual(result, [{ title: "Main Feed", url: "https://example.com/feed.xml", type: "rss" }]);
+    });
+
+    test("handles single-quoted, unquoted, and reordered attributes", () => {
+        const html = "<head><link href='/a.xml' type='application/rss+xml' rel='alternate'></head>";
+        const unquoted = "<head><link rel=alternate type=application/atom+xml href=/b.xml></head>";
+        assert.equal(discoverFeeds(html, "https://example.com").length, 1);
+        assert.equal(discoverFeeds(unquoted, "https://example.com").length, 1);
+        assert.equal(discoverFeeds(unquoted, "https://example.com")[0].type, "atom");
+    });
+
+    test("is case-insensitive on tag name, attribute names, and rel/type values", () => {
+        const html = '<HEAD><LINK REL="ALTERNATE" TYPE="APPLICATION/RSS+XML" HREF="/feed.xml"></HEAD>';
+        const result = discoverFeeds(html, "https://example.com");
+        assert.equal(result.length, 1);
+        assert.equal(result[0].url, "https://example.com/feed.xml");
+    });
+
+    test("handles self-closing link tags", () => {
+        const html = '<head><link rel="alternate" type="application/rss+xml" href="/feed.xml" /></head>';
+        assert.equal(discoverFeeds(html, "https://example.com").length, 1);
+    });
+
+    test("resolves relative hrefs against baseUrl: root-relative, directory-relative, and protocol-relative", () => {
+        const rootRelative = discoverFeeds(
+            '<head><link rel="alternate" type="application/rss+xml" href="/feed.xml"></head>',
+            "https://example.com/some/deep/page.html"
+        );
+        assert.equal(rootRelative[0].url, "https://example.com/feed.xml");
+
+        const dirRelative = discoverFeeds(
+            '<head><link rel="alternate" type="application/rss+xml" href="feed.xml"></head>',
+            "https://example.com/blog/index.html"
+        );
+        assert.equal(dirRelative[0].url, "https://example.com/blog/feed.xml");
+
+        const protocolRelative = discoverFeeds(
+            '<head><link rel="alternate" type="application/rss+xml" href="//cdn.example.com/feed.xml"></head>',
+            "https://example.com/"
+        );
+        assert.equal(protocolRelative[0].url, "https://cdn.example.com/feed.xml");
+    });
+
+    test("rejects unsafe resolved URLs via the existing isSafeUrl allowlist", () => {
+        const html = '<head><link rel="alternate" type="application/rss+xml" href="javascript:alert(1)"></head>';
+        assert.deepEqual(discoverFeeds(html, "https://example.com"), []);
+    });
+
+    test("ignores <link> tags without rel=alternate or with an unsupported type", () => {
+        const html = `<head>
+            <link rel="stylesheet" href="/style.css">
+            <link rel="alternate" type="text/html" href="/page">
+            <link rel="alternate" type="application/rss+xml" href="/feed.xml">
+        </head>`;
+        const result = discoverFeeds(html, "https://example.com");
+        assert.equal(result.length, 1);
+        assert.equal(result[0].url, "https://example.com/feed.xml");
+    });
+
+    test("ignores <link> tags outside <head>", () => {
+        const html = '<head><title>t</title></head><body><link rel="alternate" type="application/rss+xml" href="/feed.xml"></body>';
+        assert.deepEqual(discoverFeeds(html, "https://example.com"), []);
+    });
+
+    test("ranks RSS/Atom above JSON Feed, and comment feeds last regardless of format", () => {
+        const html = `<head>
+            <link rel="alternate" type="application/json" href="/feed.json" title="JSON Feed">
+            <link rel="alternate" type="application/rss+xml" href="/comments/feed" title="Comments Feed">
+            <link rel="alternate" type="application/atom+xml" href="/atom.xml" title="Atom">
+            <link rel="alternate" type="application/rss+xml" href="/feed.xml" title="RSS">
+        </head>`;
+        const result = discoverFeeds(html, "https://example.com");
+        assert.deepEqual(result.map(f => f.type), ["atom", "rss", "json", "rss"]);
+        assert.equal(result[result.length - 1].title, "Comments Feed");
+    });
+
+    test("deduplicates identical resolved URLs", () => {
+        const html = `<head>
+            <link rel="alternate" type="application/rss+xml" href="/feed.xml" title="A">
+            <link rel="alternate" type="application/rss+xml" href="/feed.xml" title="B">
+        </head>`;
+        assert.equal(discoverFeeds(html, "https://example.com").length, 1);
+    });
+
+    test("real-world-shaped HTML with multiple feed links and unrelated <link> tags", () => {
+        const html = `<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Example Blog</title>
+    <link rel="stylesheet" href="/assets/site.css">
+    <link rel="icon" href="/favicon.ico">
+    <link rel="canonical" href="https://example.com/blog/">
+    <link rel="alternate" type="application/rss+xml" title="Example Blog &raquo; Feed" href="https://example.com/feed/">
+    <link rel="alternate" type="application/rss+xml" title="Example Blog &raquo; Comments Feed" href="https://example.com/comments/feed/">
+    <link rel="alternate" type="application/atom+xml" title="Example Blog Atom" href="/feed/atom/">
+    <link rel="preload" href="/assets/font.woff2" as="font">
+</head>
+<body>
+    <p>Welcome</p>
+</body>
+</html>`;
+        const result = discoverFeeds(html, "https://example.com/blog/");
+        assert.equal(result.length, 3);
+        // Both non-comment links are RSS/Atom (tied rank), so document order
+        // wins between them; the comments feed sinks below both regardless.
+        assert.equal(result[0].url, "https://example.com/feed/");
+        assert.equal(result[1].url, "https://example.com/feed/atom/");
+        assert.equal(result[2].url, "https://example.com/comments/feed/");
+    });
+
+    test("empty/null html does not throw", () => {
+        assert.deepEqual(discoverFeeds("", "https://example.com"), []);
+        assert.deepEqual(discoverFeeds(null, "https://example.com"), []);
+    });
+
+    test("missing href is skipped, not thrown", () => {
+        const html = '<head><link rel="alternate" type="application/rss+xml"></head>';
+        assert.deepEqual(discoverFeeds(html, "https://example.com"), []);
+    });
+});
+
+// ─── buildDiscoveryRequest ───
+
+describe("buildDiscoveryRequest", () => {
+    test("returns a curl descriptor with the shared hardening flags, never doing I/O itself", () => {
+        const req = buildDiscoveryRequest("https://example.com/");
+        assert.equal(req.argv[0], "curl");
+        assert.ok(req.argv.includes("--connect-timeout"));
+        assert.ok(req.argv.includes("--max-time"));
+        assert.ok(req.argv.includes("--proto"));
+        assert.equal(req.argv[req.argv.indexOf("--proto") + 1], "=http,https");
+        assert.ok(req.argv.includes("--proto-redir"));
+        assert.equal(req.argv[req.argv.indexOf("--proto-redir") + 1], "=http,https");
+        assert.ok(req.argv.includes("--max-filesize"));
+        assert.ok(req.argv.includes("-L"));
+        assert.ok(req.argv.some(a => typeof a === "string" && a.indexOf("DankRssWidget") !== -1));
+        assert.equal(req.argv[req.argv.length - 1], "https://example.com/");
+        assert.equal(typeof req.parse, "function");
+    });
+
+    test("parse runs discoverFeeds against the fetched body using the original site URL as base", () => {
+        const req = buildDiscoveryRequest("https://example.com/blog/");
+        const html = '<head><link rel="alternate" type="application/rss+xml" href="feed.xml"></head>';
+        assert.deepEqual(req.parse(html), [{ title: "", url: "https://example.com/blog/feed.xml", type: "rss" }]);
     });
 });

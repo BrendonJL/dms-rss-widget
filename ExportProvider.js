@@ -218,7 +218,7 @@ function articleSummaryText(article) {
     return (article && (article.description || article.content)) || "";
 }
 
-function buildBody(article, annotations, caps, config, extracted) {
+function buildBody(article, annotations, caps, config, extracted, imageMap) {
     var parts = [];
     parts.push("# " + ((article && article.title) || ""));
 
@@ -229,6 +229,14 @@ function buildBody(article, annotations, caps, config, extracted) {
     // so falling through to the summary here is that decision, not a
     // separate one.
     var text = wasExtracted(extracted) ? extracted.markdown : articleSummaryText(article);
+
+    // Images are OFF unless the caller passes a map, exactly like `extracted`
+    // defaults to absent above -- an omitted imageMap must reproduce today's
+    // output byte-for-byte. QML only builds and passes one after it has run
+    // collectImageUrls()/buildImageFetchRequest() and attempted the fetches;
+    // this file never fetches anything itself.
+    if (text && imageMap) text = rewriteImageLinks(text, imageMap);
+
     if (text) parts.push(text);
 
     // A link back to the source, so the note is useful on its own once the
@@ -393,7 +401,12 @@ function buildRelPath(config, article) {
 // `extracted` is optional and defaults to absent -- existing callers that
 // pass only (article, annotations) keep writing exactly the summary-only
 // note they always did, with `extracted: false` in the frontmatter.
-function buildNote(config, article, annotations, extracted) {
+//
+// `imageMap` is likewise optional and OFF by default (see buildBody): pass a
+// { url: relativeAttachmentPath } map of the images that were actually
+// downloaded successfully to rewrite the body's image links to local paths;
+// omit it entirely to get today's unchanged output.
+function buildNote(config, article, annotations, extracted, imageMap) {
     if (!config || !config.root)
         return { error: "No export root configured" };
     if (!article)
@@ -410,7 +423,7 @@ function buildNote(config, article, annotations, extracted) {
         return { error: "Generated path escapes the export root" };
 
     var content = buildFrontmatter(article, config, extracted) + "\n\n" +
-        buildBody(article, annotations, caps, config, extracted);
+        buildBody(article, annotations, caps, config, extracted, imageMap);
 
     return { relPath: relPath, content: content };
 }
@@ -523,6 +536,185 @@ function buildArticleFetchRequest(url) {
     };
 }
 
+// ─── images in exported notes (backlog: hotlink vs. download) ───
+//
+// DECISION (do not re-litigate): images are DOWNLOADED into an attachments
+// folder beside the note and the markdown is rewritten to a RELATIVE path,
+// never left as a remote URL. Obsidian renders both local and remote images
+// fine, but Neovim's image plugins (image.nvim, snacks.nvim, etc.) render
+// local files reliably and remote URLs poorly-to-not-at-all -- a relative
+// local path is the only form that renders live in Obsidian, Neovim and a
+// plain markdown viewer alike, which is the whole point of this feature.
+// Hotlinking was rejected even though it is simpler: source sites reorganise
+// and delete images constantly, and a note that silently loses its images
+// months later is a worse failure than the extra disk usage and fetch cost
+// of copying them now.
+//
+// As with buildArticleFetchRequest, this file does no I/O -- these functions
+// only decide URLs, paths and curl argv; QML runs the descriptors and writes
+// the results.
+
+// `isSafeUrl` lives in FeedParser.js, and modules never require() a sibling
+// (see the file header / Architecture.md) -- so the caller passes its own
+// copy in, exactly like createBackends({ FeedParser, ... }) does elsewhere.
+//
+// Order: images found in the note's own markdown first (in the order they
+// appear), then the feed's article.imageUrl if it wasn't already one of
+// them -- that matches reading order, with the feed's "hero" image as a
+// fallback rather than jumping the queue.
+function collectImageUrls(markdown, article, isSafeUrl) {
+    // Object.create(null) rather than {} -- url is attacker-controlled text
+    // and a literal "__proto__" is a legal (if useless) image URL string;
+    // a plain object would treat that key specially, a null-prototype one
+    // just stores it.
+    var seen = Object.create(null);
+    var urls = [];
+
+    function consider(url) {
+        if (!url) return;
+        url = String(url);
+        // data: URIs are already inline in the markdown -- nothing to fetch,
+        // and they are not http(s) so isSafeUrl would reject them anyway;
+        // checked explicitly so the reason is on record rather than
+        // incidental.
+        if (/^data:/i.test(url)) return;
+        if (!isSafeUrl(url)) return;
+        if (seen[url]) return;
+        seen[url] = true;
+        urls.push(url);
+    }
+
+    if (markdown) {
+        // Standard markdown image syntax: ![alt](url) or ![alt](url "title").
+        // The URL is everything up to the first whitespace or the closing
+        // paren, which is enough to separate it from an optional title
+        // without a full markdown parser.
+        var re = /!\[[^\]]*\]\(\s*([^\s)]+)/g;
+        var m;
+        while ((m = re.exec(markdown)) !== null) consider(m[1]);
+    }
+
+    consider(article && article.imageUrl);
+
+    return urls;
+}
+
+// Only a plain, known image extension is ever trusted from a URL -- anything
+// else (missing, absurdly long, containing a slash or dot-dot smuggled in as
+// an "extension") falls back to a safe default rather than being used
+// verbatim. This list is deliberately short: it only needs to cover what
+// browsers and feeds actually serve as inline images.
+var IMAGE_EXT_WHITELIST = { jpg: true, jpeg: true, png: true, gif: true, webp: true, bmp: true, svg: true, avif: true };
+var DEFAULT_IMAGE_EXT = "jpg";
+
+function extensionFromImageUrl(url) {
+    var s = String(url || "");
+    s = s.split(/[?#]/)[0]; // query strings and fragments are not part of the path
+    var lastSlash = s.lastIndexOf("/");
+    var name = lastSlash >= 0 ? s.slice(lastSlash + 1) : s;
+    var dot = name.lastIndexOf(".");
+    if (dot < 0) return DEFAULT_IMAGE_EXT;
+    var ext = name.slice(dot + 1).toLowerCase();
+    // Reject before whitelisting: a genuine extension is short and
+    // alphanumeric, so this alone stops path separators, dot-dot, and
+    // pathological lengths from ever reaching the whitelist check.
+    if (!/^[a-z0-9]{1,5}$/.test(ext)) return DEFAULT_IMAGE_EXT;
+    if (!IMAGE_EXT_WHITELIST[ext]) return DEFAULT_IMAGE_EXT;
+    return ext;
+}
+
+// The relative path an image is written to, e.g. "attachments/My Note-1.jpg".
+// Deterministic in (noteBasename, index) so re-exporting the same note
+// overwrites the same files instead of accumulating duplicates -- imageUrl
+// only ever affects the extension, not the numbering, so a note whose Nth
+// image URL changes between exports still overwrites slot N rather than
+// leaving the old file behind.
+//
+// noteBasename is untrusted (it is derived from the feed-supplied title, the
+// same input buildRelPath sanitises) so it is run back through
+// sanitizeSegment() here rather than trusted just because a caller likely
+// already sanitised it elsewhere -- this function has to be safe called on
+// its own, which is also why there is a direct test for path-traversal
+// attempts against it.
+function attachmentPath(noteBasename, imageUrl, index, options) {
+    options = options || {};
+
+    // attachmentDir is local config, not feed content (like filenameTemplate
+    // elsewhere in this file) -- trimmed of stray slashes so joining below
+    // never doubles a separator, but not sanitised as attacker input.
+    var dir = String(options.attachmentDir || "attachments").replace(/^[\/\\]+|[\/\\]+$/g, "");
+    if (!dir) dir = "attachments";
+
+    var ext = extensionFromImageUrl(imageUrl);
+    var safeBase = sanitizeSegment(String(noteBasename || "")) || "note";
+
+    var suffix = "-" + String(index) + "." + ext;
+    var base = clampUtf8Bytes(safeBase, 255 - suffix.length) + suffix;
+
+    var relPath = dir + "/" + base;
+
+    // Rule-1-style defensive re-check (see isRelPathContained above): dir and
+    // base are both built safely above, so this should be unreachable, but
+    // an attachment path is a filesystem write just like a note path and
+    // deserves the same "don't just trust the sanitiser" re-verification.
+    if (!isRelPathContained(relPath)) return "attachments/attachment-" + String(index) + "." + DEFAULT_IMAGE_EXT;
+
+    return relPath;
+}
+
+// Same curl hardening as buildArticleFetchRequest -- connect/max timeouts,
+// protocol pinned on request and redirect, size-bounded, same User-Agent --
+// but writing with `-o destPath` instead of streaming stdout for QML to
+// write. Notes go through Quickshell's FileView with atomicWrites because
+// FileView writes a QML string (`text`); this file has no Buffer and neither
+// does QML's JS engine, so routing binary image bytes through a JS string
+// the way notes go through FileView.text risks mangling them (invalid UTF-8,
+// embedded NULs) on the way through. Handing curl the destination path keeps
+// binary data off the QML/JS boundary entirely. The tradeoff is losing
+// FileView's atomic-write guarantee for images -- accepted because
+// attachmentPath() is deterministic, so a half-written image from an
+// interrupted fetch is simply overwritten clean on the next export, unlike a
+// half-written note (which could clobber content a user was mid-edit on).
+var IMAGE_FETCH_CONNECT_TIMEOUT_S = 5;
+var IMAGE_FETCH_MAX_TIME_S = 20;
+var IMAGE_FETCH_MAX_BYTES = 20000000; // hero images run larger than article HTML; generous but still bounded
+
+function buildImageFetchRequest(imageUrl, destPath) {
+    return {
+        argv: [
+            "curl", "-sS",
+            "--connect-timeout", String(IMAGE_FETCH_CONNECT_TIMEOUT_S),
+            "--max-time", String(IMAGE_FETCH_MAX_TIME_S),
+            "-L",
+            "--proto", "=http,https",
+            "--proto-redir", "=http,https",
+            "--max-redirs", "5",
+            "--max-filesize", String(IMAGE_FETCH_MAX_BYTES),
+            "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0",
+            "-o", String(destPath),
+            String(imageUrl)
+        ],
+        timeoutMs: null,
+        parse: null // nothing on stdout to parse -- curl wrote the file itself
+    };
+}
+
+// Rewrites ![alt](url "title") image links to their local attachment path.
+// FAILURE-DEGRADATION RULE: only a URL present as a key in urlToPathMap is
+// rewritten. A URL that failed to download (or was never attempted) is left
+// pointing at its original remote address rather than a local path that
+// doesn't exist -- a broken relative link renders as nothing everywhere,
+// whereas the untouched remote URL still has a chance of loading (or at
+// worst behaves exactly as it did before this feature existed).
+function rewriteImageLinks(markdown, urlToPathMap) {
+    if (!markdown || !urlToPathMap) return markdown;
+    return markdown.replace(/!\[([^\]]*)\]\(\s*([^\s)]+)([^)]*)\)/g, function (whole, alt, url, rest) {
+        var replacement = Object.prototype.hasOwnProperty.call(urlToPathMap, url) ? urlToPathMap[url] : null;
+        if (!replacement) return whole;
+        return "![" + alt + "](" + replacement + rest + ")";
+    });
+}
+
 // ─── factory ───
 
 function createExportProvider(config) {
@@ -530,8 +722,8 @@ function createExportProvider(config) {
     var caps = capabilitiesFor(config);
 
     return {
-        buildNote: function (article, annotations, extracted) {
-            return buildNote(config, article, annotations, extracted);
+        buildNote: function (article, annotations, extracted, imageMap) {
+            return buildNote(config, article, annotations, extracted, imageMap);
         },
 
         capabilities: caps,
@@ -548,6 +740,10 @@ if (typeof module !== "undefined" && module.exports) {
         buildArticleFetchRequest: buildArticleFetchRequest,
         articleSummaryText: articleSummaryText,
         EXPORT_OPEN_PRESETS: EXPORT_OPEN_PRESETS,
-        resolveExportConfig: resolveExportConfig
+        resolveExportConfig: resolveExportConfig,
+        collectImageUrls: collectImageUrls,
+        attachmentPath: attachmentPath,
+        buildImageFetchRequest: buildImageFetchRequest,
+        rewriteImageLinks: rewriteImageLinks
     };
 }

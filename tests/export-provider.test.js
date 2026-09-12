@@ -7,8 +7,28 @@ const {
     buildArticleFetchRequest,
     articleSummaryText,
     EXPORT_OPEN_PRESETS,
-    resolveExportConfig
+    resolveExportConfig,
+    collectImageUrls,
+    attachmentPath,
+    buildImageFetchRequest,
+    rewriteImageLinks
 } = require("../ExportProvider.js");
+
+// A minimal stand-in for FeedParser.js's isSafeUrl -- ExportProvider.js takes
+// it as an argument rather than requiring a sibling module (see
+// Architecture.md), so tests supply their own copy of the same contract:
+// http(s) only, no control characters, no whitespace.
+function isSafeUrl(url) {
+    if (typeof url !== "string") return false;
+    var trimmed = url.trim();
+    if (trimmed === "") return false;
+    for (var i = 0; i < trimmed.length; i++) {
+        var code = trimmed.charCodeAt(i);
+        if (code <= 0x1F || code === 0x7F) return false;
+    }
+    if (/\s/.test(trimmed)) return false;
+    return /^https?:\/\//i.test(trimmed);
+}
 
 var ROOT = "/home/user/vault";
 
@@ -666,6 +686,234 @@ describe("articleSummaryText", () => {
         assert.equal(articleSummaryText({ content: "c" }), "c");
         assert.equal(articleSummaryText({}), "");
         assert.equal(articleSummaryText(null), "");
+    });
+});
+
+// ─── images: collectImageUrls ───
+
+describe("collectImageUrls", () => {
+    test("collects markdown image URLs in order", () => {
+        var md = "intro ![a](https://example.com/1.jpg) middle ![b](https://example.com/2.png) end";
+        var urls = collectImageUrls(md, {}, isSafeUrl);
+        assert.deepEqual(urls, ["https://example.com/1.jpg", "https://example.com/2.png"]);
+    });
+
+    test("de-duplicates repeated URLs, keeping first-seen order", () => {
+        var md = "![a](https://example.com/1.jpg) ... ![a again](https://example.com/1.jpg)";
+        var urls = collectImageUrls(md, {}, isSafeUrl);
+        assert.deepEqual(urls, ["https://example.com/1.jpg"]);
+    });
+
+    test("appends article.imageUrl if present and not already collected", () => {
+        var md = "![a](https://example.com/1.jpg)";
+        var urls = collectImageUrls(md, { imageUrl: "https://example.com/hero.jpg" }, isSafeUrl);
+        assert.deepEqual(urls, ["https://example.com/1.jpg", "https://example.com/hero.jpg"]);
+    });
+
+    test("does not duplicate article.imageUrl if already in the markdown", () => {
+        var md = "![a](https://example.com/hero.jpg)";
+        var urls = collectImageUrls(md, { imageUrl: "https://example.com/hero.jpg" }, isSafeUrl);
+        assert.deepEqual(urls, ["https://example.com/hero.jpg"]);
+    });
+
+    test("data: URIs are skipped -- already inline, nothing to fetch", () => {
+        var md = "![inline](data:image/png;base64,AAAA) ![remote](https://example.com/1.jpg)";
+        var urls = collectImageUrls(md, {}, isSafeUrl);
+        assert.deepEqual(urls, ["https://example.com/1.jpg"]);
+    });
+
+    test("unsafe URLs are rejected via the injected isSafeUrl", () => {
+        var md = "![a](javascript:alert(1)) ![b](https://example.com/ok.jpg) ![c](ftp://example.com/x.jpg)";
+        var urls = collectImageUrls(md, {}, isSafeUrl);
+        assert.deepEqual(urls, ["https://example.com/ok.jpg"]);
+    });
+
+    test("no markdown and no article.imageUrl -> empty list", () => {
+        assert.deepEqual(collectImageUrls("", {}, isSafeUrl), []);
+        assert.deepEqual(collectImageUrls(null, null, isSafeUrl), []);
+    });
+
+    test("an unsafe article.imageUrl is rejected too", () => {
+        var urls = collectImageUrls("", { imageUrl: "javascript:alert(1)" }, isSafeUrl);
+        assert.deepEqual(urls, []);
+    });
+});
+
+// ─── images: attachmentPath ───
+
+describe("attachmentPath", () => {
+    test("basic shape: attachments/<note-slug>-<index>.<ext>", () => {
+        var p = attachmentPath("My Note", "https://example.com/photo.jpg", 1);
+        assert.equal(p, "attachments/My Note-1.jpg");
+    });
+
+    test("deterministic: same note + URL + index -> same path every time", () => {
+        var a = attachmentPath("My Note", "https://example.com/photo.jpg", 1);
+        var b = attachmentPath("My Note", "https://example.com/photo.jpg", 1);
+        assert.equal(a, b);
+    });
+
+    test("respects options.attachmentDir override", () => {
+        var p = attachmentPath("My Note", "https://example.com/photo.jpg", 1, { attachmentDir: "images" });
+        assert.equal(p, "images/My Note-1.jpg");
+    });
+
+    test("extension derived from the URL path, ignoring a query string", () => {
+        var p = attachmentPath("Note", "https://example.com/photo.png?w=800&h=600", 1);
+        assert.match(p, /\.png$/);
+    });
+
+    test("missing extension falls back to the default", () => {
+        var p = attachmentPath("Note", "https://example.com/photo", 1);
+        assert.match(p, /\.jpg$/);
+    });
+
+    test("absurd/unknown extension falls back to the default rather than being trusted", () => {
+        var p = attachmentPath("Note", "https://example.com/file.exe", 1);
+        assert.match(p, /\.jpg$/);
+        var p2 = attachmentPath("Note", "https://example.com/file." + "x".repeat(50), 1);
+        assert.match(p2, /\.jpg$/);
+    });
+
+    test("path traversal in the note basename never reaches the output path", () => {
+        var p = attachmentPath("../../../etc/passwd", "https://example.com/photo.jpg", 1);
+        assert.equal(p.indexOf(".."), -1);
+        assert.equal(p.indexOf("/etc/"), -1);
+        // Still a single safe segment under the attachment dir.
+        assert.match(p, /^attachments\/[^/]+\.jpg$/);
+    });
+
+    test("embedded slashes in the note basename are stripped, not treated as directories", () => {
+        var p = attachmentPath("a/b/c", "https://example.com/photo.jpg", 1);
+        assert.match(p, /^attachments\/[^/]+\.jpg$/);
+    });
+
+    test("an absolute-looking note basename does not produce an absolute path", () => {
+        var p = attachmentPath("/etc/passwd", "https://example.com/photo.jpg", 1);
+        assert.notEqual(p.charAt(0), "/");
+    });
+
+    test("path traversal smuggled into the extension is neutralised", () => {
+        var p = attachmentPath("Note", "https://example.com/x.jpg/../../../etc/passwd", 1);
+        assert.equal(p.indexOf(".."), -1);
+        assert.match(p, /\.jpg$/); // "passwd" is not a known image extension -> default
+    });
+
+    test("a very long note basename is clamped, extension and index preserved", () => {
+        var p = attachmentPath("x".repeat(500), "https://example.com/photo.jpg", 3);
+        assert.ok(Buffer.byteLength(p.split("/")[1], "utf8") <= 255);
+        assert.match(p, /-3\.jpg$/);
+    });
+
+    test("unicode note basenames are preserved without corrupting the path", () => {
+        var p = attachmentPath("漢字タイトル", "https://example.com/photo.jpg", 1);
+        assert.match(p, /^attachments\/.+-1\.jpg$/);
+        assert.equal(Buffer.byteLength(p.split("/")[1], "utf8"), Buffer.byteLength(p.split("/")[1], "utf8"));
+    });
+
+    test("different indexes for the same note+URL never collide", () => {
+        var a = attachmentPath("Note", "https://example.com/photo.jpg", 1);
+        var b = attachmentPath("Note", "https://example.com/photo.jpg", 2);
+        assert.notEqual(a, b);
+    });
+});
+
+// ─── images: buildImageFetchRequest ───
+
+describe("buildImageFetchRequest", () => {
+    test("returns a spawnable argv, no shell string, never called over the network here", () => {
+        var req = buildImageFetchRequest("https://example.com/photo.jpg", "/vault/attachments/Note-1.jpg");
+        assert.ok(Array.isArray(req.argv));
+        assert.equal(req.argv[0], "curl");
+    });
+
+    test("writes directly to destPath via -o rather than stdout", () => {
+        var req = buildImageFetchRequest("https://example.com/photo.jpg", "/vault/attachments/Note-1.jpg");
+        var oIdx = req.argv.indexOf("-o");
+        assert.ok(oIdx !== -1);
+        assert.equal(req.argv[oIdx + 1], "/vault/attachments/Note-1.jpg");
+    });
+
+    test("the image URL is the final argv element", () => {
+        var req = buildImageFetchRequest("https://example.com/photo.jpg", "/vault/attachments/Note-1.jpg");
+        assert.equal(req.argv[req.argv.length - 1], "https://example.com/photo.jpg");
+    });
+
+    test("mirrors buildArticleFetchRequest's hardening: timeouts, protocol pinning, size cap, UA", () => {
+        var req = buildImageFetchRequest("https://example.com/photo.jpg", "/vault/a.jpg");
+        assert.ok(req.argv.indexOf("--connect-timeout") !== -1);
+        assert.ok(req.argv.indexOf("--max-time") !== -1);
+        assert.ok(req.argv.indexOf("--max-filesize") !== -1);
+        assert.equal(req.argv[req.argv.indexOf("--proto") + 1], "=http,https");
+        assert.equal(req.argv[req.argv.indexOf("--proto-redir") + 1], "=http,https");
+        var uaIdx = req.argv.indexOf("-A");
+        assert.ok(uaIdx !== -1);
+        var articleReq = buildArticleFetchRequest("https://example.com/article");
+        assert.equal(req.argv[uaIdx + 1], articleReq.argv[articleReq.argv.indexOf("-A") + 1]);
+    });
+});
+
+// ─── images: rewriteImageLinks ───
+
+describe("rewriteImageLinks", () => {
+    test("rewrites a successfully-fetched image to its local path", () => {
+        var md = "![alt](https://example.com/1.jpg)";
+        var out = rewriteImageLinks(md, { "https://example.com/1.jpg": "attachments/Note-1.jpg" });
+        assert.equal(out, "![alt](attachments/Note-1.jpg)");
+    });
+
+    test("partial failure: fetched image is rewritten, failed one keeps its original URL", () => {
+        var md = "![a](https://example.com/ok.jpg) and ![b](https://example.com/fail.jpg)";
+        // Only the successful download appears in the map -- the failed one
+        // is simply absent, per the degradation rule.
+        var out = rewriteImageLinks(md, { "https://example.com/ok.jpg": "attachments/Note-1.jpg" });
+        assert.ok(out.indexOf("![a](attachments/Note-1.jpg)") !== -1);
+        assert.ok(out.indexOf("![b](https://example.com/fail.jpg)") !== -1);
+    });
+
+    test("preserves an image title after the URL", () => {
+        var md = '![alt](https://example.com/1.jpg "a caption")';
+        var out = rewriteImageLinks(md, { "https://example.com/1.jpg": "attachments/Note-1.jpg" });
+        assert.equal(out, '![alt](attachments/Note-1.jpg "a caption")');
+    });
+
+    test("empty map leaves markdown untouched", () => {
+        var md = "![alt](https://example.com/1.jpg)";
+        assert.equal(rewriteImageLinks(md, {}), md);
+    });
+
+    test("null/undefined markdown or map is handled without throwing", () => {
+        assert.equal(rewriteImageLinks(null, {}), null);
+        assert.equal(rewriteImageLinks("text", null), "text");
+    });
+});
+
+// ─── images: threading through buildNote (default OFF) ───
+
+describe("buildNote: images option", () => {
+    test("images off (no imageMap arg) is byte-identical to the pre-images behaviour", () => {
+        var p = createExportProvider(baseConfig());
+        var art = article({ description: "See ![alt](https://example.com/1.jpg) here." });
+        var withoutArg = p.buildNote(art, []);
+        var withUndefined = p.buildNote(art, [], undefined, undefined);
+        assert.equal(withoutArg.content, withUndefined.content);
+        assert.ok(withoutArg.content.indexOf("https://example.com/1.jpg") !== -1,
+            "image URL must remain untouched when the feature is off");
+    });
+
+    test("images on: successfully-mapped image is rewritten in the note body", () => {
+        var p = createExportProvider(baseConfig());
+        var art = article({ description: "See ![alt](https://example.com/1.jpg) here." });
+        var result = p.buildNote(art, [], undefined, { "https://example.com/1.jpg": "attachments/Note-1.jpg" });
+        assert.ok(result.content.indexOf("attachments/Note-1.jpg") !== -1);
+        assert.equal(result.content.indexOf("https://example.com/1.jpg"), -1);
+    });
+
+    test("images on but map empty (nothing downloaded successfully) keeps original URLs", () => {
+        var p = createExportProvider(baseConfig());
+        var art = article({ description: "See ![alt](https://example.com/1.jpg) here." });
+        var result = p.buildNote(art, [], undefined, {});
+        assert.ok(result.content.indexOf("https://example.com/1.jpg") !== -1);
     });
 });
 
