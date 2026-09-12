@@ -83,13 +83,13 @@
     <rect x="545" y="373" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
     <text x="559" y="392" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">k</text>
     <text x="600" y="392" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Scroll the article</text>
-    <rect x="500" y="412" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
-    <rect x="503" y="415" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
-    <text x="517" y="434" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">n</text>
-    <rect x="542" y="412" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
-    <rect x="545" y="415" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
-    <text x="559" y="434" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">p</text>
-    <text x="600" y="434" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Next / previous article</text>
+    <rect x="500" y="412" width="52" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
+    <rect x="503" y="415" width="46" height="24" rx="4" ry="4" fill="#424a53"/>
+    <text x="526" y="434" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="600" text-anchor="middle">⇧J</text>
+    <rect x="560" y="412" width="52" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
+    <rect x="563" y="415" width="46" height="24" rx="4" ry="4" fill="#424a53"/>
+    <text x="586" y="434" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="600" text-anchor="middle">⇧K</text>
+    <text x="636" y="434" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Next / previous article</text>
     <rect x="500" y="454" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
     <rect x="503" y="457" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
     <text x="517" y="476" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">o</text>

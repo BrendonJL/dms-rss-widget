@@ -29,8 +29,7 @@ var Key_E = 0x45;
 // Reader-window-only: next/previous article. Not routed through
 // resolveKey() -- see ReaderWindow.qml, which handles its own keys directly
 // against these constants the same way it already does for J/K/O/E/S.
-var Key_N = 0x4e;
-var Key_P = 0x50;
+
 var Key_Space = 0x20;
 var Key_Slash = 0x2f;
 var Key_Question = 0x3f;
@@ -227,8 +226,6 @@ if (typeof module !== "undefined" && module.exports) {
         Key_M: Key_M,
         Key_S: Key_S,
         Key_E: Key_E,
-        Key_N: Key_N,
-        Key_P: Key_P,
         Key_Space: Key_Space,
         Key_Slash: Key_Slash,
         Key_Question: Key_Question,

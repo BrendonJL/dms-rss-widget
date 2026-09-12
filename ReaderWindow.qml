@@ -30,7 +30,7 @@ DankFloatingWindow {
     // list, so an export or a star from in here behaves identically.
     signal exportRequested(var article)
     signal starRequested(string itemId)
-    // Fired by "n"/"p" (and Shift+J/Shift+K). The widget owns navigation --
+    // Fired by Shift+J / Shift+K. The widget owns navigation --
     // it advances its own list cursor and calls openArticle() again with the
     // new item -- because this window has no idea what list it came from or
     // what "next" even means beyond that. This is the actual fix for focus
@@ -323,14 +323,6 @@ DankFloatingWindow {
                     bodyFlickable.contentY = Math.max(bodyFlickable.contentY - root.scrollStep, 0);
                 event.accepted = true;
                 break;
-            case KeyMap.Key_N:
-                root.nextRequested();
-                event.accepted = true;
-                break;
-            case KeyMap.Key_P:
-                root.prevRequested();
-                event.accepted = true;
-                break;
             case KeyMap.Key_O:
                 root._openExternal();
                 event.accepted = true;
@@ -404,7 +396,7 @@ DankFloatingWindow {
                 // plus the keys that move through it without closing this
                 // window -- see nextRequested/prevRequested above.
                 StyledText {
-                    text: (root.positionIndex + 1) + " of " + root.positionCount + "  ·  n/p to navigate"
+                    text: (root.positionIndex + 1) + " of " + root.positionCount + "  ·  shift+j / shift+k to navigate"
                     visible: root.positionCount > 0
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText

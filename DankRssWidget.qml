@@ -226,7 +226,7 @@ DesktopPluginComponent {
                 desc: "View in reader window"
             },
             {
-                keys: ["n", "p"],
+                keys: ["shift+j", "shift+k"],
                 desc: "Next / previous article (in reader window)"
             },
             {
@@ -610,7 +610,7 @@ DesktopPluginComponent {
     // open.
     // index is the row's position in feedModel, when the caller has it (a
     // keyboard row action or a row's own view button always does) -- it
-    // becomes the reader window's cursor, so "n"/"p" and the position
+    // becomes the reader window's cursor, so shift+j/shift+k and the position
     // indicator have a list position to work from. Omit it (or pass < 0) to
     // leave keyboardIndex alone.
     function viewItem(itemId, index) {
@@ -631,7 +631,7 @@ DesktopPluginComponent {
             readerWindow.openArticle(article);
     }
 
-    // Wired to the reader window's "n"/"p" (nextRequested/prevRequested).
+    // Wired to the reader window's shift+j/shift+k (nextRequested/prevRequested).
     // Deliberately reuses viewItem() rather than calling
     // readerWindow.openArticle() straight from here -- opening an article
     // must always go through the same read-marking wrapper "v" and the row's
