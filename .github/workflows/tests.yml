@@ -37,12 +37,15 @@ jobs:
       # The DMS registry crawls version/author straight out of plugin.json, so a
       # bumped manifest with no changelog entry ships a version nobody can read
       # about -- and an unbumped manifest ships changes the registry never shows.
+      #
+      # Reads CHANGELOG.md. The changelog lived in README.md until the docs
+      # were split out to the wiki; this check moved with it.
       - name: version has a changelog entry
         run: |
           v=$(jq -r .version plugin.json)
           echo "plugin.json version: $v"
-          grep -qF "### $v" README.md || {
-            echo "::error file=README.md::No '### $v' section in the README changelog"
+          grep -qF "### $v" CHANGELOG.md || {
+            echo "::error file=CHANGELOG.md::No '### $v' section in CHANGELOG.md"
             exit 1
           }
 
