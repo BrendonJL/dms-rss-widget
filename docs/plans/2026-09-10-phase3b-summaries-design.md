@@ -1,7 +1,7 @@
 # Design: stage 3b — per-article summaries
 
 Date: 2026-09-10
-Status: ready to implement
+Status: partly built — the summary cache exists, the UI does not
 Depends on: 3a (`AiProvider.js`, done)
 
 `AiProvider.js` is built and tested but wired to nothing. This gives it a UI.

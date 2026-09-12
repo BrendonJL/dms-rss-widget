@@ -1,7 +1,7 @@
 # Design: stage 4d — open in any editor
 
 Date: 2026-09-11
-Status: ready to implement
+Status: implemented — on `develop`, unreleased
 Depends on: 4b (export)
 
 Notes export as markdown. Opening one afterwards is currently hardcoded to

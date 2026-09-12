@@ -1,7 +1,7 @@
 # Design: stage 1c — settings UI for Google Reader
 
 Date: 2026-09-09
-Status: ready to implement
+Status: implemented — shipped in 2.4.0
 Depends on: Phase 1a/1b (both done)
 
 Google Reader works but is reachable only by hand-editing `plugin_settings.json`.

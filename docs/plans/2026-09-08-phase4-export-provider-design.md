@@ -1,14 +1,19 @@
 # Design: Phase 4 — notes / export provider
 
 Date: 2026-09-08
-Status: 4a ready to implement
+Status: implemented (4a, 4b, 4c, 4d) — on `develop`, unreleased
 Depends on: nothing. Blocks Phase 5 (reader/annotation app).
 
-> **Status:** stage 4a implemented — `ExportProvider.js`, its tests, and the
-> QML DI round-trip (`tests/qml/export-provider.qml`) all exist. Stage 4b (the
-> QML side: writing via `FileView`, wiring it into the widget) is not
-> implemented — nothing in `DankRssWidget.qml` references `ExportProvider.js`
-> yet.
+> **Status:** stages 4a–4d are all implemented, on `develop` and unreleased.
+> 4a is `ExportProvider.js` plus the QML DI round-trip
+> (`tests/qml/export-provider.qml`); 4b wired it into the widget (the `e`
+> binding, the selection-bar action, the Notes Export settings section, and
+> one `FileView` per note); 4c added `HtmlExtract.js` and optional full-text
+> extraction; 4d replaced the three fixed provider behaviours with a `{path}`
+> open-command template plus editor presets. Two things below were **changed**
+> in the course of that: tags are written to the frontmatter only (not
+> repeated in the body), and `exportKind` is now the id of an open preset
+> rather than a value that fully determines behaviour by itself.
 
 ## Principle
 

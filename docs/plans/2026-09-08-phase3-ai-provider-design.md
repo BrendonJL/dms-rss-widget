@@ -1,14 +1,17 @@
 # Design: Phase 3 — local AI provider
 
 Date: 2026-09-08
-Status: ready to implement (stage 3a); UX stages depend on measurements below
+Status: 3a implemented; 3b-3d not built
 Depends on: Phase 0 (backend interface), for config plumbing only
 
 > **Status:** stage 3a implemented — `AiProvider.js`, its tests, and the QML
 > DI round-trip (`tests/qml/ai-provider.qml`) all exist. Stages 3b-3d
 > (per-article TL;DR, digest, interest ranking — the actual UI features) are
-> not implemented; nothing in `DankRssWidget.qml` references `AiProvider.js`
-> yet.
+> **still not implemented**; nothing in `DankRssWidget.qml` or
+> `DankRssWidgetSettings.qml` references `AiProvider.js`. The bounded summary
+> cache in `ReaderState.js` (`addSummary`/`getSummary`/`hasSummary`/
+> `pruneSummaries`) was built ahead of 3b and is the only part of it that
+> exists.
 
 ## Interface: the OpenAI-compatible chat API, not "an ollama integration"
 

@@ -1,7 +1,7 @@
 # Design: stage 4c — full-text extraction
 
 Date: 2026-09-11
-Status: ready to implement
+Status: implemented — on `develop`, unreleased
 Depends on: 4a/4b (export)
 
 Exported notes currently hold the feed's summary — typically ~1,000 characters

@@ -1,7 +1,7 @@
 # Design: Phase 5 — reading window
 
 Date: 2026-09-11 (rewritten; supersedes the annotation-app design of the same day)
-Status: design only, blocked on judging extraction quality
+Status: implemented — on `develop`, unreleased
 Depends on: 4c (extraction), 4b (export)
 
 A window that shows one article properly. The widget triages; this reads.

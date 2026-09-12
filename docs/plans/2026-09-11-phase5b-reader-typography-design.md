@@ -1,7 +1,7 @@
 # Design: stage 5b — reader typography
 
 Date: 2026-09-11
-Status: ready to implement
+Status: implemented — on `develop`, unreleased
 Depends on: Phase 5 (the window exists)
 
 From reading a real article in it. The window is right; what it renders is not
