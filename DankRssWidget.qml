@@ -81,6 +81,9 @@ DesktopPluginComponent {
     // something to do without the user having opted in.
     property bool exportFullText: pluginData.exportFullText ?? false
 
+    // Empty means follow Theme.fontFamily -- see ReaderWindow.qml.
+    property string readerFontFamily: pluginData.readerFontFamily ?? ""
+
     readonly property var exportProvider: ExportProvider.createExportProvider({
         kind: root.exportKind,
         root: root.exportRoot,
@@ -1637,6 +1640,7 @@ DesktopPluginComponent {
     // list -- same functions, same settings, same toasts.
     ReaderWindow {
         id: readerWindow
+        readerFontFamily: root.readerFontFamily
         onExportRequested: article => root.exportArticles([article])
         onStarRequested: itemId => root.toggleBookmark(itemId)
 

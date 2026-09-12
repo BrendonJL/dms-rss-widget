@@ -14,7 +14,8 @@ const {
     plainTextLength,
     decodeEntities,
     isSafeHref,
-    indexPageReason
+    indexPageReason,
+    normalizeForReader
 } = require("../HtmlExtract.js");
 
 var FIXTURES = path.join(__dirname, "fixtures", "articles");
@@ -548,5 +549,110 @@ describe("promo sections are dropped from the article body", () => {
             "<ul><li>First step, which explains something and links to <a href='/one'>a source</a></li>" +
             "<li>Second step, also with explanation and <a href='/two'>another source</a></li></ul>"));
         assert.match(out, /First step/);
+    });
+});
+
+// Phase 5b: reader-only content normalisation. See
+// docs/plans/2026-09-11-phase5b-reader-typography-design.md -- this runs in
+// the reader window ONLY (ReaderWindow.qml calls it), never in extraction or
+// export, so extractArticle()/emitMarkdown() output is untouched by it.
+describe("normalizeForReader: duplicate title heading", () => {
+    test("drops a leading H1 that matches the title", () => {
+        const md = "# Cloud outage takes down half the internet\n\nThe outage began at 9am.";
+        const out = normalizeForReader(md, "Cloud outage takes down half the internet");
+        assert.doesNotMatch(out, /^#/);
+        assert.match(out, /The outage began at 9am\./);
+    });
+
+    test("compares case-insensitively on collapsed whitespace", () => {
+        const md = "#   CLOUD   outage takes  down half the internet\n\nBody text.";
+        const out = normalizeForReader(md, "Cloud outage takes down half the internet");
+        assert.doesNotMatch(out, /^#/);
+    });
+
+    // The heading survives -- it is not dropped -- but still gets levelled
+    // to H2 like any other surviving top-level heading; see the demotion
+    // describe block below for that half of the behaviour.
+    test("keeps a first heading that genuinely differs from the title", () => {
+        const md = "# Live: markets react to the outage\n\nBody text.";
+        const out = normalizeForReader(md, "Cloud outage takes down half the internet");
+        assert.match(out, /Live: markets react to the outage/);
+        assert.doesNotMatch(out, /^# Live/, "a differing heading is kept, not dropped");
+    });
+
+    test("does nothing when there is no title to compare against", () => {
+        const md = "# Some heading\n\nBody text.";
+        const out = normalizeForReader(md, "");
+        assert.match(out, /Some heading/);
+    });
+
+    test("does nothing when the body has no leading heading at all", () => {
+        const md = "Just a paragraph, no heading.";
+        const out = normalizeForReader(md, "Some title");
+        assert.equal(out, md);
+    });
+});
+
+describe("normalizeForReader: heading demotion", () => {
+    test("demotes a surviving genuine H1 (and deeper headings) to H2+", () => {
+        const md = "# Live: markets react\n\n### A sub-point\n\nBody text.";
+        const out = normalizeForReader(md, "Different title");
+        assert.match(out, /^## Live: markets react/);
+        assert.match(out, /#### A sub-point/);
+    });
+
+    test("leaves headings alone when the body already starts at H2", () => {
+        const md = "## Section one\n\nBody text.\n\n### Sub-section";
+        const out = normalizeForReader(md, "");
+        assert.match(out, /^## Section one/);
+        assert.match(out, /### Sub-section/);
+    });
+
+    test("a dropped duplicate H1 does not cause the remaining H2s to demote", () => {
+        const md = "# The Title\n\n## Real section\n\nBody text.";
+        const out = normalizeForReader(md, "The Title");
+        assert.match(out, /^## Real section/);
+        assert.doesNotMatch(out, /### Real section/);
+    });
+});
+
+describe("normalizeForReader: leading link-only lines", () => {
+    test("drops a byline/section-tag link before the first paragraph", () => {
+        const md = "[Analysis](https://example.com/analysis)\n\n" +
+            "[Ben Doherty](https://example.com/author)\n\n" +
+            "This is the real first paragraph of the article.";
+        const out = normalizeForReader(md, "");
+        assert.doesNotMatch(out, /Analysis/);
+        assert.doesNotMatch(out, /Ben Doherty/);
+        assert.match(out, /This is the real first paragraph/);
+    });
+
+    test("leaves a link-only line alone once the article has started", () => {
+        const md = "This is the real first paragraph of the article.\n\n" +
+            "[Related coverage](https://example.com/related)\n\n" +
+            "More article text follows.";
+        const out = normalizeForReader(md, "");
+        assert.match(out, /\[Related coverage\]/, "mid-article link-only lines are the promo case, handled elsewhere");
+    });
+
+    test("a heading before the first paragraph is not treated as link-only chrome", () => {
+        const md = "## Overview\n\n[Analysis](https://example.com/analysis)\n\nFirst real paragraph.";
+        const out = normalizeForReader(md, "");
+        assert.match(out, /^## Overview/);
+        assert.doesNotMatch(out, /Analysis/);
+    });
+});
+
+// The normaliser is reader-only. extractArticle() -- the function export
+// (buildNote) builds on -- must keep emitting the article's own H1 exactly
+// as before; only ReaderWindow.qml calls normalizeForReader() afterward.
+describe("the normaliser does not run inside extraction/export", () => {
+    test("extractArticle's markdown still has the raw H1 a note file needs", () => {
+        const html = "<html><body><article><h1>Cloud outage takes down half the internet</h1>" +
+            "<p>" + "The outage began at nine in the morning and lasted for hours. ".repeat(4) +
+            "</p></article></body></html>";
+        const out = extractArticle(html, { baseUrl: "https://example.com/a", summary: "s" }).markdown;
+        assert.match(out, /^# Cloud outage takes down half the internet/,
+            "extractArticle must not have applied normalizeForReader's title-dedup");
     });
 });

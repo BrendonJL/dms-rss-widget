@@ -1706,4 +1706,51 @@ PluginSettings {
         ]
         defaultValue: "primary"
     }
+
+    // ─── Reader ───
+
+    StyledRect {
+        width: parent.width
+        height: 1
+        color: Theme.outlineVariant
+    }
+
+    StyledText {
+        width: parent.width
+        text: "Reader"
+        font.pixelSize: Theme.fontSizeMedium
+        font.weight: Font.Medium
+        color: Theme.surfaceText
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+
+        StyledText {
+            text: "Reader Font"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "Leave empty to follow your DMS font."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        DankTextField {
+            id: readerFontFamilyField
+            activeFocusOnTab: false
+            width: parent.width
+            placeholderText: "Follows Theme.fontFamily"
+            text: root.loadValue("readerFontFamily", "")
+            onTextChanged: root.saveValue("readerFontFamily", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(readerFontFamilyField);
+            }
+        }
+    }
 }

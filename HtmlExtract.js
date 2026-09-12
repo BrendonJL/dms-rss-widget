@@ -710,6 +710,109 @@ function emitMarkdown(node, opts) {
     return emitBlockChildren(node.children, 0, opts).trim();
 }
 
+// ─── reader-only content normalisation ───
+//
+// Everything below runs ONLY in the reader window, never in export. A note
+// file has no window chrome showing the title, so its leading H1 is the only
+// title it gets and stays exactly as extracted -- normalizeForReader() is
+// called by ReaderWindow.qml alone, and extractArticle()/emitMarkdown() above
+// never touch it.
+
+function collapseWhitespace(text) {
+    return String(text || "").replace(/\s+/g, " ").trim();
+}
+
+// The extractor emits the article's own <h1> as the body's first block,
+// which is usually the same headline already shown in the window's own
+// title bar -- two copies of the same title, one of them (Qt's h1 metrics)
+// enormous. Drop it only when it actually duplicates the title: an article
+// whose real first heading differs from the feed's title (a live blog's
+// running head, a title the site rewrote) must keep it.
+function dropDuplicateTitleHeading(markdown, title) {
+    var md = String(markdown || "");
+    if (!title) return md;
+
+    var blocks = md.split("\n\n");
+    if (blocks.length === 0) return md;
+    var m = /^#\s+(.+)$/.exec(blocks[0].trim());
+    if (!m) return md;
+
+    if (collapseWhitespace(m[1]).toLowerCase() !== collapseWhitespace(title).toLowerCase())
+        return md;
+
+    return blocks.slice(1).join("\n\n");
+}
+
+// The window header already renders as the H1; a body heading at the same
+// level competes with it. Only fires when the body's own top level truly is
+// H1 (an undropped, genuinely different leading heading, or a second H1
+// further down) -- content that already starts at H2 or deeper is left
+// alone rather than promoted, since "demote" only ever means "push down".
+function demoteHeadingsToH2(markdown) {
+    var blocks = String(markdown || "").split("\n\n");
+    var minLevel = 7;
+    for (var i = 0; i < blocks.length; i++) {
+        var level = headingLevel(blocks[i]);
+        if (level > 0 && level < minLevel) minLevel = level;
+    }
+    if (minLevel !== 1) return markdown;
+
+    return blocks.map(function (block) {
+        var level = headingLevel(block);
+        if (level === 0) return block;
+        return block.replace(/^#{1,6}/, repeat("#", Math.min(level + 1, 6)));
+    }).join("\n\n");
+}
+
+function isLinkOnlyBlock(block) {
+    var lines = String(block || "").split("\n")
+        .map(function (l) { return l.trim(); })
+        .filter(function (l) { return l !== ""; });
+    if (lines.length === 0) return false;
+    for (var i = 0; i < lines.length; i++) {
+        if (!/^\[[^\]]*\]\([^)]*\)$/.test(lines[i])) return false;
+    }
+    return true;
+}
+
+// Bylines and section tags ("Analysis", "Ben Doherty") often land as their
+// own paragraph-shaped block ahead of the actual article text, rendering as
+// bare links before any prose. Drop those, but only up to the first real
+// paragraph -- a link-only block once the article has started is the promo
+// case dropPromoSections() already handles, and everything past that point
+// is content, not chrome.
+function dropLeadingLinkOnlyLines(markdown) {
+    var blocks = String(markdown || "").split("\n\n");
+    var out = [];
+    var sawParagraph = false;
+
+    for (var i = 0; i < blocks.length; i++) {
+        var block = blocks[i];
+        if (sawParagraph || block.trim() === "" || headingLevel(block) > 0) {
+            out.push(block);
+            continue;
+        }
+        if (isLinkOnlyBlock(block)) continue;
+        sawParagraph = true;
+        out.push(block);
+    }
+
+    return out.join("\n\n");
+}
+
+// The one entry point ReaderWindow.qml calls. Order matters: the duplicate
+// title has to go before headings are levelled, so a surviving genuine H1
+// (not a duplicate) is the one considered for demotion; link-only lines are
+// judged last so a dropped title heading doesn't itself count as "the first
+// paragraph".
+function normalizeForReader(markdown, title) {
+    var out = String(markdown || "");
+    out = dropDuplicateTitleHeading(out, title);
+    out = demoteHeadingsToH2(out);
+    out = dropLeadingLinkOnlyLines(out);
+    return out;
+}
+
 // ─── plain-text length (for the fallback comparison) ───
 // Strips markdown syntax back out so a markdown result and a plain-text
 // summary are compared on the same basis.
@@ -807,6 +910,7 @@ if (typeof module !== "undefined" && module.exports) {
         plainTextLength: plainTextLength,
         decodeEntities: decodeEntities,
         isSafeHref: isSafeHref,
-        indexPageReason: indexPageReason
+        indexPageReason: indexPageReason,
+        normalizeForReader: normalizeForReader
     };
 }

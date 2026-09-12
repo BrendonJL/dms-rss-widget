@@ -49,6 +49,13 @@ DankFloatingWindow {
     property bool usedFallback: false
     property string fallbackReason: ""
 
+    // Empty follows Theme.fontFamily -- this user's DMS font is a deliberate
+    // choice, so the reader must default to it rather than to some other
+    // "reading" font. A name that doesn't resolve just falls back to the
+    // theme font, same as any other unresolvable QML font.family.
+    property string readerFontFamily: ""
+    readonly property string effectiveFontFamily: root.readerFontFamily !== "" ? root.readerFontFamily : Theme.fontFamily
+
     property var _article: null
     // Guards a stale fetch callback from clobbering a newer article: opening
     // a second article while the first is still fetching must not let the
@@ -91,7 +98,7 @@ DankFloatingWindow {
         root.fallbackReason = "";
 
         var summary = ExportProvider.articleSummaryText(article);
-        root.body = summary;
+        root.body = HtmlExtract.normalizeForReader(summary, root.articleTitle);
         root.visible = true;
         bodyFlickable.contentY = 0;
 
@@ -119,7 +126,7 @@ DankFloatingWindow {
                     baseUrl: article.link || ""
                 });
                 if (!extracted.usedFallback) {
-                    root.body = extracted.markdown;
+                    root.body = HtmlExtract.normalizeForReader(extracted.markdown, root.articleTitle);
                     return;
                 }
                 root.usedFallback = true;
@@ -128,7 +135,7 @@ DankFloatingWindow {
                 root.usedFallback = true;
                 root.fallbackReason = "could not fetch the article";
             }
-            root.body = summary;
+            root.body = HtmlExtract.normalizeForReader(summary, root.articleTitle);
         }, undefined, req.timeoutMs || undefined);
     }
 
@@ -178,9 +185,94 @@ DankFloatingWindow {
 
     readonly property var _bodyBlocks: root._splitBlocks(root.body)
 
+    // Text.MarkdownText is still the right tool for INLINE formatting inside
+    // a block -- bold, italic, links, inline code -- but its own per-level
+    // heading metrics don't follow lineHeight and don't move with
+    // bodyFontSize, which is exactly what stage 5b's screenshot showed
+    // (an h1 that scaled hard and wrapped over five lines). So every block
+    // is classified here and given explicit size/weight/line-height instead
+    // of letting Qt's markdown defaults choose.
+    function _classifyBlock(block) {
+        var text = String(block || "");
+        var firstLine = text.split("\n")[0];
+        if (/^\s*```/.test(text))
+            return "code";
+        var heading = /^(#{1,6})\s/.exec(firstLine);
+        if (heading)
+            return heading[1].length <= 2 ? "h2" : "h3";
+        if (/^\s*>/.test(firstLine))
+            return "blockquote";
+        if (/^\s*(?:[-*]|\d+\.)\s/.test(firstLine))
+            return "list";
+        return "paragraph";
+    }
+
+    // Qt's own heading rendering inside Text.MarkdownText applies its own
+    // built-in per-level size regardless of the item's own font.pixelSize --
+    // that fixed scaling, not following bodyFontSize or lineHeight, is
+    // exactly what the screenshot this design responds to showed. Stripping
+    // the leading "#"s off a heading block before it reaches MarkdownText
+    // stops that: the text is now plain, so our own font.pixelSize/weight on
+    // the Text item are what decide its size, while MarkdownText still
+    // parses whatever inline formatting (bold, a link) the heading contains.
+    function _displayText(block, blockType) {
+        var text = String(block || "");
+        if (blockType === "h2" || blockType === "h3")
+            return text.replace(/^#{1,6}\s+/, "");
+        return text;
+    }
+
+    // Relative to bodyFontSize throughout, so the whole scale moves together
+    // when the reader's font size changes -- nothing here is an absolute
+    // pixel number.
+    readonly property var _blockMetrics: ({
+            h2: {
+                size: root.bodyFontSize * 1.35,
+                weight: Font.Medium,
+                lineHeight: 1.3,
+                italic: false,
+                mono: false
+            },
+            h3: {
+                size: root.bodyFontSize * 1.15,
+                weight: Font.Medium,
+                lineHeight: 1.3,
+                italic: false,
+                mono: false
+            },
+            paragraph: {
+                size: root.bodyFontSize,
+                weight: Font.Normal,
+                lineHeight: 1.55,
+                italic: false,
+                mono: false
+            },
+            list: {
+                size: root.bodyFontSize,
+                weight: Font.Normal,
+                lineHeight: 1.5,
+                italic: false,
+                mono: false
+            },
+            blockquote: {
+                size: root.bodyFontSize,
+                weight: Font.Normal,
+                lineHeight: 1.5,
+                italic: true,
+                mono: false
+            },
+            code: {
+                size: root.bodyFontSize * 0.9,
+                weight: Font.Normal,
+                lineHeight: 1.4,
+                italic: false,
+                mono: true
+            }
+        })
+
     FontMetrics {
         id: bodyMetrics
-        font.family: Theme.fontFamily
+        font.family: root.effectiveFontFamily
         font.pixelSize: root.bodyFontSize
     }
 
@@ -344,14 +436,22 @@ DankFloatingWindow {
                     Text {
                         required property string modelData
 
+                        readonly property string blockType: root._classifyBlock(modelData)
+                        readonly property var metrics: root._blockMetrics[blockType]
+
                         Layout.fillWidth: true
-                        text: modelData
+                        text: root._displayText(modelData, blockType)
                         textFormat: Text.MarkdownText
                         wrapMode: Text.WordWrap
                         color: Theme.surfaceText
-                        font.family: Theme.fontFamily
-                        font.pixelSize: root.bodyFontSize
-                        lineHeight: 1.5
+                        // Code is the one block that genuinely needs the
+                        // monospace family regardless of what the reader
+                        // font is set to -- everything else follows it.
+                        font.family: metrics.mono ? Theme.monoFontFamily : root.effectiveFontFamily
+                        font.pixelSize: metrics.size
+                        font.weight: metrics.weight
+                        font.italic: metrics.italic
+                        lineHeight: metrics.lineHeight
                         lineHeightMode: Text.ProportionalHeight
                         onLinkActivated: link => Qt.openUrlExternally(link)
                     }
