@@ -30,12 +30,29 @@ DankFloatingWindow {
     // list, so an export or a star from in here behaves identically.
     signal exportRequested(var article)
     signal starRequested(string itemId)
+    // Fired by "n"/"p" (and Shift+J/Shift+K). The widget owns navigation --
+    // it advances its own list cursor and calls openArticle() again with the
+    // new item -- because this window has no idea what list it came from or
+    // what "next" even means beyond that. This is the actual fix for focus
+    // getting lost when the window closes: staying inside the reader to move
+    // between articles means the Wayland keyboard-focus boundary between
+    // this window and the widget is never crossed in the first place.
+    signal nextRequested
+    signal prevRequested
 
     property string itemId: ""
     property string articleTitle: ""
     property string source: ""
     property string link: ""
     property real timestamp: 0
+
+    // 0-based position of the open article within the widget's current
+    // list, and that list's length -- bound by the widget to its own
+    // keyboardIndex/feedModel.count, not copied in once and left to go
+    // stale. positionCount of 0 means "no list context" (e.g. the article
+    // isn't in the widget's current filter) and hides the indicator.
+    property int positionIndex: -1
+    property int positionCount: 0
 
     // What's on screen right now: the feed's own summary until (if) a
     // full-text fetch replaces it. Never annotated markdown -- see the file
@@ -283,17 +300,35 @@ DankFloatingWindow {
         activeFocusOnTab: false
 
         Keys.onPressed: event => {
+            var shift = (event.modifiers & KeyMap.ShiftModifier) !== 0;
             switch (event.key) {
             case KeyMap.Key_Escape:
                 root.dismiss();
                 event.accepted = true;
                 break;
             case KeyMap.Key_J:
-                bodyFlickable.contentY = Math.min(bodyFlickable.contentY + root.scrollStep, Math.max(0, bodyFlickable.contentHeight - bodyFlickable.height));
+                // Shift+J is "next article" -- j/k already mean move-by-one
+                // in the list, so the shifted form carries the same muscle
+                // memory over into the reader.
+                if (shift)
+                    root.nextRequested();
+                else
+                    bodyFlickable.contentY = Math.min(bodyFlickable.contentY + root.scrollStep, Math.max(0, bodyFlickable.contentHeight - bodyFlickable.height));
                 event.accepted = true;
                 break;
             case KeyMap.Key_K:
-                bodyFlickable.contentY = Math.max(bodyFlickable.contentY - root.scrollStep, 0);
+                if (shift)
+                    root.prevRequested();
+                else
+                    bodyFlickable.contentY = Math.max(bodyFlickable.contentY - root.scrollStep, 0);
+                event.accepted = true;
+                break;
+            case KeyMap.Key_N:
+                root.nextRequested();
+                event.accepted = true;
+                break;
+            case KeyMap.Key_P:
+                root.prevRequested();
                 event.accepted = true;
                 break;
             case KeyMap.Key_O:
@@ -354,6 +389,23 @@ DankFloatingWindow {
                 StyledText {
                     text: root.timestamp > 0 ? Qt.formatDateTime(new Date(root.timestamp), "MMMM d, yyyy") : ""
                     visible: text !== ""
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.surfaceVariantText
+                }
+
+                StyledText {
+                    text: "·"
+                    visible: root.positionCount > 0 && (root.source !== "" || root.timestamp > 0)
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.surfaceVariantText
+                }
+
+                // Where the open article sits in the widget's current list,
+                // plus the keys that move through it without closing this
+                // window -- see nextRequested/prevRequested above.
+                StyledText {
+                    text: (root.positionIndex + 1) + " of " + root.positionCount + "  ·  n/p to navigate"
+                    visible: root.positionCount > 0
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
                 }

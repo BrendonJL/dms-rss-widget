@@ -226,6 +226,10 @@ DesktopPluginComponent {
                 desc: "View in reader window"
             },
             {
+                keys: ["n", "p"],
+                desc: "Next / previous article (in reader window)"
+            },
+            {
                 keys: ["m"],
                 desc: "Toggle read / unread (whole selection, if any)"
             },
@@ -604,9 +608,16 @@ DesktopPluginComponent {
     // of openItem() runs here -- but unlike openItem() it never opens the
     // link externally; that is the reader window's own "o" binding once it's
     // open.
-    function viewItem(itemId) {
+    // index is the row's position in feedModel, when the caller has it (a
+    // keyboard row action or a row's own view button always does) -- it
+    // becomes the reader window's cursor, so "n"/"p" and the position
+    // indicator have a list position to work from. Omit it (or pass < 0) to
+    // leave keyboardIndex alone.
+    function viewItem(itemId, index) {
         if (!itemId)
             return;
+        if (typeof index === "number" && index >= 0)
+            root.keyboardIndex = index;
         root.markRead(itemId);
         if (root.syncReadOnOpen) {
             var numId = root.backendItemId(itemId);
@@ -618,6 +629,23 @@ DesktopPluginComponent {
         var article = root.itemById(itemId);
         if (article)
             readerWindow.openArticle(article);
+    }
+
+    // Wired to the reader window's "n"/"p" (nextRequested/prevRequested).
+    // Deliberately reuses viewItem() rather than calling
+    // readerWindow.openArticle() straight from here -- opening an article
+    // must always go through the same read-marking wrapper "v" and the row's
+    // view button already use, not a second copy of it. No wraparound: past
+    // either end of feedModel this is a no-op, same as "j"/"k" at rest.
+    function readerAdvance(delta) {
+        if (root.keyboardIndex < 0 || feedModel.count === 0)
+            return;
+        var newIndex = root.keyboardIndex + delta;
+        if (newIndex < 0 || newIndex >= feedModel.count)
+            return;
+        feedListView.positionViewAtIndex(newIndex, ListView.Contain);
+        var row = feedModel.get(newIndex);
+        root.viewItem(row.itemId, newIndex);
     }
 
     // Shared by the mark-read button and the "m" keyboard action. An
@@ -709,7 +737,7 @@ DesktopPluginComponent {
         case "view":
             {
                 var viewRow = feedModel.get(result.index);
-                root.viewItem(viewRow.itemId);
+                root.viewItem(viewRow.itemId, result.index);
                 break;
             }
         case "toggleRead":
@@ -1641,22 +1669,27 @@ DesktopPluginComponent {
     ReaderWindow {
         id: readerWindow
         readerFontFamily: root.readerFontFamily
+        // Bindings, not a one-time copy on open -- j/k/row-click can move
+        // keyboardIndex, or filtering can resize feedModel, while the reader
+        // is still open, and the position indicator/n/p must track that.
+        positionIndex: root.keyboardIndex
+        positionCount: feedModel.count
         onExportRequested: article => root.exportArticles([article])
         onStarRequested: itemId => root.toggleBookmark(itemId)
+        onNextRequested: root.readerAdvance(1)
+        onPrevRequested: root.readerAdvance(-1)
 
-        // Hand keyboard focus back when the window closes, so Esc lands the
-        // user on the next article rather than nowhere. Without this the
-        // widget's surface is left unfocused: acceptsKeyboardFocus falls back
-        // to hover alone, and j/k do nothing until the pointer happens to be
-        // over the widget or the user clicks it.
-        //
-        // This asks; the compositor decides. Under layer-shell OnDemand focus
-        // arrives on a click, so if a window manager does not return focus to
-        // the previously focused surface, a click is still needed.
-        onVisibleChanged: {
-            if (!visible)
-                keyboardScope.forceActiveFocus();
-        }
+        // Closing this window cannot hand Wayland keyboard focus back to the
+        // widget. forceActiveFocus() only sets Qt's own internal focus item,
+        // not compositor keyboard focus -- under layer-shell OnDemand, focus
+        // arrives on a click, and when a floating window closes niri hands
+        // focus to a regular window, not a layer surface. There used to be a
+        // forceActiveFocus() call here; it did not do anything useful, so it
+        // is gone. The actual fix is "n"/"p" (readerAdvance above): moving to
+        // the next/previous article without ever closing the window means
+        // this focus boundary is never crossed. Closing via Esc still needs
+        // a click before j/k work again, same as any other floating window
+        // regaining focus.
     }
 
     // --- UI ---
@@ -2497,7 +2530,7 @@ DesktopPluginComponent {
                                 onClicked: {
                                     if (root._clickFromOverview())
                                         return;
-                                    root.viewItem(model.itemId);
+                                    root.viewItem(model.itemId, index);
                                 }
 
                                 Behavior on opacity {
