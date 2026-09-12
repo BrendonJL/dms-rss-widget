@@ -1055,9 +1055,12 @@ DesktopPluginComponent {
             // is the same mechanism this widget already uses for article links.
             Qt.openUrlExternally(req.url);
         } else if (req.argv) {
-            // Same Proc path every other command in this widget runs through --
-            // argv only, never a shell string (see buildOpenRequest's header).
-            Proc.runCommand(null, req.argv, function () {});
+            // execDetached, NOT Proc.runCommand: an editor is a long-lived
+            // process, and runCommand applies a default timeout and kills what
+            // it spawned when that expires -- which closed the terminal a few
+            // seconds after it opened. Fire and forget instead. Still argv
+            // only, never a shell string (see buildOpenRequest's header).
+            Quickshell.execDetached(req.argv);
         }
     }
 
@@ -1636,6 +1639,20 @@ DesktopPluginComponent {
         id: readerWindow
         onExportRequested: article => root.exportArticles([article])
         onStarRequested: itemId => root.toggleBookmark(itemId)
+
+        // Hand keyboard focus back when the window closes, so Esc lands the
+        // user on the next article rather than nowhere. Without this the
+        // widget's surface is left unfocused: acceptsKeyboardFocus falls back
+        // to hover alone, and j/k do nothing until the pointer happens to be
+        // over the widget or the user clicks it.
+        //
+        // This asks; the compositor decides. Under layer-shell OnDemand focus
+        // arrives on a click, so if a window manager does not return focus to
+        // the previously focused surface, a click is still needed.
+        onVisibleChanged: {
+            if (!visible)
+                keyboardScope.forceActiveFocus();
+        }
     }
 
     // --- UI ---
