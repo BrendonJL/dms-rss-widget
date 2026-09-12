@@ -93,6 +93,16 @@ function aiCurlArgv(method, url, apiKey, body, timeoutMs) {
     var seconds = Math.ceil((timeoutMs || DEFAULT_TIMEOUT_MS) / 1000);
     var args = [
         "curl", "-sS",
+        // --fail-with-body, for the same reason Backends.js grew it: curl
+        // exits 0 on an HTTP 4xx, so a runtime that answered but refused --
+        // a wrong API key, a gated reverse proxy, a model that does not
+        // exist -- was indistinguishable from a dead socket. Test Connection
+        // told the user "could not reach <host>" about a host it had just
+        // reached. This makes a 4xx/5xx exit 22 while STILL returning the
+        // body, so the parse functions can surface the runtime's own error
+        // text instead of a guess. Callers must therefore parse the body on
+        // a nonzero exit rather than bailing on the exit code alone.
+        "--fail-with-body",
         "--connect-timeout", "5",
         "--max-time", String(seconds),
         "--proto", "=http,https",

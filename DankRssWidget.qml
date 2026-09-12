@@ -84,6 +84,15 @@ DesktopPluginComponent {
 
     // Empty means follow Theme.fontFamily -- see ReaderWindow.qml.
     property string readerFontFamily: pluginData.readerFontFamily ?? ""
+    property bool exportImages: pluginData.exportImages ?? false
+    property var notificationRules: pluginData.notificationRules ?? []
+    property bool markReadOnScroll: pluginData.markReadOnScroll ?? false
+    // Ids already announced by a rule. Separate from seenIds: an item can be
+    // seen (counted, not new) long before a newly-added rule first matches it,
+    // and conflating the two would either re-announce on every refresh or
+    // silently swallow the first match.
+    property var notifiedIds: []
+    property string attachmentDir: pluginData.attachmentDir ?? "attachments"
 
     // --- AI summaries (stage 3b) ---
     //
@@ -632,6 +641,8 @@ DesktopPluginComponent {
             root.summaryMap = rebuilt.map;
         }
 
+        root.notifiedIds = ReaderState.boundIdList(root.readState("notifiedIds", []), root.idHistoryCap);
+
         root.readerStateLoaded = true;
     }
 
@@ -720,7 +731,21 @@ DesktopPluginComponent {
                     // No toast, by design. The reader window shows this and
                     // nothing else does -- a local runtime that is simply not
                     // running is not an event worth interrupting anyone for.
-                    readerWindow.summaryError = code === 124 ? "The model timed out." : "Could not reach the AI runtime.";
+                    //
+                    // A nonzero exit is not automatically "unreachable".
+                    // --fail-with-body makes an HTTP 4xx exit 22 while still
+                    // returning the runtime's own error text, which is far
+                    // more use than a guess -- "model not found" beats
+                    // "could not reach" when the host answered perfectly
+                    // well. So parse first and only fall back to the generic
+                    // wording when the body tells us nothing.
+                    var failure = output ? req.parse(output) : null;
+                    if (code === 124)
+                        readerWindow.summaryError = "The model timed out.";
+                    else if (failure && failure.error)
+                        readerWindow.summaryError = failure.error;
+                    else
+                        readerWindow.summaryError = "Could not reach the AI runtime.";
                 }
                 return;
             }
@@ -1302,7 +1327,7 @@ DesktopPluginComponent {
     // never made unless it was asked for.
     function _prepareExportJob(article, title, index) {
         if (!root.exportFullText || !(article && article.link)) {
-            root._writeExportJob(article, title, index, null);
+            root._fetchImagesForJob(article, title, index, null);
             return;
         }
 
@@ -1323,14 +1348,74 @@ DesktopPluginComponent {
                     baseUrl: article.link || ""
                 });
             }
-            root._writeExportJob(article, title, index, extracted);
+            root._fetchImagesForJob(article, title, index, extracted);
         }, undefined, req.timeoutMs || undefined);
+    }
+
+    // Downloads the note's images into the attachments folder, then hands on
+    // to the write. Off by default, and skipped entirely when there is
+    // nothing to fetch, so the common path is unchanged.
+    //
+    // The note path is needed BEFORE the images, because attachment names are
+    // derived from it -- so the note is built once without images purely to
+    // learn its relPath, then built again with the map once they land. That
+    // double build is cheap (string assembly, no I/O) and is what keeps the
+    // attachment names deterministic: re-exporting overwrites rather than
+    // accumulating -1, -2, -3 copies of the same picture.
+    //
+    // A failed image is NOT a failed note. Each fetch reports into the same
+    // tally and whatever succeeded gets rewritten to local paths; anything
+    // that did not keeps its original remote URL, so the note degrades to
+    // today's behaviour for that image alone rather than pointing at a file
+    // that was never written.
+    function _fetchImagesForJob(article, title, index, extracted) {
+        if (!root.exportImages) {
+            root._writeExportJob(article, title, index, extracted, null);
+            return;
+        }
+
+        var probe = root.exportProvider.buildNote(article, [], extracted);
+        if (probe.error) {
+            root._writeExportJob(article, title, index, extracted, null);
+            return;
+        }
+
+        var markdown = extracted && extracted.markdown ? extracted.markdown : ExportProvider.articleSummaryText(article);
+        var urls = ExportProvider.collectImageUrls(markdown, article, FeedParser.isSafeUrl);
+        if (!urls || urls.length === 0) {
+            root._writeExportJob(article, title, index, extracted, null);
+            return;
+        }
+
+        var baseName = probe.relPath.replace(/^.*[\/]/, "").replace(/\.md$/i, "");
+        var root_ = root.exportRoot.replace(/[\/\\]+$/, "");
+        var imageMap = {};
+        var remaining = urls.length;
+
+        var finish = function () {
+            remaining--;
+            if (remaining > 0)
+                return;
+            root._writeExportJob(article, title, index, extracted, imageMap);
+        };
+
+        for (var i = 0; i < urls.length; i++) {
+            (function (url, at) {
+                var rel = ExportProvider.attachmentPath(baseName, url, at, { attachmentDir: root.attachmentDir });
+                var req = ExportProvider.buildImageFetchRequest(url, root_ + "/" + rel);
+                Proc.runCommand(null, req.argv, function (out, code) {
+                    if (code === 0)
+                        imageMap[url] = rel;
+                    finish();
+                }, undefined, req.timeoutMs || undefined);
+            })(urls[i], i);
+        }
     }
 
     // Builds the final note (now that extraction, if any, has resolved) and
     // hands it to the same one-FileView-per-write path as before.
-    function _writeExportJob(article, title, index, extracted) {
-        var note = root.exportProvider.buildNote(article, [], extracted);
+    function _writeExportJob(article, title, index, extracted, imageMap) {
+        var note = root.exportProvider.buildNote(article, [], extracted, imageMap || undefined);
         if (note.error) {
             // The path was already validated by the probe in exportArticles
             // before any fetch started, so this is unreachable in practice --
@@ -1790,33 +1875,13 @@ DesktopPluginComponent {
 
         var items = FeedParser.dedupeItems(ctx.collector);
 
-        if (root.sortMode === "oldest") {
-            items.sort(function (a, b) {
-                return a.timestamp - b.timestamp;
-            });
-        } else if (root.sortMode === "byFeed") {
-            // Newest within each feed first, then apply the per-feed cap
-            items.sort(function (a, b) {
-                return b.timestamp - a.timestamp;
-            });
-            var feedCounts = {};
-            items = items.filter(function (item) {
-                var src = item.source || "";
-                feedCounts[src] = (feedCounts[src] || 0) + 1;
-                return feedCounts[src] <= root.maxPerFeed;
-            });
-            // Then group in the order the feeds are arranged in settings, so
-            // the move-up/move-down buttons actually affect what you see.
-            var orderMap = ReaderState.feedOrderMap(root.feeds);
-            items.sort(function (a, b) {
-                return ReaderState.compareByFeedOrder(a, b, orderMap);
-            });
-        } else {
-            // "newest" — default
-            items.sort(function (a, b) {
-                return b.timestamp - a.timestamp;
-            });
-        }
+        // Sorting lives in ReaderState so it can be tested: this used to be
+        // three inline comparators here, and the "newest"/"oldest" ones broke
+        // ties by timestamp alone. Feed items arrive in batches that share a
+        // timestamp to the second, so equal-timestamp runs were free to come
+        // back in a different order on every refresh -- the list quietly
+        // reshuffled under the cursor. sortItems breaks ties on id.
+        items = ReaderState.sortItems(items, root.sortMode, root.maxPerFeed, ReaderState.feedOrderMap(root.feeds));
 
         if (items.length > root.maxItems) {
             items = items.slice(0, root.maxItems);
@@ -1843,7 +1908,22 @@ DesktopPluginComponent {
 
         var result = ReaderState.evaluateSeen(currentIds, root.seenIds, root.idHistoryCap);
 
-        if (!result.firstRun && root.notifyNewItems && result.newCount > 0 && typeof ToastService !== "undefined") {
+        // Rules first, and they REPLACE the plain count rather than adding to
+        // it. The whole point of a rule is to be told about interesting items
+        // instead of merely new ones; firing both would mean two toasts per
+        // refresh, which is how a useful notification becomes one you learn to
+        // dismiss without reading.
+        if (!result.firstRun && root.notificationRules.length > 0) {
+            var ruled = ReaderState.evaluateRules(items, root.notificationRules, root.notifiedIds);
+            if (ruled.ids.length > 0) {
+                root.notifiedIds = ReaderState.boundIdList(ruled.ids.concat(root.notifiedIds), root.idHistoryCap);
+                root.writeState("notifiedIds", root.notifiedIds);
+            }
+            if (ruled.matched.length > 0 && root.notifyNewItems && typeof ToastService !== "undefined") {
+                var lead = ruled.matched[0].title || "an item";
+                ToastService.showInfo(ruled.matched.length === 1 ? lead : lead + " and " + (ruled.matched.length - 1) + " more match your rules");
+            }
+        } else if (!result.firstRun && root.notifyNewItems && result.newCount > 0 && typeof ToastService !== "undefined") {
             ToastService.showInfo(result.newCount + " new item" + (result.newCount > 1 ? "s" : "") + " in RSS Feeds");
         }
 

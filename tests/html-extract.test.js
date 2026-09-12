@@ -10,6 +10,8 @@ const {
     collectCandidates,
     pickBest,
     scoreNode,
+    mergeSiblings,
+    siblingQualifies,
     emitMarkdown,
     plainTextLength,
     decodeEntities,
@@ -128,6 +130,110 @@ describe("synthetic fixtures", () => {
         ["World News", "Business", "Technology", "Advertise", "Terms of use"].forEach(function (phrase) {
             assert.ok(!res.markdown.includes(phrase), "nav label leaked into extraction: " + phrase);
         });
+    });
+});
+
+// ─── sibling merging ───
+//
+// Readability's fix for "no single element wraps the whole article": fold in
+// siblings of the winning candidate that score close enough to it (or, for a
+// bare <p>, are simply long and low-link-density), rather than either
+// dropping them or defaulting to an ancestor that drags in everything
+// indiscriminately. See HtmlExtract.js's own comment above mergeSiblings()
+// for the 2026-09-12 oracle measurement (net neutral on the 18-page corpus,
+// kept anyway as the direct fix for the failure mode it targets).
+
+describe("sibling merging", () => {
+    // A tree built directly (not parsed from HTML) so the right answer is
+    // unambiguous by construction: one obviously-qualifying <p> (long,
+    // link-free) and one obviously-disqualifying <div> (almost pure links,
+    // so its score collapses under the link-density penalty).
+    function makeTriple() {
+        var parent = { tag: "div", attrs: {}, children: [] };
+        var winner = {
+            tag: "div", attrs: {}, children: [], _parent: parent,
+            _stats: { charCount: 1000, commaCount: 20, paragraphCount: 5, linkChars: 50 }
+        };
+        var qualifyingP = {
+            tag: "p", attrs: {}, children: [], _parent: parent,
+            _stats: { charCount: 200, commaCount: 2, paragraphCount: 0, linkChars: 0 }
+        };
+        var nonQualifying = {
+            tag: "div", attrs: {}, children: [], _parent: parent,
+            _stats: { charCount: 300, commaCount: 0, paragraphCount: 0, linkChars: 280 }
+        };
+        parent.children = [winner, qualifyingP, nonQualifying];
+        return { parent: parent, winner: winner, qualifyingP: qualifyingP, nonQualifying: nonQualifying };
+    }
+
+    test("mergeSiblings folds in the qualifying sibling and excludes the non-qualifying one", () => {
+        var t = makeTriple();
+        var merged = mergeSiblings(t.winner);
+
+        assert.notEqual(merged, t.winner, "expected a merged wrapper, not the bare winner");
+        assert.equal(merged.children.length, 2);
+        assert.ok(merged.children.indexOf(t.winner) !== -1, "winner itself must be in the merge");
+        assert.ok(merged.children.indexOf(t.qualifyingP) !== -1, "the long, link-free <p> must be folded in");
+        assert.ok(merged.children.indexOf(t.nonQualifying) === -1, "the link-heavy div must not be folded in");
+    });
+
+    test("mergeSiblings preserves original document order", () => {
+        var t = makeTriple();
+        var merged = mergeSiblings(t.winner);
+        assert.deepEqual(merged.children, [t.winner, t.qualifyingP]);
+    });
+
+    test("siblingQualifies: a <p> is judged on length + link density, not score", () => {
+        var bestScore = 1000000; // arbitrarily large -- a score-based judgement would always reject
+        var longLowDensity = { tag: "p", _stats: { charCount: 200, linkChars: 0 } };
+        var tooShort = { tag: "p", _stats: { charCount: 40, linkChars: 0 } };
+        var tooLinky = { tag: "p", _stats: { charCount: 200, linkChars: 100 } };
+
+        assert.equal(siblingQualifies(longLowDensity, bestScore), true);
+        assert.equal(siblingQualifies(tooShort, bestScore), false);
+        assert.equal(siblingQualifies(tooLinky, bestScore), false);
+    });
+
+    test("mergeSiblings returns the winner unchanged when nothing qualifies", () => {
+        var parent = { tag: "div", attrs: {}, children: [] };
+        var winner = {
+            tag: "div", attrs: {}, children: [], _parent: parent,
+            _stats: { charCount: 1000, commaCount: 20, paragraphCount: 5, linkChars: 50 }
+        };
+        var weak = {
+            tag: "div", attrs: {}, children: [], _parent: parent,
+            _stats: { charCount: 10, commaCount: 0, paragraphCount: 0, linkChars: 9 }
+        };
+        parent.children = [winner, weak];
+
+        assert.equal(mergeSiblings(winner), winner);
+    });
+
+    test("mergeSiblings returns the winner unchanged when it has no parent (root)", () => {
+        var root = { tag: "#root", attrs: {}, children: [], _stats: { charCount: 500, commaCount: 0, paragraphCount: 0, linkChars: 0 } };
+        assert.equal(mergeSiblings(root), root);
+    });
+
+    // End-to-end: a real extraction where the winning candidate is narrower
+    // than its parent (the parent's own score is dragged down by a
+    // link-heavy sibling, so pickBest already prefers the inner div over the
+    // wrapping one) -- the standfirst paragraph beside it must survive, and
+    // the link-only sibling must not.
+    test("extractArticle: a standfirst paragraph beside the winning div survives; a link-only sibling does not", () => {
+        var links = "";
+        for (var i = 0; i < 5; i++) links += "<a href=\"/x" + i + "\">link text number " + i + " here</a> ";
+        var html = "<div>" +
+            "<p>Standfirst short paragraph with enough characters and no links included right here indeed for real testing purposes today.</p>" +
+            "<div><p>Main paragraph one full of real prose, comma, comma, comma, comma, comma, comma, comma, comma, comma, comma, comma, comma.</p>" +
+            "<p>Main paragraph two, comma, comma, comma, comma, comma, comma, comma, comma, comma, comma, comma, comma, comma.</p></div>" +
+            "<div>" + links + "</div>" +
+            "</div>";
+        var res = extractArticle(html, {});
+
+        assert.equal(res.usedFallback, false);
+        assert.match(res.markdown, /Standfirst short paragraph/);
+        assert.match(res.markdown, /Main paragraph one/);
+        assert.ok(!res.markdown.includes("link text number"), "link-only sibling leaked into extraction");
     });
 });
 

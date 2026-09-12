@@ -335,7 +335,7 @@ function buildTree(tokens) {
                 if (top.tag === "p") stack.pop();
             }
 
-            var node = { tag: tok.tag, attrs: tok.attrs, children: [] };
+            var node = { tag: tok.tag, attrs: tok.attrs, children: [], _parent: stack[stack.length - 1] };
             stack[stack.length - 1].children.push(node);
             if (!tok.selfClosed && !VOID_TAGS[tok.tag]) stack.push(node);
             continue;
@@ -425,6 +425,107 @@ function pickBest(candidates) {
         if (sc > bestScore) { bestScore = sc; best = candidates[i]; }
     }
     return best;
+}
+
+// ─── sibling merging ───
+//
+// Readability's own fix for "no single element wraps the whole article": take
+// the top candidate, then walk ITS OWN SIBLINGS (children of the same parent)
+// and fold in the ones that look like more of the same thing, so a byline
+// <p> or an afterword <section> split out next to the main container is not
+// silently dropped. We adapt the idea rather than port it -- Readability
+// scores against its own contentScore/DOM; here the equivalent is this
+// module's existing scoreNode(), reused so there is exactly one notion of
+// "looks like an article" in the file.
+//
+// Measured 2026-09-12 against the 18-page oracle corpus (see
+// docs/plans/2026-09-11-phase4c-fulltext-design.md): none of the 18 pages
+// currently have a fragmented top candidate with qualifying siblings, so this
+// is a defensive addition -- mean overlap is unchanged (92.4% before and
+// after) rather than improved. It stays because it is the correct general
+// behaviour (it is the direct fix for the failure mode the design doc names)
+// and is covered by synthetic unit tests below; it costs nothing measured and
+// guards a page shape the corpus does not happen to contain.
+//
+// Root is exempt on both ends: it has no parent to merge into (best._parent
+// is undefined for it), and when root itself wins -- a page with no wrapping
+// element at all, e.g. a plain-text Gutenberg file, or a blog whose body is
+// loose paragraphs straight in <body> -- all of its content is already in
+// its own subtree, so there is nothing left outside it to fold in. (Verified
+// this matters: an earlier version of this change excluded root from ever
+// winning outright and it cost the Gutenberg fixture ~100% of its score --
+// root beats the next candidate there by two orders of magnitude precisely
+// because nothing else wraps the book's text.)
+var SIBLING_SCORE_FACTOR = 0.25;
+
+// A bare <p> sibling never accumulates the comma/paragraph-count bonus a
+// wrapping <div> gets (it has no nested <p> children to count), so judging it
+// by the full score would reject every paragraph sibling regardless of merit.
+// Readability's own exception for <p> siblings is length + link density
+// instead of score, so a genuine paragraph (a standfirst, a closing note)
+// qualifies on those terms alone. 80 chars mirrors INDEX_SHORT_LINE_MAX_CHARS
+// (this file's existing notion of "long enough to be a real sentence, not a
+// fragment"); 0.25 link density mirrors ordinary prose, not a citation list.
+var SIBLING_PARAGRAPH_MIN_CHARS = 80;
+var SIBLING_PARAGRAPH_MAX_LINK_DENSITY = 0.25;
+
+function linkDensityOf(stats) {
+    if (!stats || !stats.charCount) return 0;
+    return Math.min(stats.linkChars / stats.charCount, 1);
+}
+
+// Returns true when `node` (a sibling of the winning candidate, not the
+// candidate itself) should be folded into the merged result.
+function siblingQualifies(node, bestScore) {
+    if (!node.tag) return false; // stray text beside the candidate, not a real sibling element
+    var stats = node._stats;
+    if (!stats || stats.charCount === 0) return false;
+
+    if (node.tag === "p") {
+        return stats.charCount >= SIBLING_PARAGRAPH_MIN_CHARS &&
+            linkDensityOf(stats) <= SIBLING_PARAGRAPH_MAX_LINK_DENSITY;
+    }
+
+    // Everything else is judged on the same scale used to pick the winner in
+    // the first place, scaled down: something structurally similar to the
+    // winner but far weaker (a nav rail, an infobox, a related-reading list)
+    // should not ride along just for being adjacent to it.
+    return scoreNode(node) >= bestScore * SIBLING_SCORE_FACTOR;
+}
+
+// Takes the winning candidate and, when it has a parent, returns either the
+// same node (nothing qualified) or a synthetic wrapper node holding it plus
+// its qualifying siblings in original document order -- so the merged result
+// still emits as one coherent, ordered piece of markdown.
+function mergeSiblings(best) {
+    var parent = best._parent;
+    if (!parent) return best; // root: no parent to draw siblings from
+
+    var bestScore = scoreNode(best);
+    if (bestScore <= 0) return best;
+
+    var children = [];
+    var foundExtra = false;
+    for (var i = 0; i < parent.children.length; i++) {
+        var sib = parent.children[i];
+        if (sib === best) { children.push(sib); continue; }
+        if (siblingQualifies(sib, bestScore)) { children.push(sib); foundExtra = true; }
+    }
+
+    return foundExtra ? { tag: "#merged", attrs: {}, children: children } : best;
+}
+
+// Aggregate charCount/linkChars across a merged wrapper's direct children
+// (each already carries its own stats from annotateStats). Only these two
+// fields are needed downstream (the index-page link-density guard), so this
+// does not recompute the full stats shape.
+function sumChildStats(node) {
+    var total = { charCount: 0, linkChars: 0 };
+    for (var i = 0; i < node.children.length; i++) {
+        var s = node.children[i]._stats;
+        if (s) { total.charCount += s.charCount; total.linkChars += s.linkChars; }
+    }
+    return total;
 }
 
 // ─── markdown emission ───
@@ -869,17 +970,17 @@ function extractArticle(html, options) {
 
     var candidates = collectCandidates(tree);
     var best = pickBest(candidates);
+    var merged = mergeSiblings(best);
 
-    var markdown = dropPromoSections(emitMarkdown(best, options));
+    var markdown = dropPromoSections(emitMarkdown(merged, options));
     var textLength = plainTextLength(markdown);
 
     if (textLength === 0) {
         return fallbackResult(summary, "extraction produced no text");
     }
 
-    var winnerLinkDensity = best._stats && best._stats.charCount
-        ? Math.min(best._stats.linkChars / best._stats.charCount, 1)
-        : 0;
+    var mergedStats = merged === best ? best._stats : sumChildStats(merged);
+    var winnerLinkDensity = linkDensityOf(mergedStats);
     var indexReason = indexPageReason(markdown, winnerLinkDensity);
     if (indexReason) {
         return fallbackResult(summary, indexReason);
@@ -906,6 +1007,8 @@ if (typeof module !== "undefined" && module.exports) {
         collectCandidates: collectCandidates,
         scoreNode: scoreNode,
         pickBest: pickBest,
+        mergeSiblings: mergeSiblings,
+        siblingQualifies: siblingQualifies,
         emitMarkdown: emitMarkdown,
         plainTextLength: plainTextLength,
         decodeEntities: decodeEntities,

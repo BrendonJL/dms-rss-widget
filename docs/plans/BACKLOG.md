@@ -114,9 +114,30 @@ decided to take them, so the framing is gone from the README.
   another is the fragmentation the backend interface exists to prevent. Worth
   wiring behind the existing `fullText` capability only as an optimisation, and
   never as the only route.
-- **Extraction precision on reference-heavy pages.** Wikipedia extracts at ~81%
-  overlap against Mozilla Readability because we emit ~2.5x its volume, pulling
-  in reference lists and infoboxes. When a page has no single wrapping content
-  container the document root wins by default, and there is no mechanism to
-  merge sibling candidates. Acceptable for a saved note; revisit only if it
-  starts bleeding navigation.
+- **Extraction precision on reference-heavy pages. Diagnosis corrected;
+  sibling merging shipped.** This entry used to say the document root wins by
+  default on pages with no single wrapping container, and that references and
+  infoboxes were the problem. Both claims were measured against the real
+  18-page oracle corpus on 2026-09-12 and neither holds:
+  - Root never wins on any Wikipedia page in the corpus —
+    `mw-parser-output`/`main.mw-body` wins outright each time, already the
+    correct container. Root wins only on `ciechanow.ski` (by a 0.1% margin)
+    and `gutenberg.org`, where it is *right*: no wrapping element exists and
+    root captures the whole book at 100% overlap.
+  - Suppressing infoboxes and reference lists by class was implemented and
+    measured: mean **dropped** 92.4% → 90.9%, and Wikipedia RSS collapsed
+    83% → 58%. Readability's own output retains the infobox and reference
+    list for that page, so stripping them moves us away from the oracle, not
+    towards it. Reverted, not shipped.
+  - The actual driver of the ~81% floor is markdown link syntax
+    (`[text](url)`) fragmenting the word-overlap tokenisation used to score
+    against the oracle, plus both extractors legitimately keeping reference
+    content. It is substantially a measurement artefact, not an extraction
+    defect.
+
+  Sibling merging was built anyway, because the *mechanism* was genuinely
+  missing: a winning candidate's qualifying siblings are now folded in
+  (`SIBLING_SCORE_FACTOR = 0.25`, plus Readability's relaxed bare-paragraph
+  rule). Measured byte-identical across all 18 articles — no page in the
+  corpus currently has a fragmented top candidate, so it is proven neutral
+  rather than proven beneficial. It is there for the pages that will.
