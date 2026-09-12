@@ -17,6 +17,7 @@ import "ExportProvider.js" as ExportProvider
 import "HtmlExtract.js" as HtmlExtract
 import "AiProvider.js" as AiProvider
 import "Ranking.js" as Ranking
+import "Palette.js" as Palette
 
 DesktopPluginComponent {
     id: root
@@ -88,6 +89,56 @@ DesktopPluginComponent {
     property bool exportImages: pluginData.exportImages ?? false
     property var notificationRules: pluginData.notificationRules ?? []
     property bool markReadOnScroll: pluginData.markReadOnScroll ?? false
+    // The plugin's own colour palette, resolved from the chosen preset.
+    //
+    // Every colour in this file goes through here rather than straight to
+    // Theme, so a colour-vision preset can replace the matugen values without
+    // the plugin ever WRITING to Theme -- which it must never do: Theme is a
+    // pragma Singleton shared by the whole shell, and assigning to it would
+    // repaint the bar, the popups and every other plugin too.
+    //
+    // "system" resolves to these same values unchanged, so the default path
+    // is a pass-through and nothing moves for anyone who has not asked for a
+    // preset.
+    function themeBasePalette() {
+        return {
+            primary: String(Theme.primary),
+            secondary: String(Theme.secondary),
+            surfaceText: String(Theme.surfaceText),
+            surfaceVariantText: String(Theme.surfaceVariantText),
+            error: String(Theme.error),
+            success: String(Theme.success),
+            warning: String(Theme.warning),
+            outlineVariant: String(Theme.outlineVariant),
+            surfaceContainer: String(Theme.surfaceContainer),
+            surfaceContainerHigh: String(Theme.surfaceContainerHigh),
+            surfaceContainerHighest: String(Theme.surfaceContainerHighest),
+            onPrimary: String(Theme.onPrimary),
+            onError: String(Theme.onError)
+        };
+    }
+
+    // Theme.withAlpha takes a colour OBJECT and returns fully transparent for
+    // anything whose .r is undefined -- which a hex string is. The palette
+    // deals in strings (Palette.js does hex arithmetic on them), so every
+    // withAlpha call on a palette colour would have silently produced
+    // transparent rather than a tint: no error, no warning, just backgrounds
+    // and hover states quietly disappearing. Parse it here instead.
+    function tint(hex, a) {
+        var c = ("" + hex).replace("#", "");
+        if (c.length === 3)
+            c = c.charAt(0) + c.charAt(0) + c.charAt(1) + c.charAt(1) + c.charAt(2) + c.charAt(2);
+        if (c.length === 8)
+            c = c.substring(2);
+        var n = parseInt(c.substring(0, 6), 16);
+        if (isNaN(n))
+            return Qt.rgba(0, 0, 0, 0);
+        return Qt.rgba(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, a);
+    }
+
+    property string colourPreset: pluginData.colourPreset ?? "system"
+    readonly property var roleColours: Palette.resolvePalette(root.colourPreset, root.themeBasePalette())
+
     // Ids already announced by a rule. Separate from seenIds: an item can be
     // seen (counted, not new) long before a newly-added rule first matches it,
     // and conflating the two would either re-announce on every refresh or
@@ -493,11 +544,11 @@ DesktopPluginComponent {
     property color resolvedBorderColor: {
         switch (borderColor) {
         case "secondary":
-            return Theme.secondary;
+            return root.roleColours.secondary;
         case "surface":
-            return Theme.surfaceText;
+            return root.roleColours.surfaceText;
         default:
-            return Theme.primary;
+            return root.roleColours.primary;
         }
     }
 
@@ -2275,6 +2326,7 @@ DesktopPluginComponent {
         onStarRequested: itemId => root.toggleBookmark(itemId)
         onNextRequested: root.readerAdvance(1)
         onPrevRequested: root.readerAdvance(-1)
+        colourPreset: root.colourPreset
         summaryAvailable: root.aiReady
         onSummaryRequested: itemId => root.requestSummary(itemId)
         onDigestRequested: root.generateDigest()
@@ -2296,7 +2348,7 @@ DesktopPluginComponent {
     Rectangle {
         anchors.fill: parent
         radius: Theme.cornerRadius
-        color: Theme.withAlpha(Theme.surfaceContainer, root.backgroundOpacity)
+        color: root.tint(root.roleColours.surfaceContainer, root.backgroundOpacity)
         border.width: root.enableBorder ? root.borderThickness : 0
         border.color: Theme.withAlpha(root.resolvedBorderColor, root.borderOpacity)
         clip: true
@@ -2352,14 +2404,14 @@ DesktopPluginComponent {
                     DankIcon {
                         name: "rss_feed"
                         size: Theme.iconSizeSmall
-                        color: Theme.primary
+                        color: root.roleColours.primary
                     }
 
                     StyledText {
                         text: "RSS Feeds"
                         font.pixelSize: Theme.fontSizeMedium
                         font.weight: Font.Bold
-                        color: Theme.surfaceText
+                        color: root.roleColours.surfaceText
                         elide: Text.ElideRight
                         Layout.fillWidth: true
                     }
@@ -2369,21 +2421,21 @@ DesktopPluginComponent {
                         visible: root.failedFeedCount > 0
                         name: "error_outline"
                         size: 14
-                        color: Theme.error
+                        color: root.roleColours.error
                     }
 
                     StyledText {
                         visible: root.failedFeedCount > 0
                         text: root.failedFeedCount
                         font.pixelSize: root.fontSize - 2
-                        color: Theme.error
+                        color: root.roleColours.error
                     }
 
                     DankSpinner {
                         visible: root.isLoading
                         running: root.isLoading
                         size: 14
-                        color: Theme.primary
+                        color: root.roleColours.primary
                     }
 
                     DankActionButton {
@@ -2417,7 +2469,7 @@ DesktopPluginComponent {
                         return root.allItems.length + " items · " + root.unreadCount + " unread";
                     }
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                     Layout.fillWidth: true
                     elide: Text.ElideRight
                     horizontalAlignment: Text.AlignHCenter
@@ -2428,7 +2480,7 @@ DesktopPluginComponent {
             Rectangle {
                 Layout.fillWidth: true
                 height: 1
-                color: Theme.outlineVariant
+                color: root.roleColours.outlineVariant
             }
 
             // Search toggle, shared by the actions bar and the selection bar
@@ -2444,7 +2496,7 @@ DesktopPluginComponent {
                     iconName: root.searchActive ? "search_off" : "search"
                     iconSize: 14
                     buttonSize: root.searchToggleSize
-                    iconColor: (root.searchActive || root.searching) ? Theme.primary : Theme.surfaceVariantText
+                    iconColor: (root.searchActive || root.searching) ? root.roleColours.primary : root.roleColours.surfaceVariantText
                     onClicked: root.toggleSearch()
 
                     Accessible.role: Accessible.Button
@@ -2482,7 +2534,7 @@ DesktopPluginComponent {
                         Layout.preferredWidth: filterLabel.implicitWidth + Theme.spacingS
                         height: 22
                         radius: Theme.cornerRadius
-                        color: active ? Theme.withAlpha(Theme.primary, 0.18) : (filterArea.containsMouse ? Theme.withAlpha(Theme.primary, 0.08) : "transparent")
+                        color: active ? root.tint(root.roleColours.primary, 0.18) : (filterArea.containsMouse ? root.tint(root.roleColours.primary, 0.08) : "transparent")
 
                         // filterLabel already gives this a name via ordinary
                         // Text -- only role/checked are needed to expose the
@@ -2502,7 +2554,7 @@ DesktopPluginComponent {
                             }
                             font.pixelSize: root.fontSize - 2
                             font.weight: parent.active ? Font.Medium : Font.Normal
-                            color: parent.active ? Theme.primary : Theme.surfaceVariantText
+                            color: parent.active ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
 
                         MouseArea {
@@ -2536,7 +2588,7 @@ DesktopPluginComponent {
                     visible: root.widgetWidth >= 160
                     height: 22
                     radius: Theme.cornerRadius
-                    color: markAllArea.containsMouse ? Theme.withAlpha(Theme.primary, 0.15) : "transparent"
+                    color: markAllArea.containsMouse ? root.tint(root.roleColours.primary, 0.15) : "transparent"
 
                     RowLayout {
                         id: allReadRow
@@ -2546,7 +2598,7 @@ DesktopPluginComponent {
                         DankIcon {
                             name: markAllRect.allRead ? "remove_done" : "done_all"
                             size: 14
-                            color: markAllArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                            color: markAllArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
 
                         // Label drops out on a narrow widget; the icon carries
@@ -2555,7 +2607,7 @@ DesktopPluginComponent {
                             visible: root.widgetWidth >= 300
                             text: markAllRect.allRead ? "Mark all unread" : "Mark all read"
                             font.pixelSize: root.fontSize - 2
-                            color: markAllArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                            color: markAllArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
                     }
 
@@ -2593,7 +2645,7 @@ DesktopPluginComponent {
                 StyledText {
                     text: root.selectedCount + " selected" + (selectionActionsRow.hiddenSelected > 0 ? " (" + selectionActionsRow.hiddenSelected + " hidden)" : "")
                     font.pixelSize: root.fontSize - 2
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                     Layout.fillWidth: true
                     elide: Text.ElideRight
                 }
@@ -2604,7 +2656,7 @@ DesktopPluginComponent {
                     Layout.minimumWidth: 22 + Theme.spacingS * 2
                     height: 22
                     radius: Theme.cornerRadius
-                    color: saveArea.containsMouse ? Theme.withAlpha(Theme.primary, 0.15) : "transparent"
+                    color: saveArea.containsMouse ? root.tint(root.roleColours.primary, 0.15) : "transparent"
 
                     RowLayout {
                         id: saveRow
@@ -2614,14 +2666,14 @@ DesktopPluginComponent {
                         DankIcon {
                             name: "bookmark"
                             size: 14
-                            color: saveArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                            color: saveArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
 
                         StyledText {
                             visible: root.widgetWidth >= 300
                             text: "Save"
                             font.pixelSize: root.fontSize - 2
-                            color: saveArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                            color: saveArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
                     }
 
@@ -2647,7 +2699,7 @@ DesktopPluginComponent {
                     Layout.minimumWidth: 22 + Theme.spacingS * 2
                     height: 22
                     radius: Theme.cornerRadius
-                    color: exportArea.containsMouse ? Theme.withAlpha(Theme.primary, 0.15) : "transparent"
+                    color: exportArea.containsMouse ? root.tint(root.roleColours.primary, 0.15) : "transparent"
 
                     RowLayout {
                         id: exportRow
@@ -2657,14 +2709,14 @@ DesktopPluginComponent {
                         DankIcon {
                             name: "note_add"
                             size: 14
-                            color: exportArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                            color: exportArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
 
                         StyledText {
                             visible: root.widgetWidth >= 300
                             text: "Export"
                             font.pixelSize: root.fontSize - 2
-                            color: exportArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                            color: exportArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
                     }
 
@@ -2691,7 +2743,7 @@ DesktopPluginComponent {
                     Layout.minimumWidth: 22 + Theme.spacingS * 2
                     height: 22
                     radius: Theme.cornerRadius
-                    color: markReadArea.containsMouse ? Theme.withAlpha(Theme.primary, 0.15) : "transparent"
+                    color: markReadArea.containsMouse ? root.tint(root.roleColours.primary, 0.15) : "transparent"
 
                     RowLayout {
                         id: markReadRow
@@ -2701,14 +2753,14 @@ DesktopPluginComponent {
                         DankIcon {
                             name: root.selectedAllRead ? "mark_email_unread" : "mark_email_read"
                             size: 14
-                            color: markReadArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                            color: markReadArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
 
                         StyledText {
                             visible: root.widgetWidth >= 300
                             text: root.selectedAllRead ? "Mark unread" : "Mark read"
                             font.pixelSize: root.fontSize - 2
-                            color: markReadArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                            color: markReadArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
                     }
 
@@ -2857,12 +2909,12 @@ DesktopPluginComponent {
                         height: itemColumn.implicitHeight + Theme.spacingS * 2
                         radius: root.viewMode === "compact" ? 0 : Theme.cornerRadius
                         opacity: isRead ? 0.5 : 1.0
-                        color: itemDelegate.isSelected ? Theme.withAlpha(Theme.primary, 0.12) : (rowHover.hovered ? Theme.withAlpha(Theme.primary, 0.08) : "transparent")
+                        color: itemDelegate.isSelected ? root.tint(root.roleColours.primary, 0.12) : (rowHover.hovered ? root.tint(root.roleColours.primary, 0.08) : "transparent")
                         // Cursor indicator is a border, deliberately not another
                         // fill -- hover and selection are both background tints,
                         // and a third tint would be indistinguishable from them.
                         border.width: itemDelegate.isCursor ? 2 : 0
-                        border.color: Theme.primary
+                        border.color: root.roleColours.primary
 
                         Behavior on color {
                             ColorAnimation {
@@ -2939,7 +2991,7 @@ DesktopPluginComponent {
                                 iconName: itemDelegate.isSelected ? "check_box" : "check_box_outline_blank"
                                 iconSize: 14
                                 buttonSize: itemDelegate.controlSize
-                                iconColor: itemDelegate.isSelected ? Theme.primary : Theme.surfaceVariantText
+                                iconColor: itemDelegate.isSelected ? root.roleColours.primary : root.roleColours.surfaceVariantText
                                 Layout.alignment: Qt.AlignVCenter
                                 opacity: (rowHover.hovered || itemDelegate.isSelected) ? 1.0 : 0.45
                                 enabled: true
@@ -2980,7 +3032,7 @@ DesktopPluginComponent {
                                         text: model.source || ""
                                         font.pixelSize: root.fontSize
                                         font.weight: Font.Medium
-                                        color: itemDelegate.isRead ? Theme.surfaceVariantText : Theme.primary
+                                        color: itemDelegate.isRead ? root.roleColours.surfaceVariantText : root.roleColours.primary
                                         Layout.maximumWidth: 120
                                         elide: Text.ElideRight
                                     }
@@ -2989,14 +3041,14 @@ DesktopPluginComponent {
                                         visible: root.showFeedName
                                         text: "·"
                                         font.pixelSize: root.fontSize
-                                        color: Theme.surfaceVariantText
+                                        color: root.roleColours.surfaceVariantText
                                     }
 
                                     StyledText {
                                         text: model.title || ""
                                         font.pixelSize: root.fontSize
                                         font.weight: Font.Medium
-                                        color: itemDelegate.isRead ? Theme.surfaceVariantText : Theme.surfaceText
+                                        color: itemDelegate.isRead ? root.roleColours.surfaceVariantText : root.roleColours.surfaceText
                                         Layout.fillWidth: true
                                         elide: Text.ElideRight
                                         maximumLineCount: 1
@@ -3011,7 +3063,7 @@ DesktopPluginComponent {
                                             return model.timestamp > 0 ? FeedParser.getRelativeTime(new Date(model.timestamp)) : "";
                                         }
                                         font.pixelSize: root.fontSize - 2
-                                        color: Theme.withAlpha(Theme.surfaceVariantText, 0.7)
+                                        color: root.tint(root.roleColours.surfaceVariantText, 0.7)
                                     }
                                 }
 
@@ -3020,7 +3072,7 @@ DesktopPluginComponent {
                                     visible: root.viewMode !== "compact" && (model.description || "") !== ""
                                     text: model.description || ""
                                     font.pixelSize: root.fontSize
-                                    color: Theme.surfaceVariantText
+                                    color: root.roleColours.surfaceVariantText
                                     Layout.fillWidth: true
                                     elide: Text.ElideRight
                                     maximumLineCount: 2
@@ -3035,7 +3087,7 @@ DesktopPluginComponent {
                                         return model.timestamp > 0 ? FeedParser.getRelativeTime(new Date(model.timestamp)) : "";
                                     }
                                     font.pixelSize: root.fontSize - 2
-                                    color: Theme.withAlpha(Theme.surfaceVariantText, 0.7)
+                                    color: root.tint(root.roleColours.surfaceVariantText, 0.7)
                                 }
                             }
 
@@ -3052,7 +3104,7 @@ DesktopPluginComponent {
                                 Layout.preferredHeight: 48
                                 Layout.alignment: Qt.AlignVCenter
                                 radius: Theme.cornerRadius
-                                color: Theme.surfaceContainerHigh
+                                color: root.roleColours.surfaceContainerHigh
                                 clip: true
 
                                 Image {
@@ -3077,7 +3129,7 @@ DesktopPluginComponent {
                                 iconName: itemDelegate.isRead ? "mark_email_read" : "mark_email_unread"
                                 iconSize: 14
                                 buttonSize: itemDelegate.controlSize
-                                iconColor: itemDelegate.isRead ? Theme.primary : Theme.surfaceVariantText
+                                iconColor: itemDelegate.isRead ? root.roleColours.primary : root.roleColours.surfaceVariantText
                                 Layout.alignment: Qt.AlignVCenter
                                 opacity: (rowHover.hovered || itemDelegate.isRead) ? 1.0 : 0.45
                                 enabled: true
@@ -3129,7 +3181,7 @@ DesktopPluginComponent {
                                 iconName: itemDelegate.isBookmarked ? "bookmark" : "bookmark_border"
                                 iconSize: 14
                                 buttonSize: itemDelegate.controlSize
-                                iconColor: itemDelegate.isBookmarked ? Theme.primary : Theme.surfaceVariantText
+                                iconColor: itemDelegate.isBookmarked ? root.roleColours.primary : root.roleColours.surfaceVariantText
                                 Layout.alignment: Qt.AlignVCenter
                                 opacity: (rowHover.hovered || itemDelegate.isBookmarked) ? 1.0 : 0.45
                                 enabled: true
@@ -3155,7 +3207,7 @@ DesktopPluginComponent {
                                 iconName: "menu_book"
                                 iconSize: 14
                                 buttonSize: itemDelegate.controlSize
-                                iconColor: Theme.surfaceVariantText
+                                iconColor: root.roleColours.surfaceVariantText
                                 Layout.alignment: Qt.AlignVCenter
                                 opacity: rowHover.hovered ? 1.0 : 0.45
                                 enabled: true
@@ -3208,7 +3260,7 @@ DesktopPluginComponent {
                         return root.backend.capabilities.serverState ? "sync" : "rss_feed";
                     }
                     size: Theme.iconSize * 2
-                    color: Theme.withAlpha(Theme.surfaceVariantText, 0.4)
+                    color: root.tint(root.roleColours.surfaceVariantText, 0.4)
                     Layout.alignment: Qt.AlignHCenter
                 }
 
@@ -3235,7 +3287,7 @@ DesktopPluginComponent {
                         return "No items loaded";
                     }
                     font.pixelSize: Theme.fontSizeMedium
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                     horizontalAlignment: Text.AlignHCenter
@@ -3259,7 +3311,7 @@ DesktopPluginComponent {
                         return "";
                     }
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.withAlpha(Theme.surfaceVariantText, 0.6)
+                    color: root.tint(root.roleColours.surfaceVariantText, 0.6)
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                     horizontalAlignment: Text.AlignHCenter
@@ -3284,14 +3336,14 @@ DesktopPluginComponent {
                 DankSpinner {
                     running: root.isLoading
                     size: 24
-                    color: Theme.primary
+                    color: root.roleColours.primary
                     Layout.alignment: Qt.AlignHCenter
                 }
 
                 StyledText {
                     text: "Loading feeds..."
                     font.pixelSize: Theme.fontSizeMedium
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
                     Layout.alignment: Qt.AlignHCenter
@@ -3315,7 +3367,7 @@ DesktopPluginComponent {
         Rectangle {
             anchors.fill: parent
             visible: root.helpVisible
-            color: Theme.withAlpha(Theme.surfaceContainer, 0.96)
+            color: root.tint(root.roleColours.surfaceContainer, 0.96)
             radius: Theme.cornerRadius
             z: 100
 
@@ -3338,7 +3390,7 @@ DesktopPluginComponent {
                         text: "Keyboard shortcuts"
                         font.pixelSize: root.fontSize
                         font.bold: true
-                        color: Theme.surfaceText
+                        color: root.roleColours.surfaceText
                         Layout.fillWidth: true
                     }
 
@@ -3401,7 +3453,7 @@ DesktopPluginComponent {
                                 StyledText {
                                     text: modelData.desc
                                     font.pixelSize: root.fontSize - 2
-                                    color: Theme.surfaceVariantText
+                                    color: root.roleColours.surfaceVariantText
                                     Layout.fillWidth: true
                                     wrapMode: Text.WordWrap
                                 }

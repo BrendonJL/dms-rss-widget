@@ -238,6 +238,17 @@ PluginSettings {
     // reads Theme and hands the values in. String(...) coerces Qt's `color`
     // type to the "#aarrggbb" text Palette.parseColour expects; a QColor
     // handed to it directly would fail isValidColour's typeof check.
+    // The plugin's own colour palette, resolved from the chosen preset.
+    //
+    // Every colour in this file goes through here rather than straight to
+    // Theme, so a colour-vision preset can replace the matugen values without
+    // the plugin ever WRITING to Theme -- which it must never do: Theme is a
+    // pragma Singleton shared by the whole shell, and assigning to it would
+    // repaint the bar, the popups and every other plugin too.
+    //
+    // "system" resolves to these same values unchanged, so the default path
+    // is a pass-through and nothing moves for anyone who has not asked for a
+    // preset.
     function themeBasePalette() {
         return {
             primary: String(Theme.primary),
@@ -255,6 +266,26 @@ PluginSettings {
             onError: String(Theme.onError)
         };
     }
+
+    // Theme.withAlpha takes a colour OBJECT and returns fully transparent for
+    // anything whose .r is undefined -- which a hex string is. The palette
+    // deals in strings (Palette.js does hex arithmetic on them), so every
+    // withAlpha call on a palette colour would have silently produced
+    // transparent rather than a tint: no error, no warning, just backgrounds
+    // and hover states quietly disappearing. Parse it here instead.
+    function tint(hex, a) {
+        var c = ("" + hex).replace("#", "");
+        if (c.length === 3)
+            c = c.charAt(0) + c.charAt(0) + c.charAt(1) + c.charAt(1) + c.charAt(2) + c.charAt(2);
+        if (c.length === 8)
+            c = c.substring(2);
+        var n = parseInt(c.substring(0, 6), 16);
+        if (isNaN(n))
+            return Qt.rgba(0, 0, 0, 0);
+        return Qt.rgba(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, a);
+    }
+
+    readonly property var roleColours: Palette.resolvePalette(root.loadValue("colourPreset", "system"), root.themeBasePalette())
 
     Component.onCompleted: {
         root.refreshFeedStatuses();
@@ -291,21 +322,21 @@ PluginSettings {
         text: "RSS Widget Settings"
         font.pixelSize: Theme.fontSizeLarge
         font.weight: Font.Bold
-        color: Theme.surfaceText
+        color: root.roleColours.surfaceText
     }
 
     StyledText {
         width: parent.width
         text: "Display RSS/Atom feeds directly, or sync with a Miniflux server."
         font.pixelSize: Theme.fontSizeMedium
-        color: Theme.surfaceVariantText
+        color: root.roleColours.surfaceVariantText
         wrapMode: Text.WordWrap
     }
 
     StyledRect {
         width: parent.width
         height: 1
-        color: Theme.outlineVariant
+        color: root.roleColours.outlineVariant
     }
 
     // ─── Source Mode ───
@@ -315,7 +346,7 @@ PluginSettings {
         text: "Source Mode"
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
-        color: Theme.surfaceText
+        color: root.roleColours.surfaceText
     }
 
     SelectionSetting {
@@ -336,7 +367,7 @@ PluginSettings {
     StyledRect {
         width: parent.width
         height: 1
-        color: Theme.outlineVariant
+        color: root.roleColours.outlineVariant
         visible: sourceModeSetting.value === "miniflux"
     }
 
@@ -345,7 +376,7 @@ PluginSettings {
         text: "Miniflux Connection"
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
-        color: Theme.surfaceText
+        color: root.roleColours.surfaceText
         visible: sourceModeSetting.value === "miniflux"
     }
 
@@ -357,7 +388,7 @@ PluginSettings {
         StyledText {
             text: "Server URL"
             font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
         }
 
         DankTextField {
@@ -380,7 +411,7 @@ PluginSettings {
         StyledText {
             text: "API Token"
             font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
         }
 
         // The token is never logged and never appears in a toast -- it is
@@ -469,7 +500,7 @@ PluginSettings {
     StyledRect {
         width: parent.width
         height: 1
-        color: Theme.outlineVariant
+        color: root.roleColours.outlineVariant
         visible: sourceModeSetting.value === "greader"
     }
 
@@ -478,7 +509,7 @@ PluginSettings {
         text: "Google Reader Connection"
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
-        color: Theme.surfaceText
+        color: root.roleColours.surfaceText
         visible: sourceModeSetting.value === "greader"
     }
 
@@ -490,7 +521,7 @@ PluginSettings {
         StyledText {
             text: "Server URL"
             font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
         }
 
         DankTextField {
@@ -513,7 +544,7 @@ PluginSettings {
         StyledText {
             text: "Username"
             font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
         }
 
         // On Miniflux this is NOT the web login: Google Reader integration
@@ -524,7 +555,7 @@ PluginSettings {
             width: parent.width
             text: "Separate from your web login -- set under Settings → Integrations on Miniflux."
             font.pixelSize: Theme.fontSizeSmall - 2
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
             wrapMode: Text.WordWrap
         }
 
@@ -548,14 +579,14 @@ PluginSettings {
         StyledText {
             text: "Password"
             font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
         }
 
         StyledText {
             width: parent.width
             text: "Also separate from your web password -- same Settings → Integrations page on Miniflux."
             font.pixelSize: Theme.fontSizeSmall - 2
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
             wrapMode: Text.WordWrap
         }
 
@@ -599,7 +630,7 @@ PluginSettings {
     StyledRect {
         width: parent.width
         height: 1
-        color: Theme.outlineVariant
+        color: root.roleColours.outlineVariant
     }
 
     StyledText {
@@ -607,14 +638,14 @@ PluginSettings {
         text: "Notes Export"
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
-        color: Theme.surfaceText
+        color: root.roleColours.surfaceText
     }
 
     StyledText {
         width: parent.width
         text: "Send an article to a local notes folder and, optionally, open it in an editor of your choice afterward. Leave the folder empty to disable this entirely -- no export button or shortcut appears until one is set."
         font.pixelSize: Theme.fontSizeSmall
-        color: Theme.surfaceVariantText
+        color: root.roleColours.surfaceVariantText
         wrapMode: Text.WordWrap
     }
 
@@ -679,14 +710,14 @@ PluginSettings {
         StyledText {
             text: "Folder"
             font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
         }
 
         StyledText {
             width: parent.width
             text: "Absolute path, or vault-relative for Obsidian."
             font.pixelSize: Theme.fontSizeSmall - 2
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
             wrapMode: Text.WordWrap
         }
 
@@ -715,14 +746,14 @@ PluginSettings {
         StyledText {
             text: "Vault Name"
             font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
         }
 
         StyledText {
             width: parent.width
             text: "Used only to build the obsidian://open callback after a note is written."
             font.pixelSize: Theme.fontSizeSmall - 2
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
             wrapMode: Text.WordWrap
         }
 
@@ -745,14 +776,14 @@ PluginSettings {
         StyledText {
             text: "Command"
             font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
         }
 
         StyledText {
             width: parent.width
             text: "{path} is substituted as its own argument, never pasted into a shell string, so a note's path is safe even if its title contained spaces, quotes or semicolons. The terminal-based presets assume kitty, because that is what this machine runs -- edit this if you use a different terminal. Leave empty to just write the file."
             font.pixelSize: Theme.fontSizeSmall - 2
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
             wrapMode: Text.WordWrap
         }
 
@@ -775,14 +806,14 @@ PluginSettings {
         StyledText {
             text: "Filename Template"
             font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
         }
 
         StyledText {
             width: parent.width
             text: "{title}, {id} and {source} are substituted, then sanitised and disambiguated before writing -- see ExportProvider.js."
             font.pixelSize: Theme.fontSizeSmall - 2
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
             wrapMode: Text.WordWrap
         }
 
@@ -805,14 +836,14 @@ PluginSettings {
         StyledText {
             text: "Tags"
             font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
         }
 
         StyledText {
             width: parent.width
             text: "Comma-separated. Applied to every exported note's frontmatter (and as wikilinks in the body, for Obsidian)."
             font.pixelSize: Theme.fontSizeSmall - 2
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
             wrapMode: Text.WordWrap
         }
 
@@ -871,14 +902,14 @@ PluginSettings {
         StyledText {
             text: "Attachment Folder"
             font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
         }
 
         StyledText {
             width: parent.width
             text: "Relative to the notes folder above."
             font.pixelSize: Theme.fontSizeSmall - 2
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
             wrapMode: Text.WordWrap
         }
 
@@ -905,7 +936,7 @@ PluginSettings {
     StyledRect {
         width: parent.width
         height: 1
-        color: Theme.outlineVariant
+        color: root.roleColours.outlineVariant
         visible: currentBackend.capabilities.serverState
     }
 
@@ -914,7 +945,7 @@ PluginSettings {
         text: "Subscription List"
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
-        color: Theme.surfaceText
+        color: root.roleColours.surfaceText
         visible: currentBackend.capabilities.serverState
     }
 
@@ -922,7 +953,7 @@ PluginSettings {
         width: parent.width
         height: Math.max(80, minifluxFeedsColumn.implicitHeight + Theme.spacingL * 2)
         radius: Theme.cornerRadius
-        color: Theme.surfaceContainerHigh
+        color: root.roleColours.surfaceContainerHigh
         visible: currentBackend.capabilities.serverState
 
         Column {
@@ -942,7 +973,7 @@ PluginSettings {
                     DankIcon {
                         name: "rss_feed"
                         size: 14
-                        color: Theme.primary
+                        color: root.roleColours.primary
                     }
 
                     ColumnLayout {
@@ -953,7 +984,7 @@ PluginSettings {
                             text: modelData.title || ""
                             font.pixelSize: Theme.fontSizeSmall
                             font.weight: Font.Medium
-                            color: Theme.surfaceText
+                            color: root.roleColours.surfaceText
                             Layout.fillWidth: true
                             elide: Text.ElideRight
                         }
@@ -961,7 +992,7 @@ PluginSettings {
                         StyledText {
                             text: modelData.feed_url || modelData.site_url || ""
                             font.pixelSize: Theme.fontSizeSmall - 2
-                            color: Theme.surfaceVariantText
+                            color: root.roleColours.surfaceVariantText
                             Layout.fillWidth: true
                             elide: Text.ElideMiddle
                         }
@@ -975,7 +1006,7 @@ PluginSettings {
                     : ""
                 visible: root.minifluxFeedsList.length === 0
                 font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceVariantText
+                color: root.roleColours.surfaceVariantText
                 width: parent.width
             }
         }
@@ -988,7 +1019,7 @@ PluginSettings {
         text: "Refresh Settings"
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
-        color: Theme.surfaceText
+        color: root.roleColours.surfaceText
     }
 
     SliderSetting {
@@ -1085,7 +1116,7 @@ PluginSettings {
     StyledRect {
         width: parent.width
         height: 1
-        color: Theme.outlineVariant
+        color: root.roleColours.outlineVariant
         visible: !currentBackend.capabilities.serverState
     }
 
@@ -1099,7 +1130,7 @@ PluginSettings {
         text: "Feed Management"
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
-        color: Theme.surfaceText
+        color: root.roleColours.surfaceText
         visible: !currentBackend.capabilities.serverState
     }
 
@@ -1107,7 +1138,7 @@ PluginSettings {
         width: parent.width
         height: addFeedColumn.implicitHeight + Theme.spacingL * 2
         radius: Theme.cornerRadius
-        color: Theme.surfaceContainerHigh
+        color: root.roleColours.surfaceContainerHigh
         visible: !currentBackend.capabilities.serverState
 
         Column {
@@ -1120,7 +1151,7 @@ PluginSettings {
                 text: root.editingIndex === -1 ? "Add Feed" : "Edit Feed"
                 font.pixelSize: Theme.fontSizeMedium
                 font.weight: Font.Medium
-                color: Theme.surfaceText
+                color: root.roleColours.surfaceText
             }
 
             Column {
@@ -1130,7 +1161,7 @@ PluginSettings {
                 StyledText {
                     text: "Feed Name"
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                 }
 
                 DankTextField {
@@ -1150,7 +1181,7 @@ PluginSettings {
                 StyledText {
                     text: "Feed URL *"
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                 }
 
                 DankTextField {
@@ -1168,7 +1199,7 @@ PluginSettings {
                     width: parent.width
                     text: root.urlError
                     font.pixelSize: Theme.fontSizeSmall - 2
-                    color: Theme.error
+                    color: root.roleColours.error
                     wrapMode: Text.WordWrap
                 }
             }
@@ -1210,7 +1241,7 @@ PluginSettings {
         width: parent.width
         height: discoveryColumn.implicitHeight + Theme.spacingL * 2
         radius: Theme.cornerRadius
-        color: Theme.surfaceContainerHigh
+        color: root.roleColours.surfaceContainerHigh
         visible: !currentBackend.capabilities.serverState
 
         Column {
@@ -1223,14 +1254,14 @@ PluginSettings {
                 text: "Find a Feed"
                 font.pixelSize: Theme.fontSizeMedium
                 font.weight: Font.Medium
-                color: Theme.surfaceText
+                color: root.roleColours.surfaceText
             }
 
             StyledText {
                 width: parent.width
                 text: "Enter a site's homepage and this looks for the feed it declares, instead of you having to find the feed URL yourself."
                 font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceVariantText
+                color: root.roleColours.surfaceVariantText
                 wrapMode: Text.WordWrap
             }
 
@@ -1281,7 +1312,7 @@ PluginSettings {
                 width: parent.width
                 text: "No feed found on that page."
                 font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceVariantText
+                color: root.roleColours.surfaceVariantText
                 wrapMode: Text.WordWrap
             }
 
@@ -1301,7 +1332,7 @@ PluginSettings {
                         DankIcon {
                             name: "rss_feed"
                             size: 14
-                            color: Theme.primary
+                            color: root.roleColours.primary
                         }
 
                         ColumnLayout {
@@ -1312,7 +1343,7 @@ PluginSettings {
                                 text: modelData.title || modelData.url
                                 font.pixelSize: Theme.fontSizeSmall
                                 font.weight: Font.Medium
-                                color: Theme.surfaceText
+                                color: root.roleColours.surfaceText
                                 Layout.fillWidth: true
                                 elide: Text.ElideRight
                             }
@@ -1320,7 +1351,7 @@ PluginSettings {
                             StyledText {
                                 text: modelData.url
                                 font.pixelSize: Theme.fontSizeSmall - 2
-                                color: Theme.surfaceVariantText
+                                color: root.roleColours.surfaceVariantText
                                 Layout.fillWidth: true
                                 elide: Text.ElideMiddle
                             }
@@ -1348,7 +1379,7 @@ PluginSettings {
         width: parent.width
         height: Math.max(120, feedsListColumn.implicitHeight + Theme.spacingL * 2)
         radius: Theme.cornerRadius
-        color: Theme.surfaceContainerHigh
+        color: root.roleColours.surfaceContainerHigh
         visible: !currentBackend.capabilities.serverState
 
         Column {
@@ -1361,7 +1392,7 @@ PluginSettings {
                 text: "Configured Feeds"
                 font.pixelSize: Theme.fontSizeMedium
                 font.weight: Font.Medium
-                color: Theme.surfaceText
+                color: root.roleColours.surfaceText
             }
 
             ListView {
@@ -1379,7 +1410,7 @@ PluginSettings {
                     width: feedsListView.width
                     height: feedInfoRow.implicitHeight + Theme.spacingM * 2
                     radius: Theme.cornerRadius
-                    color: feedItemMouse.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainer
+                    color: feedItemMouse.containsMouse ? root.roleColours.surfaceContainerHighest : root.roleColours.surfaceContainer
                     opacity: modelData.enabled === false ? 0.55 : 1.0
 
                     RowLayout {
@@ -1391,7 +1422,7 @@ PluginSettings {
                         DankIcon {
                             name: "rss_feed"
                             size: 16
-                            color: Theme.primary
+                            color: root.roleColours.primary
                         }
 
                         ColumnLayout {
@@ -1402,7 +1433,7 @@ PluginSettings {
                                 text: modelData.name || ""
                                 font.pixelSize: Theme.fontSizeSmall
                                 font.weight: Font.Medium
-                                color: modelData.enabled === false ? Theme.surfaceVariantText : Theme.surfaceText
+                                color: modelData.enabled === false ? root.roleColours.surfaceVariantText : root.roleColours.surfaceText
                                 Layout.fillWidth: true
                                 elide: Text.ElideRight
                             }
@@ -1410,7 +1441,7 @@ PluginSettings {
                             StyledText {
                                 text: modelData.url || ""
                                 font.pixelSize: Theme.fontSizeSmall - 2
-                                color: Theme.surfaceVariantText
+                                color: root.roleColours.surfaceVariantText
                                 Layout.fillWidth: true
                                 elide: Text.ElideMiddle
                             }
@@ -1425,14 +1456,14 @@ PluginSettings {
                                     visible: parent.feedStatus !== null && parent.feedStatus.state === "ok"
                                     name: "check_circle"
                                     size: 12
-                                    color: Theme.success
+                                    color: root.roleColours.success
                                 }
 
                                 DankIcon {
                                     visible: parent.feedStatus !== null && (parent.feedStatus.state === "error" || parent.feedStatus.state === "timeout")
                                     name: "error"
                                     size: 12
-                                    color: Theme.error
+                                    color: root.roleColours.error
                                 }
 
                                 StyledText {
@@ -1450,10 +1481,10 @@ PluginSettings {
                                     }
                                     color: {
                                         var st = root.statusForUrl(modelData.url);
-                                        if (modelData.enabled === false) return Theme.surfaceVariantText;
-                                        if (st && (st.state === "error" || st.state === "timeout")) return Theme.error;
-                                        if (st && st.state === "ok") return Theme.success;
-                                        return Theme.surfaceVariantText;
+                                        if (modelData.enabled === false) return root.roleColours.surfaceVariantText;
+                                        if (st && (st.state === "error" || st.state === "timeout")) return root.roleColours.error;
+                                        if (st && st.state === "ok") return root.roleColours.success;
+                                        return root.roleColours.surfaceVariantText;
                                     }
                                 }
                             }
@@ -1485,13 +1516,13 @@ PluginSettings {
                             Accessible.name: "Move " + (modelData.name || "feed") + " up"
                             Accessible.onPressAction: moveUpArea.clicked(null)
                             opacity: enabled ? 1.0 : 0.35
-                            color: enabled && moveUpArea.containsMouse ? Theme.primary : "transparent"
+                            color: enabled && moveUpArea.containsMouse ? root.roleColours.primary : "transparent"
 
                             DankIcon {
                                 anchors.centerIn: parent
                                 name: "arrow_upward"
                                 size: 16
-                                color: moveUpButton.enabled && moveUpArea.containsMouse ? Theme.onPrimary : Theme.surfaceVariantText
+                                color: moveUpButton.enabled && moveUpArea.containsMouse ? root.roleColours.onPrimary : root.roleColours.surfaceVariantText
                             }
 
                             MouseArea {
@@ -1523,13 +1554,13 @@ PluginSettings {
                             Accessible.name: "Move " + (modelData.name || "feed") + " down"
                             Accessible.onPressAction: moveDownArea.clicked(null)
                             opacity: enabled ? 1.0 : 0.35
-                            color: enabled && moveDownArea.containsMouse ? Theme.primary : "transparent"
+                            color: enabled && moveDownArea.containsMouse ? root.roleColours.primary : "transparent"
 
                             DankIcon {
                                 anchors.centerIn: parent
                                 name: "arrow_downward"
                                 size: 16
-                                color: moveDownButton.enabled && moveDownArea.containsMouse ? Theme.onPrimary : Theme.surfaceVariantText
+                                color: moveDownButton.enabled && moveDownArea.containsMouse ? root.roleColours.onPrimary : root.roleColours.surfaceVariantText
                             }
 
                             MouseArea {
@@ -1555,7 +1586,7 @@ PluginSettings {
 
                         Rectangle {
                             width: 32; height: 32; radius: 16
-                            color: editArea.containsMouse ? Theme.primary : "transparent"
+                            color: editArea.containsMouse ? root.roleColours.primary : "transparent"
                             Accessible.role: Accessible.Button
                             Accessible.name: "Edit " + (modelData.name || "feed")
                             Accessible.onPressAction: editArea.clicked(null)
@@ -1564,7 +1595,7 @@ PluginSettings {
                                 anchors.centerIn: parent
                                 name: "edit"
                                 size: 16
-                                color: editArea.containsMouse ? Theme.onPrimary : Theme.surfaceVariantText
+                                color: editArea.containsMouse ? root.roleColours.onPrimary : root.roleColours.surfaceVariantText
                             }
 
                             MouseArea {
@@ -1585,7 +1616,7 @@ PluginSettings {
 
                         Rectangle {
                             width: 32; height: 32; radius: 16
-                            color: deleteArea.containsMouse ? Theme.error : "transparent"
+                            color: deleteArea.containsMouse ? root.roleColours.error : "transparent"
                             Accessible.role: Accessible.Button
                             Accessible.name: "Delete " + (modelData.name || "feed")
                             Accessible.onPressAction: deleteArea.clicked(null)
@@ -1594,7 +1625,7 @@ PluginSettings {
                                 anchors.centerIn: parent
                                 name: "delete"
                                 size: 16
-                                color: deleteArea.containsMouse ? Theme.onError : Theme.surfaceVariantText
+                                color: deleteArea.containsMouse ? root.roleColours.onError : root.roleColours.surfaceVariantText
                             }
 
                             MouseArea {
@@ -1633,7 +1664,7 @@ PluginSettings {
                     anchors.centerIn: parent
                     text: "No feeds configured yet"
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                     visible: feedsListView.count === 0
                 }
             }
@@ -1646,7 +1677,7 @@ PluginSettings {
         width: parent.width
         height: opmlColumn.implicitHeight + Theme.spacingL * 2
         radius: Theme.cornerRadius
-        color: Theme.surfaceContainerHigh
+        color: root.roleColours.surfaceContainerHigh
         visible: !currentBackend.capabilities.serverState
 
         Column {
@@ -1659,14 +1690,14 @@ PluginSettings {
                 text: "Import / Export OPML"
                 font.pixelSize: Theme.fontSizeMedium
                 font.weight: Font.Medium
-                color: Theme.surfaceText
+                color: root.roleColours.surfaceText
             }
 
             StyledText {
                 width: parent.width
                 text: "Paste OPML/XML content to import feeds from other RSS readers"
                 font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceVariantText
+                color: root.roleColours.surfaceVariantText
                 wrapMode: Text.WordWrap
             }
 
@@ -1717,14 +1748,14 @@ PluginSettings {
             StyledRect {
                 width: parent.width
                 height: 1
-                color: Theme.outlineVariant
+                color: root.roleColours.outlineVariant
             }
 
             StyledText {
                 text: "Export Feeds to OPML"
                 font.pixelSize: Theme.fontSizeMedium
                 font.weight: Font.Medium
-                color: Theme.surfaceText
+                color: root.roleColours.surfaceText
             }
 
             StyledText {
@@ -1737,7 +1768,7 @@ PluginSettings {
                 // different (and independent) thing to want.
                 text: "Full path to write, including the filename (created or overwritten)."
                 font.pixelSize: Theme.fontSizeSmall - 2
-                color: Theme.surfaceVariantText
+                color: root.roleColours.surfaceVariantText
                 wrapMode: Text.WordWrap
             }
 
@@ -1804,7 +1835,7 @@ PluginSettings {
     StyledRect {
         width: parent.width
         height: 1
-        color: Theme.outlineVariant
+        color: root.roleColours.outlineVariant
         visible: !currentBackend.capabilities.serverState
     }
 
@@ -1823,14 +1854,14 @@ PluginSettings {
         text: "Quick Add"
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
-        color: Theme.surfaceText
+        color: root.roleColours.surfaceText
     }
 
     StyledText {
         width: parent.width
         text: "Quickly add popular feeds"
         font.pixelSize: Theme.fontSizeSmall
-        color: Theme.surfaceVariantText
+        color: root.roleColours.surfaceVariantText
     }
 
     StyledText {
@@ -1838,7 +1869,7 @@ PluginSettings {
         text: "News — US"
         font.pixelSize: Theme.fontSizeSmall
         font.weight: Font.Medium
-        color: Theme.primary
+        color: root.roleColours.primary
     }
 
     Flow {
@@ -1869,7 +1900,7 @@ PluginSettings {
         text: "News — Global"
         font.pixelSize: Theme.fontSizeSmall
         font.weight: Font.Medium
-        color: Theme.primary
+        color: root.roleColours.primary
     }
 
     Flow {
@@ -1900,7 +1931,7 @@ PluginSettings {
         text: "Tech"
         font.pixelSize: Theme.fontSizeSmall
         font.weight: Font.Medium
-        color: Theme.primary
+        color: root.roleColours.primary
     }
 
     Flow {
@@ -1931,7 +1962,7 @@ PluginSettings {
         text: "Reddit"
         font.pixelSize: Theme.fontSizeSmall
         font.weight: Font.Medium
-        color: Theme.primary
+        color: root.roleColours.primary
     }
 
     Flow {
@@ -2003,7 +2034,7 @@ PluginSettings {
     StyledRect {
         width: parent.width
         height: 1
-        color: Theme.outlineVariant
+        color: root.roleColours.outlineVariant
     }
 
     // ─── Appearance Settings ───
@@ -2013,7 +2044,7 @@ PluginSettings {
         text: "Appearance"
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
-        color: Theme.surfaceText
+        color: root.roleColours.surfaceText
     }
 
     SliderSetting {
@@ -2082,7 +2113,7 @@ PluginSettings {
     StyledRect {
         width: parent.width
         height: 1
-        color: Theme.outlineVariant
+        color: root.roleColours.outlineVariant
     }
 
     StyledText {
@@ -2090,7 +2121,7 @@ PluginSettings {
         text: "Reader"
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
-        color: Theme.surfaceText
+        color: root.roleColours.surfaceText
     }
 
     Column {
@@ -2100,14 +2131,14 @@ PluginSettings {
         StyledText {
             text: "Reader Font"
             font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
         }
 
         StyledText {
             width: parent.width
             text: "Leave empty to follow your DMS font."
             font.pixelSize: Theme.fontSizeSmall - 2
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
             wrapMode: Text.WordWrap
         }
 
@@ -2135,7 +2166,7 @@ PluginSettings {
     StyledRect {
         width: parent.width
         height: 1
-        color: Theme.outlineVariant
+        color: root.roleColours.outlineVariant
     }
 
     StyledText {
@@ -2143,7 +2174,7 @@ PluginSettings {
         text: "AI Summaries"
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
-        color: Theme.surfaceText
+        color: root.roleColours.surfaceText
     }
 
     ToggleSetting {
@@ -2191,7 +2222,7 @@ PluginSettings {
         StyledText {
             text: "Base URL"
             font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
         }
 
         DankTextField {
@@ -2218,14 +2249,14 @@ PluginSettings {
         StyledText {
             text: "Model"
             font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
         }
 
         StyledText {
             width: parent.width
             text: "Prefer an instruct-tagged model over a -base one -- base models are not tuned to follow the summarise/digest instructions. If summaries feel slow, try a non-reasoning model; a reasoning model spends extra tokens thinking before it answers."
             font.pixelSize: Theme.fontSizeSmall - 2
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
             wrapMode: Text.WordWrap
         }
 
@@ -2249,14 +2280,14 @@ PluginSettings {
         StyledText {
             text: "API Key"
             font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
         }
 
         StyledText {
             width: parent.width
             text: "Most local runtimes need none -- leave this empty unless yours requires one."
             font.pixelSize: Theme.fontSizeSmall - 2
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
             wrapMode: Text.WordWrap
         }
 
@@ -2282,7 +2313,7 @@ PluginSettings {
         StyledText {
             text: "Embedding Model"
             font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
         }
 
         // A DIFFERENT model from "Model" above: that one answers chat
@@ -2295,7 +2326,7 @@ PluginSettings {
             width: parent.width
             text: "e.g., nomic-embed-text. Needed only if you turn on interest ranking below."
             font.pixelSize: Theme.fontSizeSmall - 2
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
             wrapMode: Text.WordWrap
         }
 
@@ -2391,7 +2422,7 @@ PluginSettings {
     StyledRect {
         width: parent.width
         height: 1
-        color: Theme.outlineVariant
+        color: root.roleColours.outlineVariant
     }
 
     StyledText {
@@ -2399,7 +2430,7 @@ PluginSettings {
         text: "Interest Ranking"
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
-        color: Theme.surfaceText
+        color: root.roleColours.surfaceText
     }
 
     ToggleSetting {
@@ -2432,7 +2463,7 @@ PluginSettings {
     StyledRect {
         width: parent.width
         height: 1
-        color: Theme.outlineVariant
+        color: root.roleColours.outlineVariant
     }
 
     StyledText {
@@ -2440,7 +2471,7 @@ PluginSettings {
         text: "Colour Theme"
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
-        color: Theme.surfaceText
+        color: root.roleColours.surfaceText
     }
 
     SelectionSetting {
@@ -2489,7 +2520,7 @@ PluginSettings {
                 StyledText {
                     text: modelData.label
                     font.pixelSize: Theme.fontSizeSmall - 2
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                 }
             }
         }
@@ -2504,7 +2535,7 @@ PluginSettings {
     StyledRect {
         width: parent.width
         height: 1
-        color: Theme.outlineVariant
+        color: root.roleColours.outlineVariant
     }
 
     StyledText {
@@ -2512,7 +2543,7 @@ PluginSettings {
         text: "Notification Rules"
         font.pixelSize: Theme.fontSizeMedium
         font.weight: Font.Medium
-        color: Theme.surfaceText
+        color: root.roleColours.surfaceText
     }
 
     StyledText {
@@ -2522,7 +2553,7 @@ PluginSettings {
         // widget's own search box works here unchanged.
         text: "Get notified when an item matches a query, using the SAME search syntax as the widget's search box."
         font.pixelSize: Theme.fontSizeSmall
-        color: Theme.surfaceVariantText
+        color: root.roleColours.surfaceVariantText
         wrapMode: Text.WordWrap
     }
 
@@ -2574,20 +2605,20 @@ PluginSettings {
                 DankIcon {
                     name: "notifications"
                     size: 14
-                    color: Theme.primary
+                    color: root.roleColours.primary
                 }
 
                 StyledText {
                     Layout.fillWidth: true
                     text: modelData.query || ""
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceText
+                    color: root.roleColours.surfaceText
                     elide: Text.ElideRight
                 }
 
                 Rectangle {
                     width: 28; height: 28; radius: 14
-                    color: deleteRuleArea.containsMouse ? Theme.error : "transparent"
+                    color: deleteRuleArea.containsMouse ? root.roleColours.error : "transparent"
                     Accessible.role: Accessible.Button
                     Accessible.name: "Delete notification rule " + (modelData.query || "")
                     Accessible.onPressAction: deleteRuleArea.clicked(null)
@@ -2596,7 +2627,7 @@ PluginSettings {
                         anchors.centerIn: parent
                         name: "delete"
                         size: 14
-                        color: deleteRuleArea.containsMouse ? Theme.onError : Theme.surfaceVariantText
+                        color: deleteRuleArea.containsMouse ? root.roleColours.onError : root.roleColours.surfaceVariantText
                     }
 
                     MouseArea {
@@ -2617,7 +2648,7 @@ PluginSettings {
         StyledText {
             text: "No notification rules yet"
             font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            color: root.roleColours.surfaceVariantText
             visible: root.loadValue("notificationRules", []).length === 0
         }
     }

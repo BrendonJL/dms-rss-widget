@@ -19,6 +19,7 @@ import "KeyMap.js" as KeyMap
 import "ExportProvider.js" as ExportProvider
 import "HtmlExtract.js" as HtmlExtract
 import "FeedParser.js" as FeedParser
+import "Palette.js" as Palette
 
 DankFloatingWindow {
     id: root
@@ -122,6 +123,58 @@ DankFloatingWindow {
     // "reading" font. A name that doesn't resolve just falls back to the
     // theme font, same as any other unresolvable QML font.family.
     property string readerFontFamily: ""
+    // The plugin's own colour palette, resolved from the chosen preset.
+    //
+    // Every colour in this file goes through here rather than straight to
+    // Theme, so a colour-vision preset can replace the matugen values without
+    // the plugin ever WRITING to Theme -- which it must never do: Theme is a
+    // pragma Singleton shared by the whole shell, and assigning to it would
+    // repaint the bar, the popups and every other plugin too.
+    //
+    // "system" resolves to these same values unchanged, so the default path
+    // is a pass-through and nothing moves for anyone who has not asked for a
+    // preset.
+    function themeBasePalette() {
+        return {
+            primary: String(Theme.primary),
+            secondary: String(Theme.secondary),
+            surfaceText: String(Theme.surfaceText),
+            surfaceVariantText: String(Theme.surfaceVariantText),
+            error: String(Theme.error),
+            success: String(Theme.success),
+            warning: String(Theme.warning),
+            outlineVariant: String(Theme.outlineVariant),
+            surfaceContainer: String(Theme.surfaceContainer),
+            surfaceContainerHigh: String(Theme.surfaceContainerHigh),
+            surfaceContainerHighest: String(Theme.surfaceContainerHighest),
+            onPrimary: String(Theme.onPrimary),
+            onError: String(Theme.onError)
+        };
+    }
+
+    // Theme.withAlpha takes a colour OBJECT and returns fully transparent for
+    // anything whose .r is undefined -- which a hex string is. The palette
+    // deals in strings (Palette.js does hex arithmetic on them), so every
+    // withAlpha call on a palette colour would have silently produced
+    // transparent rather than a tint: no error, no warning, just backgrounds
+    // and hover states quietly disappearing. Parse it here instead.
+    function tint(hex, a) {
+        var c = ("" + hex).replace("#", "");
+        if (c.length === 3)
+            c = c.charAt(0) + c.charAt(0) + c.charAt(1) + c.charAt(1) + c.charAt(2) + c.charAt(2);
+        if (c.length === 8)
+            c = c.substring(2);
+        var n = parseInt(c.substring(0, 6), 16);
+        if (isNaN(n))
+            return Qt.rgba(0, 0, 0, 0);
+        return Qt.rgba(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, a);
+    }
+
+    // Passed in by the widget so both windows agree; defaults to following
+    // the system theme when opened standalone.
+    property string colourPreset: "system"
+    readonly property var roleColours: Palette.resolvePalette(root.colourPreset, root.themeBasePalette())
+
     readonly property string effectiveFontFamily: root.readerFontFamily !== "" ? root.readerFontFamily : Theme.fontFamily
 
     property var _article: null
@@ -518,28 +571,28 @@ DankFloatingWindow {
                     visible: !root.digestMode && text !== ""
                     font.pixelSize: Theme.fontSizeSmall
                     font.weight: Font.Medium
-                    color: Theme.primary
+                    color: root.roleColours.primary
                 }
 
                 StyledText {
                     text: "·"
                     visible: !root.digestMode && root.source !== "" && root.timestamp > 0
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                 }
 
                 StyledText {
                     text: root.timestamp > 0 ? Qt.formatDateTime(new Date(root.timestamp), "MMMM d, yyyy") : ""
                     visible: !root.digestMode && text !== ""
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                 }
 
                 StyledText {
                     text: "·"
                     visible: !root.digestMode && root.positionCount > 0 && (root.source !== "" || root.timestamp > 0)
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                 }
 
                 // Where the open article sits in the widget's current list,
@@ -552,7 +605,7 @@ DankFloatingWindow {
                     text: (root.positionIndex + 1) + " of " + root.positionCount + "  ·  shift+j / shift+k to navigate"
                     visible: !root.digestMode && root.positionCount > 0
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                 }
 
                 // Digest mode's stand-in for the source/date/position line
@@ -562,7 +615,7 @@ DankFloatingWindow {
                     text: root.digestItemCount > 0 ? (root.digestItemCount + (root.digestItemCount === 1 ? " item" : " items") + " · last 24 hours") : "Last 24 hours"
                     visible: root.digestMode
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                 }
 
                 Item {
@@ -577,7 +630,7 @@ DankFloatingWindow {
                     enabled: !root.summaryLoading && root.itemId !== ""
                     iconName: root.summaryLoading ? "hourglass_top" : "auto_awesome"
                     iconSize: Theme.iconSize - 4
-                    iconColor: root.summaryLoading ? Theme.surfaceVariantText : Theme.surfaceText
+                    iconColor: root.summaryLoading ? root.roleColours.surfaceVariantText : root.roleColours.surfaceText
                     onClicked: root.summaryRequested(root.itemId)
                     // The name tracks the in-flight state because the icon
                     // does: a control that has visibly changed but reads out
@@ -593,7 +646,7 @@ DankFloatingWindow {
                     enabled: !root.digestLoading
                     iconName: root.digestLoading ? "hourglass_top" : "refresh"
                     iconSize: Theme.iconSize - 4
-                    iconColor: root.digestLoading ? Theme.surfaceVariantText : Theme.surfaceText
+                    iconColor: root.digestLoading ? root.roleColours.surfaceVariantText : root.roleColours.surfaceText
                     onClicked: root.digestRequested()
                     Accessible.role: Accessible.Button
                     Accessible.name: root.digestLoading ? "Generating digest" : "Regenerate digest"
@@ -605,7 +658,7 @@ DankFloatingWindow {
                     visible: windowControls.canMaximize
                     iconName: root.maximized ? "fullscreen_exit" : "fullscreen"
                     iconSize: Theme.iconSize - 4
-                    iconColor: Theme.surfaceText
+                    iconColor: root.roleColours.surfaceText
                     onClicked: windowControls.tryToggleMaximize()
                     Accessible.role: Accessible.Button
                     Accessible.name: root.maximized ? "Restore window" : "Maximize window"
@@ -616,7 +669,7 @@ DankFloatingWindow {
                     activeFocusOnTab: false
                     iconName: "close"
                     iconSize: Theme.iconSize - 4
-                    iconColor: Theme.surfaceText
+                    iconColor: root.roleColours.surfaceText
                     onClicked: root.dismiss()
                     Accessible.role: Accessible.Button
                     Accessible.name: "Close reader"
@@ -629,7 +682,7 @@ DankFloatingWindow {
                 Layout.fillWidth: true
                 font.pixelSize: Theme.fontSizeXLarge
                 font.weight: Font.Bold
-                color: Theme.surfaceText
+                color: root.roleColours.surfaceText
                 wrapMode: Text.WordWrap
             }
         }
@@ -660,7 +713,7 @@ DankFloatingWindow {
                     visible: !root.digestMode && root.loading
                     text: "Loading full article…"
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                 }
 
                 // Quiet, not a toast: extraction fell back to the feed
@@ -669,7 +722,7 @@ DankFloatingWindow {
                     visible: !root.digestMode && !root.loading && root.usedFallback
                     text: "Showing the feed summary (" + root.fallbackReason + ")"
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                 }
@@ -687,7 +740,7 @@ DankFloatingWindow {
                     visible: root.digestMode && (root.digestLoading || root.digestError !== "" || root.digestText === "")
                     implicitHeight: digestStatusColumn.implicitHeight + Theme.spacingM * 2
                     radius: Theme.cornerRadius
-                    color: Theme.withAlpha(Theme.surfaceContainerHigh, 0.6)
+                    color: root.tint(root.roleColours.surfaceContainerHigh, 0.6)
 
                     ColumnLayout {
                         id: digestStatusColumn
@@ -703,7 +756,7 @@ DankFloatingWindow {
                             DankIcon {
                                 name: root.digestError !== "" ? "error" : "auto_awesome"
                                 size: 14
-                                color: root.digestError !== "" ? Theme.error : Theme.surfaceVariantText
+                                color: root.digestError !== "" ? root.roleColours.error : root.roleColours.surfaceVariantText
                             }
 
                             StyledText {
@@ -717,7 +770,7 @@ DankFloatingWindow {
                                 }
                                 font.pixelSize: Theme.fontSizeSmall
                                 font.weight: Font.Medium
-                                color: Theme.surfaceVariantText
+                                color: root.roleColours.surfaceVariantText
                             }
                         }
 
@@ -727,7 +780,7 @@ DankFloatingWindow {
                             text: root.digestError
                             font.pixelSize: root.bodyFontSize - 2
                             font.family: root.effectiveFontFamily
-                            color: Theme.error
+                            color: root.roleColours.error
                             wrapMode: Text.WordWrap
                         }
                     }
@@ -743,7 +796,7 @@ DankFloatingWindow {
                     visible: !root.digestMode && (root.summaryLoading || root.summaryText !== "" || root.summaryError !== "")
                     implicitHeight: summaryColumn.implicitHeight + Theme.spacingM * 2
                     radius: Theme.cornerRadius
-                    color: Theme.withAlpha(Theme.surfaceContainerHigh, 0.6)
+                    color: root.tint(root.roleColours.surfaceContainerHigh, 0.6)
 
                     ColumnLayout {
                         id: summaryColumn
@@ -759,7 +812,7 @@ DankFloatingWindow {
                             DankIcon {
                                 name: root.summaryError !== "" ? "error" : "auto_awesome"
                                 size: 14
-                                color: root.summaryError !== "" ? Theme.error : Theme.surfaceVariantText
+                                color: root.summaryError !== "" ? root.roleColours.error : root.roleColours.surfaceVariantText
                             }
 
                             StyledText {
@@ -773,7 +826,7 @@ DankFloatingWindow {
                                 }
                                 font.pixelSize: Theme.fontSizeSmall
                                 font.weight: Font.Medium
-                                color: Theme.surfaceVariantText
+                                color: root.roleColours.surfaceVariantText
                             }
                         }
 
@@ -783,7 +836,7 @@ DankFloatingWindow {
                             text: root.summaryError !== "" ? root.summaryError : root.summaryText
                             font.pixelSize: root.bodyFontSize - 2
                             font.family: root.effectiveFontFamily
-                            color: root.summaryError !== "" ? Theme.error : Theme.surfaceText
+                            color: root.summaryError !== "" ? root.roleColours.error : root.roleColours.surfaceText
                             wrapMode: Text.WordWrap
                         }
                     }
@@ -824,7 +877,7 @@ DankFloatingWindow {
                         text: root._displayText(modelData, blockType)
                         textFormat: Text.MarkdownText
                         wrapMode: Text.WordWrap
-                        color: Theme.surfaceText
+                        color: root.roleColours.surfaceText
                         // Code is the one block that genuinely needs the
                         // monospace family regardless of what the reader
                         // font is set to -- everything else follows it.
