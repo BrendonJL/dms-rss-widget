@@ -7,7 +7,8 @@ QtObject {
         try {
             var provider = ExportProvider.createExportProvider({
                 kind: "obsidian", root: "/home/user/vault", vault: "MyVault",
-                filenameTemplate: "{title}", tags: ["news"]
+                filenameTemplate: "{title}", tags: ["news"],
+                exportOpenCommand: "obsidian://open?vault={vault}&file={file}"
             });
             code = 41;                       // 41 = factory returned wrong shape
             if (!provider || !provider.buildNote || !provider.openRequest || !provider.capabilities) { Qt.exit(code); return; }
@@ -30,13 +31,45 @@ QtObject {
             var b = provider.buildNote({ id: "id-b", title: "Same" }, []);
             if (!a || !b || a.relPath === b.relPath) { Qt.exit(code); return; }
 
-            code = 46;                       // 46 = obsidian wikilink tag missing from body
+            // 46 = tags leaked into the note body. They belong in the
+            // frontmatter only; every markdown tool reads them from there, and
+            // a "[[news]]" line under the article was just one more thing to
+            // delete in every note.
+            code = 46;
             var tagResult = provider.buildNote({ id: "id-3", title: "Tagged" }, []);
-            if (tagResult.content.indexOf("[[news]]") === -1) { Qt.exit(code); return; }
+            var parts = tagResult.content.split("---");
+            var body = parts.length > 2 ? parts.slice(2).join("---") : tagResult.content;
+            if (body.indexOf("[[news]]") !== -1) { Qt.exit(code); return; }
+            if (tagResult.content.indexOf("tags:") === -1) { Qt.exit(code); return; }
 
             code = 47;                       // 47 = openRequest wrong shape
             var open = provider.openRequest(tagResult.relPath);
             if (!open || open.url.indexOf("obsidian://open?vault=MyVault") !== 0) { Qt.exit(code); return; }
+
+            // 48 = the preset table is missing, or a non-obsidian preset
+            // did not produce an argv with {path} substituted as its own
+            // element (stage 4d).
+            code = 48;
+            if (!ExportProvider.EXPORT_OPEN_PRESETS || ExportProvider.EXPORT_OPEN_PRESETS.length !== 10) { Qt.exit(code); return; }
+            var codeProvider = ExportProvider.createExportProvider({
+                kind: "vscode", root: "/home/user/vault", exportOpenCommand: "code {path}"
+            });
+            var argvReq = codeProvider.openRequest("some note; rm -rf ~.md");
+            if (!argvReq || !Array.isArray(argvReq.argv)) { Qt.exit(code); return; }
+            if (argvReq.argv.length !== 2 || argvReq.argv[0] !== "code") { Qt.exit(code); return; }
+            if (argvReq.argv[1] !== "/home/user/vault/some note; rm -rf ~.md") { Qt.exit(code); return; }
+
+            // 49 = a template with no {path} was not rejected, or an empty
+            // template did not return null.
+            code = 49;
+            var noPathProvider = ExportProvider.createExportProvider({
+                kind: "custom", root: "/home/user/vault", exportOpenCommand: "code"
+            });
+            if (noPathProvider.openRequest("x.md") !== null) { Qt.exit(code); return; }
+            var noneProvider = ExportProvider.createExportProvider({
+                kind: "none", root: "/home/user/vault", exportOpenCommand: ""
+            });
+            if (noneProvider.openRequest("x.md") !== null) { Qt.exit(code); return; }
 
             Qt.exit(55);                     // 55 = full chain worked
         } catch (e) {

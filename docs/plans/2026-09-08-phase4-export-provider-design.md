@@ -1,14 +1,19 @@
 # Design: Phase 4 — notes / export provider
 
 Date: 2026-09-08
-Status: 4a ready to implement
+Status: implemented (4a, 4b, 4c, 4d) — on `develop`, unreleased
 Depends on: nothing. Blocks Phase 5 (reader/annotation app).
 
-> **Status:** stage 4a implemented — `ExportProvider.js`, its tests, and the
-> QML DI round-trip (`tests/qml/export-provider.qml`) all exist. Stage 4b (the
-> QML side: writing via `FileView`, wiring it into the widget) is not
-> implemented — nothing in `DankRssWidget.qml` references `ExportProvider.js`
-> yet.
+> **Status:** stages 4a–4d are all implemented, on `develop` and unreleased.
+> 4a is `ExportProvider.js` plus the QML DI round-trip
+> (`tests/qml/export-provider.qml`); 4b wired it into the widget (the `e`
+> binding, the selection-bar action, the Notes Export settings section, and
+> one `FileView` per note); 4c added `HtmlExtract.js` and optional full-text
+> extraction; 4d replaced the three fixed provider behaviours with a `{path}`
+> open-command template plus editor presets. Two things below were **changed**
+> in the course of that: tags are written to the frontmatter only (not
+> repeated in the body), and `exportKind` is now the id of an open preset
+> rather than a value that fully determines behaviour by itself.
 
 ## Principle
 
@@ -89,7 +94,61 @@ and `atomicWrites: true` — verified: DMS writes its own caches exactly this wa
 Atomic writes matter here beyond crash-safety: a half-written note in a vault
 is worse than no note, because Obsidian will index and sync the truncated file.
 
-## Testing
+### Where the action lives
+
+**The selection bar**, next to Save and Mark read, plus `e` on the keyboard
+acting on the selection when there is one and the cursor row otherwise — the
+same rule `m` and `s` follow.
+
+Not a per-row button: the row already carries a checkbox, a read toggle and a
+bookmark, and a fourth control earns its place only if it is used as often as
+those. Not a right-click menu either — that is designed but unbuilt, and this
+stage should not block on it.
+
+### Settings
+
+Notes export is **global, not per-instance**. Unlike AI feature toggles, there
+is one vault; three widget instances writing to three different folders is a
+misfeature, not a feature.
+
+- **Provider** — Markdown directory / Obsidian / Neovim
+- **Folder** — absolute path, or vault-relative for Obsidian
+- **Vault name** — Obsidian only, needed for the `obsidian://` callback
+- **Filename template** — default `{title}.md`
+- **Tags** — applied to every note
+
+Show the action only when a folder is set. With nothing configured the widget
+must be silent: no affordance, no error, no prompt.
+
+### Writing more than one note
+
+A bulk export of twelve selected articles is twelve writes. `FileView` writes
+to one `path` at a time, so they must be **sequential** — set path, `setText`,
+wait, next. Firing twelve at one `FileView` races them and some will be lost or
+land in the wrong file.
+
+Report once at the end ("12 notes written"), not twelve times. A failure names
+the first article that failed and how many succeeded before it; do not abandon
+the rest silently, and do not emit a toast per failure.
+
+### Errors
+
+`buildNote` returns `{ error }` when a path escapes the export root — a hostile
+feed title, the case that module exists to prevent. Surface it as one toast
+naming the article. That path should be unreachable in practice; if a user ever
+sees it, it is a bug report worth having.
+
+### Testing
+
+`FileView` is not reachable from `tests/qml/run.sh` (it needs `Quickshell.Io`),
+so 4b's write path is verified by:
+
+- Unit: the sequential-queue logic, if it can be extracted as a pure reducer
+  over a list of pending writes. If it cannot be extracted cleanly, do not
+  contort the code to make it testable — say so and leave it to review.
+- Manual (Brendon): export one article and confirm the file appears with
+  correct frontmatter; export a multi-item selection and confirm every file
+  lands; unset the folder and confirm the action disappears entirely.
 
 Unit, all pure:
 
@@ -107,3 +166,26 @@ Unit, all pure:
 - Provider differences: Obsidian emits wikilink tags, markdown-dir does not.
 
 Plus the QML DI round-trip in `tests/qml/`, as with the other two modules.
+
+---
+
+> **Correction, 2026-09-11.** The "Settings" section above says notes export is
+> global rather than per-instance. That was written without knowing how DMS
+> stores plugin settings, and it is wrong in a way worth recording.
+>
+> `DesktopPluginWrapper.qml`'s `loadPluginData` reads the widget instance's own
+> config and falls back to the shared store; `savePluginData` writes to the
+> instance config only. Global-as-default, instance-as-override. **Every**
+> setting this plugin has is already per-instance for an instanced widget.
+>
+> Making one section global required bypassing the plugin API to write
+> `SettingsData` directly, which also broke it away from the shared settings
+> components — `SelectionSetting` is wired to the instance-scoped path, so the
+> provider dropdown could not use it and looked different from every other
+> selector in the panel.
+>
+> So export settings follow the same mechanism as everything else. The stated
+> rationale — there is one vault — still holds as a preference; it just is not
+> worth one section that works and looks unlike the rest of the panel. If
+> per-instance vault paths ever actually bite, the fix belongs in DMS's
+> settings model, not in a workaround here.

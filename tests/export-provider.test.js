@@ -2,7 +2,13 @@ const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 
-const { createExportProvider } = require("../ExportProvider.js");
+const {
+    createExportProvider,
+    buildArticleFetchRequest,
+    articleSummaryText,
+    EXPORT_OPEN_PRESETS,
+    resolveExportConfig
+} = require("../ExportProvider.js");
 
 var ROOT = "/home/user/vault";
 
@@ -81,19 +87,24 @@ function parseFrontmatter(content) {
 // ─── capabilities ───
 
 describe("capabilities", () => {
-    test("markdown provider: no openAfterWrite, no wikilinks", () => {
+    test("no open command configured: no openAfterWrite, no wikilinks", () => {
         var p = createExportProvider(baseConfig({ kind: "markdown" }));
         assert.deepEqual(p.capabilities, { openAfterWrite: false, wikilinks: false });
     });
 
-    test("obsidian provider: openAfterWrite + wikilinks", () => {
-        var p = createExportProvider(baseConfig({ kind: "obsidian" }));
+    test("obsidian preset: openAfterWrite + wikilinks", () => {
+        var p = createExportProvider(baseConfig({ kind: "obsidian", exportOpenCommand: "obsidian://open?vault={vault}&file={file}" }));
         assert.deepEqual(p.capabilities, { openAfterWrite: true, wikilinks: true });
     });
 
-    test("neovim provider: openAfterWrite, no wikilinks", () => {
-        var p = createExportProvider(baseConfig({ kind: "neovim" }));
+    test("a non-obsidian preset with a command: openAfterWrite, no wikilinks", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", exportOpenCommand: "code {path}" }));
         assert.deepEqual(p.capabilities, { openAfterWrite: true, wikilinks: false });
+    });
+
+    test("a whitespace-only command counts as unconfigured", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", exportOpenCommand: "   " }));
+        assert.equal(p.capabilities.openAfterWrite, false);
     });
 });
 
@@ -273,25 +284,35 @@ describe("buildNote: annotation rendering", () => {
         assert.ok(result.content.indexOf("Just a note, no quote.") !== -1);
     });
 });
-
 // ─── provider differences ───
 
-describe("provider differences: wikilink tags", () => {
-    test("obsidian emits wikilink-style tags in the body", () => {
+// These two asserted that tags were written into the note BODY -- as
+// "[[news]]" for Obsidian and "#news" elsewhere. That behaviour was removed
+// deliberately: the frontmatter already carries the tags, every markdown tool
+// that cares reads them from there, and the body line was just something to
+// delete in every note. Rewritten to assert the current intent rather than
+// deleted, so the decision stays visible.
+describe("tags live in frontmatter, not the body", () => {
+    test("obsidian puts no wikilink tags in the body", () => {
         var p = createExportProvider(baseConfig({ kind: "obsidian", tags: ["news", "tech"] }));
-        var result = p.buildNote(article(), []);
-        assert.ok(result.content.indexOf("[[news]]") !== -1);
-        assert.ok(result.content.indexOf("[[tech]]") !== -1);
+        var content = p.buildNote(article(), []).content;
+        var body = content.split(/^---$/m).slice(2).join("---");
+        assert.equal(body.indexOf("[[news]]"), -1);
+        assert.equal(body.indexOf("[[tech]]"), -1);
+        assert.ok(content.indexOf('tags: ["news", "tech"]') !== -1, "frontmatter still carries them");
     });
 
-    test("markdown-dir provider does NOT emit wikilink tags", () => {
+    test("markdown-dir puts no hashtags in the body either", () => {
         var p = createExportProvider(baseConfig({ kind: "markdown", tags: ["news", "tech"] }));
-        var result = p.buildNote(article(), []);
-        assert.equal(result.content.indexOf("[["), -1);
+        var content = p.buildNote(article(), []).content;
+        var body = content.split(/^---$/m).slice(2).join("---");
+        assert.equal(body.indexOf("#news"), -1);
+        assert.equal(body.indexOf("[["), -1);
+        assert.ok(content.indexOf('tags: ["news", "tech"]') !== -1);
     });
 
-    test("neovim provider does NOT emit wikilink tags", () => {
-        var p = createExportProvider(baseConfig({ kind: "neovim", tags: ["news", "tech"] }));
+    test("a non-obsidian preset does NOT emit wikilink tags", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", tags: ["news", "tech"] }));
         var result = p.buildNote(article(), []);
         assert.equal(result.content.indexOf("[["), -1);
     });
@@ -300,41 +321,175 @@ describe("provider differences: wikilink tags", () => {
 // ─── openRequest ───
 
 describe("openRequest", () => {
-    test("markdown provider never returns an open request", () => {
+    test("empty template returns null: write the file and stop", () => {
+        var p = createExportProvider(baseConfig({ kind: "none", exportOpenCommand: "" }));
+        assert.equal(p.openRequest("some-note.md"), null);
+    });
+
+    test("unset template (key absent) also returns null", () => {
         var p = createExportProvider(baseConfig({ kind: "markdown" }));
         assert.equal(p.openRequest("some-note.md"), null);
     });
 
-    test("obsidian provider returns an obsidian:// url", () => {
-        var p = createExportProvider(baseConfig({ kind: "obsidian", vault: "MyVault" }));
+    test("null relPath never produces an open request", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", exportOpenCommand: "code {path}" }));
+        assert.equal(p.openRequest(null), null);
+    });
+
+    // ─── Obsidian: URI, not argv ───
+
+    test("obsidian preset returns an obsidian:// url, not an argv", () => {
+        var p = createExportProvider(baseConfig({
+            kind: "obsidian", vault: "MyVault",
+            exportOpenCommand: "obsidian://open?vault={vault}&file={file}"
+        }));
         var req = p.openRequest("some-note.md");
         assert.ok(req);
+        assert.equal(req.argv, undefined);
         assert.ok(req.url.indexOf("obsidian://open?vault=MyVault") === 0);
         assert.ok(req.url.indexOf("file=some-note") !== -1);
     });
 
-    test("obsidian provider with no vault configured returns null", () => {
-        var p = createExportProvider(baseConfig({ kind: "obsidian", vault: "" }));
+    test("obsidian preset with no vault configured returns null", () => {
+        var p = createExportProvider(baseConfig({
+            kind: "obsidian", vault: "",
+            exportOpenCommand: "obsidian://open?vault={vault}&file={file}"
+        }));
         assert.equal(p.openRequest("some-note.md"), null);
     });
 
-    test("neovim provider with no server configured returns null", () => {
-        var p = createExportProvider(baseConfig({ kind: "neovim" }));
-        assert.equal(p.openRequest("some-note.md"), null);
-    });
+    // ─── {path} substitution: one argv element, never a shell string ───
 
-    test("neovim provider with a server returns a spawnable argv, no shell string", () => {
-        var p = createExportProvider(baseConfig({ kind: "neovim", nvimServer: "/tmp/nvim.sock" }));
+    test("{path} is substituted as its own argv element", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", exportOpenCommand: "code {path}" }));
         var req = p.openRequest("some-note.md");
-        assert.ok(req);
         assert.ok(Array.isArray(req.argv));
-        assert.equal(req.argv[0], "nvim");
-        assert.ok(req.argv.indexOf("/tmp/nvim.sock") !== -1);
+        assert.deepEqual(req.argv, ["code", "/home/user/vault/some-note.md"]);
     });
 
-    test("null relPath never produces an open request", () => {
-        var p = createExportProvider(baseConfig({ kind: "obsidian" }));
-        assert.equal(p.openRequest(null), null);
+    test("a template with flags before {path} keeps them as separate argv elements", () => {
+        var p = createExportProvider(baseConfig({ kind: "custom", exportOpenCommand: "emacsclient -n {path}" }));
+        var req = p.openRequest("some-note.md");
+        assert.deepEqual(req.argv, ["emacsclient", "-n", "/home/user/vault/some-note.md"]);
+    });
+
+    test("a path containing spaces, quotes and semicolons survives intact as ONE argv element", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", exportOpenCommand: "code {path}" }));
+        var hostileRelPath = "evil; rm -rf ~ \"'.md";
+        var req = p.openRequest(hostileRelPath);
+        assert.ok(Array.isArray(req.argv));
+        // Never re-fragmented into multiple argv elements by the spaces
+        // inside it -- the split happens on the TEMPLATE, before {path} is
+        // substituted in, not on the result.
+        assert.equal(req.argv.length, 2);
+        assert.equal(req.argv[1], "/home/user/vault/" + hostileRelPath);
+    });
+
+    test("a template with no {path} is rejected -- it would silently open nothing", () => {
+        var p = createExportProvider(baseConfig({ kind: "custom", exportOpenCommand: "code" }));
+        assert.equal(p.openRequest("some-note.md"), null);
+    });
+
+    test("$NVIM is never expanded -- it is handed through as a literal argv element", () => {
+        var preset = EXPORT_OPEN_PRESETS.find(p => p.id === "nvim-remote");
+        var p = createExportProvider(baseConfig({ kind: "custom", exportOpenCommand: preset.template }));
+        var req = p.openRequest("some-note.md");
+        assert.ok(req.argv.indexOf("$NVIM") !== -1);
+    });
+
+    // ─── every preset ───
+
+    describe("every preset parses to a plausible request", () => {
+        EXPORT_OPEN_PRESETS.forEach(function (preset) {
+            test(preset.id, () => {
+                var isObsidian = preset.id === "obsidian";
+                var p = createExportProvider(baseConfig({
+                    kind: isObsidian ? "obsidian" : preset.id,
+                    vault: "MyVault",
+                    exportOpenCommand: preset.template
+                }));
+                var req = p.openRequest("some-note.md");
+
+                if (!preset.template) {
+                    // "None" and "Custom" ship with an empty template --
+                    // there is nothing to open until the user types one.
+                    assert.equal(req, null);
+                    return;
+                }
+
+                assert.ok(req, preset.id + " produced no request");
+                if (isObsidian) {
+                    assert.equal(typeof req.url, "string");
+                    assert.ok(req.url.indexOf("obsidian://") === 0);
+                } else {
+                    assert.ok(Array.isArray(req.argv), preset.id + " did not produce an argv");
+                    assert.ok(req.argv.length > 0);
+                    assert.ok(req.argv.indexOf("/home/user/vault/some-note.md") !== -1,
+                        preset.id + " never substituted {path}");
+                }
+            });
+        });
+    });
+});
+
+// ─── resolveExportConfig: legacy exportKind migration (stage 4d) ───
+
+describe("resolveExportConfig: migrating exportKind to a preset", () => {
+    test("legacy exportKind: 'obsidian' migrates to the obsidian preset, not to None", () => {
+        var resolved = resolveExportConfig({ exportKind: "obsidian" });
+        assert.equal(resolved.exportKind, "obsidian");
+        assert.equal(resolved.exportOpenCommand, EXPORT_OPEN_PRESETS.find(p => p.id === "obsidian").template);
+    });
+
+    test("legacy exportKind: 'neovim' migrates to the running-instance preset, not to None", () => {
+        var resolved = resolveExportConfig({ exportKind: "neovim" });
+        assert.equal(resolved.exportKind, "nvim-remote");
+        assert.equal(resolved.exportOpenCommand, EXPORT_OPEN_PRESETS.find(p => p.id === "nvim-remote").template);
+    });
+
+    test("legacy exportKind: 'markdown' has no equivalent open command -- resolves to None", () => {
+        var resolved = resolveExportConfig({ exportKind: "markdown" });
+        assert.equal(resolved.exportKind, "none");
+        assert.equal(resolved.exportOpenCommand, "");
+    });
+
+    test("no saved config at all resolves to None, not a throw", () => {
+        var resolved = resolveExportConfig(undefined);
+        assert.equal(resolved.exportKind, "none");
+        assert.equal(resolved.exportOpenCommand, "");
+    });
+
+    test("a config that already has exportOpenCommand is left alone, even if empty", () => {
+        var resolved = resolveExportConfig({ exportKind: "custom", exportOpenCommand: "" });
+        assert.equal(resolved.exportKind, "custom");
+        assert.equal(resolved.exportOpenCommand, "");
+    });
+
+    test("a config already in the new shape keeps its own command untouched", () => {
+        var resolved = resolveExportConfig({ exportKind: "vscode", exportOpenCommand: "code -r {path}" });
+        assert.equal(resolved.exportKind, "vscode");
+        assert.equal(resolved.exportOpenCommand, "code -r {path}");
+    });
+});
+
+describe("EXPORT_OPEN_PRESETS", () => {
+    test("has exactly the ten presets from the design doc", () => {
+        assert.equal(EXPORT_OPEN_PRESETS.length, 10);
+    });
+
+    test("every preset has an id, a label, and a template field", () => {
+        EXPORT_OPEN_PRESETS.forEach(function (preset) {
+            assert.equal(typeof preset.id, "string");
+            assert.ok(preset.id.length > 0);
+            assert.equal(typeof preset.label, "string");
+            assert.ok(preset.label.length > 0);
+            assert.equal(typeof preset.template, "string");
+        });
+    });
+
+    test("ids are unique", () => {
+        var ids = EXPORT_OPEN_PRESETS.map(p => p.id);
+        assert.equal(new Set(ids).size, ids.length);
     });
 });
 
@@ -362,6 +517,41 @@ describe("the ordinary case", () => {
         kind: "markdown", root: "Clippings", filenameTemplate: "{title}.md"
     });
 
+
+    // Notes are now written in PARALLEL (one FileView per file), so two
+    // articles resolving to one path is silent data loss rather than a
+    // cosmetic clash. Clamping the assembled "title-hash" truncated from the
+    // end and ate the hash, so any two long titles sharing a prefix collided.
+    test("long titles stay distinct: the hash is reserved, not truncated away", () => {
+        const p = createExportProvider({ kind: "markdown", root: "C", filenameTemplate: "{title}.md" });
+        const arts = [
+            { id: "m:7", title: "x".repeat(400) },
+            { id: "m:8", title: "x".repeat(400) },
+            { id: "m:9", title: "日".repeat(300) },
+            { id: "m:10", title: "日".repeat(300) }
+        ];
+        const paths = arts.map(a => p.buildNote(a, []).relPath);
+        assert.equal(new Set(paths).size, paths.length, "two articles must never share a path");
+        paths.forEach(pth => {
+            assert.ok(Buffer.byteLength(pth) <= 255, pth.length + " bytes exceeds NAME_MAX");
+            assert.match(pth, /-[0-9a-f]+\.md$/, "the disambiguating hash must survive clamping");
+        });
+    });
+
+    // Obsidian and every other markdown tool read tags from frontmatter. A
+    // "[[rss]]" line under the article added nothing and left a stray line to
+    // delete in every note.
+    test("tags appear in frontmatter only, never in the body", () => {
+        const p = createExportProvider({
+            kind: "obsidian", root: "C", vault: "v",
+            filenameTemplate: "{title}.md", tags: ["rss", "news"]
+        });
+        const content = p.buildNote({ id: "m:1", title: "T", link: "https://x/1", description: "Body." }, []).content;
+        const body = content.split(/^---$/m).slice(2).join("---");
+        assert.match(content, /^tags: \["rss", "news"\]$/m, "frontmatter keeps the tags");
+        assert.doesNotMatch(body, /\[\[rss\]\]/, "no wikilink tags in the body");
+        assert.doesNotMatch(body, /#rss\b/, "no hashtags in the body either");
+    });
     test("a normal title yields one extension, hash before it", () => {
         var r = provider.buildNote({ id: "m:42", title: "Cloud licensing probe" }, []);
         assert.match(r.relPath, /^Cloud licensing probe-[0-9a-f]+\.md$/);
@@ -393,6 +583,89 @@ describe("the ordinary case", () => {
         var r = provider.buildNote({ id: "i", title: "T" }, []);
         assert.match(r.content, /^date: ""$/m);
         assert.ok(r.content.indexOf("Invalid Date") === -1);
+    });
+});
+
+// ─── provenance (stage 4c-b) ───
+//
+// `extracted:` is a bare boolean, not a quoted YAML scalar (there's nothing
+// attacker-controlled about it -- it's computed, never templated from feed
+// content), so these check the line directly rather than through
+// parseFrontmatter's quoted-scalar-only parser.
+
+describe("buildNote: provenance of the body text", () => {
+    test("no extracted arg at all (old call signature): extracted: false, body is the summary", () => {
+        var p = createExportProvider(baseConfig());
+        var result = p.buildNote(article({ description: "The feed summary." }), []);
+        assert.ok(!result.error);
+        assert.match(result.content, /^extracted: false$/m);
+        assert.ok(result.content.indexOf("The feed summary.") !== -1);
+    });
+
+    test("extracted result with usedFallback: false -> extracted: true, body is the extracted markdown", () => {
+        var p = createExportProvider(baseConfig());
+        var extracted = { markdown: "Full article text goes here.", textLength: 28, usedFallback: false, reason: "" };
+        var result = p.buildNote(article({ description: "The feed summary." }), [], extracted);
+        assert.ok(!result.error);
+        assert.match(result.content, /^extracted: true$/m);
+        assert.ok(result.content.indexOf("Full article text goes here.") !== -1);
+        assert.equal(result.content.indexOf("The feed summary."), -1);
+    });
+
+    test("extracted result with usedFallback: true -> extracted: false, body is the summary, not the rejected markdown", () => {
+        var p = createExportProvider(baseConfig());
+        var extracted = { markdown: "The feed summary.", textLength: 18, usedFallback: true, reason: "looks like an index page" };
+        var result = p.buildNote(article({ description: "The feed summary." }), [], extracted);
+        assert.ok(!result.error);
+        assert.match(result.content, /^extracted: false$/m);
+    });
+
+    test("extracted result present but markdown empty -> extracted: false (nothing usable came back)", () => {
+        var p = createExportProvider(baseConfig());
+        var extracted = { markdown: "", textLength: 0, usedFallback: false, reason: "" };
+        var result = p.buildNote(article({ description: "The feed summary." }), [], extracted);
+        assert.match(result.content, /^extracted: false$/m);
+        assert.ok(result.content.indexOf("The feed summary.") !== -1);
+    });
+});
+
+// ─── article fetch request (stage 4c-b) ───
+
+describe("buildArticleFetchRequest", () => {
+    test("returns a spawnable argv, no shell string", () => {
+        var req = buildArticleFetchRequest("https://example.com/article");
+        assert.ok(Array.isArray(req.argv));
+        assert.equal(req.argv[0], "curl");
+        assert.equal(req.argv[req.argv.length - 1], "https://example.com/article");
+    });
+
+    test("follows redirects (-L) -- articles carry no credentials to leak", () => {
+        var req = buildArticleFetchRequest("https://example.com/article");
+        assert.ok(req.argv.indexOf("-L") !== -1);
+    });
+
+    test("pins protocol to http/https on request and redirect", () => {
+        var req = buildArticleFetchRequest("https://example.com/article");
+        assert.ok(req.argv.indexOf("--proto") !== -1);
+        assert.equal(req.argv[req.argv.indexOf("--proto") + 1], "=http,https");
+        assert.ok(req.argv.indexOf("--proto-redir") !== -1);
+        assert.equal(req.argv[req.argv.indexOf("--proto-redir") + 1], "=http,https");
+    });
+
+    test("bounds download size and time", () => {
+        var req = buildArticleFetchRequest("https://example.com/article");
+        assert.ok(req.argv.indexOf("--max-filesize") !== -1);
+        assert.ok(req.argv.indexOf("--connect-timeout") !== -1);
+        assert.ok(req.argv.indexOf("--max-time") !== -1);
+    });
+});
+
+describe("articleSummaryText", () => {
+    test("prefers description, falls back to content, then empty string", () => {
+        assert.equal(articleSummaryText({ description: "d", content: "c" }), "d");
+        assert.equal(articleSummaryText({ content: "c" }), "c");
+        assert.equal(articleSummaryText({}), "");
+        assert.equal(articleSummaryText(null), "");
     });
 });
 

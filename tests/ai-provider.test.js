@@ -398,6 +398,63 @@ describe("LIVE ollama (opt-in, self-skipping)", () => {
         assert.equal(typeof result.text, "string");
         assert.ok(result.text.length > 0, "expected a non-empty summary from the live model");
     });
+
+    // Shape-only: a model's prose is not a fixture, so this never asserts on
+    // wording. It exercises summariseRequest end-to-end against a real,
+    // fast, non-reasoning model and confirms parse() reads message.content
+    // ONLY -- an actual separate message.reasoning field (if the runtime
+    // sends one) must never end up concatenated into result.text.
+    test("summariseRequest against real ollama: result.text is clean, message.reasoning (if any) is not folded in, or skip", { timeout: 20000 }, async (t) => {
+        var ping = await pingOllama();
+        if (!ping.up) {
+            t.skip("no runtime reachable on localhost:11434");
+            return;
+        }
+
+        var provider = createAiProvider({
+            label: "Ollama", baseUrl: "http://localhost:11434/v1",
+            model: "qwen2.5-coder:7b", apiKey: "", timeoutMs: 15000
+        });
+        var article = {
+            title: "Small fixture article",
+            description: "A short paragraph about a cat that sat on a mat, used only to give the model something brief to summarise."
+        };
+        var req = provider.summariseRequest(article);
+        var bodyStr = req.argv[req.argv.indexOf("-d") + 1];
+
+        var stdout = await new Promise(function (resolve, reject) {
+            var httpReq = http.request("http://localhost:11434/v1/chat/completions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                timeout: 15000
+            }, function (res) {
+                var data = "";
+                res.on("data", function (chunk) { data += chunk; });
+                res.on("end", function () { resolve(data); });
+            });
+            httpReq.on("error", reject);
+            httpReq.on("timeout", function () { httpReq.destroy(); reject(new Error("timeout")); });
+            httpReq.write(bodyStr);
+            httpReq.end();
+        });
+
+        var result = req.parse(stdout);
+        assert.equal(result.error, null, "expected no error from a live, reachable, correctly-modeled request");
+        assert.equal(typeof result.text, "string");
+        assert.ok(result.text.length > 0, "expected a non-empty summary from the live model");
+
+        // Independently re-parse the raw response to see what the runtime
+        // actually sent, then check parse()'s output against it directly --
+        // this is what would catch a regression that concatenates reasoning
+        // into content.
+        var raw = JSON.parse(stdout);
+        var message = (raw.choices && raw.choices[0] && raw.choices[0].message) || {};
+        assert.equal(result.text, message.content, "result.text must be exactly message.content, nothing appended");
+        if (typeof message.reasoning === "string" && message.reasoning.length > 0) {
+            assert.equal(result.text.indexOf(message.reasoning), -1,
+                "message.reasoning must never be concatenated into the summary text");
+        }
+    });
 });
 
 // The argv tests above assert structure (method, url, body) but would not
@@ -444,5 +501,63 @@ describe("SECURITY: curl hardening flags", () => {
     test("probe uses a short timeout, not the generation-sized default", () => {
         var argv = provider.probeRequest().argv;
         assert.equal(argv[argv.indexOf("--max-time") + 1], "8");
+    });
+});
+
+// ─── resolveBaseUrl ───
+//
+// Regression cover for a shipped bug: the settings panel filled the base URL
+// from the preset dropdown's CHANGE handler, so on a fresh install -- where
+// the dropdown loads its default and therefore never changes -- nothing was
+// ever written. The field showed a placeholder that looked exactly like a
+// value, and Test Connection reported "enter a base URL and model" against
+// what the user could see was a filled form. Resolution must not depend on
+// an event having fired.
+
+describe("resolveBaseUrl", () => {
+    const { resolveBaseUrl, PRESETS } = require("../AiProvider.js");
+
+    test("a preset resolves even when nothing was ever typed or stored", () => {
+        assert.equal(resolveBaseUrl("ollama", ""), "http://localhost:11434/v1");
+        assert.equal(resolveBaseUrl("ollama", undefined), "http://localhost:11434/v1");
+        assert.equal(resolveBaseUrl("ollama", null), "http://localhost:11434/v1");
+    });
+
+    test("every non-custom preset resolves to its own documented base URL", () => {
+        Object.keys(PRESETS).forEach(function (key) {
+            assert.equal(resolveBaseUrl(key, ""), PRESETS[key].baseUrl, key);
+        });
+    });
+
+    test("an explicitly typed URL always wins over the preset", () => {
+        assert.equal(resolveBaseUrl("ollama", "http://gpu-box:9999/v1"), "http://gpu-box:9999/v1");
+    });
+
+    test("custom resolves to empty, because there is nothing sensible to guess", () => {
+        assert.equal(resolveBaseUrl("custom", ""), "");
+    });
+
+    test("custom still honours whatever the user typed", () => {
+        assert.equal(resolveBaseUrl("custom", "http://10.0.0.5:8000/v1"), "http://10.0.0.5:8000/v1");
+    });
+
+    test("whitespace-only input counts as empty and falls back to the preset", () => {
+        assert.equal(resolveBaseUrl("ollama", "   "), "http://localhost:11434/v1");
+    });
+
+    test("surrounding whitespace is trimmed off a real URL", () => {
+        assert.equal(resolveBaseUrl("ollama", "  http://localhost:1234/v1  "), "http://localhost:1234/v1");
+    });
+
+    test("an unknown or missing preset resolves to empty rather than throwing", () => {
+        assert.equal(resolveBaseUrl("nonesuch", ""), "");
+        assert.equal(resolveBaseUrl(undefined, ""), "");
+        assert.equal(resolveBaseUrl(null, null), "");
+    });
+
+    test("the resolved preset URL is enough to make a provider configured", () => {
+        const { createAiProvider } = require("../AiProvider.js");
+        const p = createAiProvider({ baseUrl: resolveBaseUrl("ollama", ""), model: "qwen3:8b" });
+        assert.equal(p.isConfigured(), true);
     });
 });

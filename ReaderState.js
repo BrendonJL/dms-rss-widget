@@ -454,6 +454,104 @@ function addAllBookmarked(bookmarkOrder, ids, cap) {
     return addAllRead(bookmarkOrder, ids, cap);
 }
 
+
+// --- AI summary cache -------------------------------------------------------
+//
+// Summaries cost ~5s of GPU time each (measured: qwen3:8b on an RTX 2070
+// Super, two sentences from a ~120-word article), so asking twice for the same
+// article must never cost twice. The cache survives restarts: an article does
+// not change, so a summary of it does not go stale.
+//
+// Bounded like readOrder/bookmarkOrder, but at a much lower cap. Those store
+// ids; this stores paragraphs, and the whole state file is rewritten on every
+// change. 100 entries of a few hundred characters is tens of KB per write,
+// which is a different order of cost from a list of ids.
+var DEFAULT_SUMMARY_CAP = 100;
+
+// Newest first, deduped, capped -- the same shape as boundIdList, but carrying
+// a value per id. Returns { order, map }, both replaced rather than mutated so
+// a QML property assignment fires its change notification.
+function addSummary(order, map, id, text, cap) {
+    var limit = (typeof cap === "number" && cap > 0) ? cap : DEFAULT_SUMMARY_CAP;
+    if (typeof id !== "string" || id.length === 0 || typeof text !== "string") {
+        return { order: (order || []).slice(), map: shallowCopy(map) };
+    }
+
+    // `seen` guards against duplicates already present in `order`, not just
+    // against the id being inserted. addSummary is the only writer and keeps
+    // the invariant itself, so a duplicate can only arrive from a corrupted or
+    // hand-edited state file -- and boundIdList, which read and bookmark
+    // history use, self-heals exactly that case. A cache that stayed corrupt
+    // where the other lists recover would be a surprising asymmetry.
+    var nextOrder = [id];
+    var seen = {};
+    seen[id] = true;
+    var src = order || [];
+    for (var i = 0; i < src.length && nextOrder.length < limit; i++) {
+        var candidate = src[i];
+        if (typeof candidate === "string" && candidate.length > 0 && !seen[candidate]) {
+            seen[candidate] = true;
+            nextOrder.push(candidate);
+        }
+    }
+
+    // Rebuild the map from the bounded order, so an entry evicted from the
+    // list cannot linger in the map and grow the state file forever. Doing it
+    // the other way round -- deleting keys as they fall off -- is the same
+    // thing with one more chance to leak.
+    var nextMap = {};
+    var prev = map || {};
+    for (var j = 0; j < nextOrder.length; j++) {
+        var key = nextOrder[j];
+        nextMap[key] = (key === id) ? text : prev[key];
+        if (typeof nextMap[key] !== "string") {
+            nextMap[key] = "";
+        }
+    }
+    return { order: nextOrder, map: nextMap };
+}
+
+function shallowCopy(obj) {
+    var out = {};
+    var src = obj || {};
+    for (var k in src) {
+        if (typeof src[k] === "string") {
+            out[k] = src[k];
+        }
+    }
+    return out;
+}
+
+// "" is a real cached value (a model can legitimately return nothing), so
+// callers must distinguish absent from empty. null means absent.
+function getSummary(map, id) {
+    if (!map || typeof id !== "string") {
+        return null;
+    }
+    return (typeof map[id] === "string") ? map[id] : null;
+}
+
+function hasSummary(map, id) {
+    return getSummary(map, id) !== null;
+}
+
+// Drop cached summaries for ids no longer in the dataset, mirroring
+// pruneSelected. Called on refresh so the cache tracks what the user can
+// actually see rather than growing until it hits the cap.
+function pruneSummaries(order, map, items) {
+    var present = buildIdMap((items || []).map(function (i) { return i ? i.id : ""; }));
+    var nextOrder = [];
+    var nextMap = {};
+    var src = order || [];
+    for (var i = 0; i < src.length; i++) {
+        var id = src[i];
+        if (present[id] && typeof (map || {})[id] === "string") {
+            nextOrder.push(id);
+            nextMap[id] = map[id];
+        }
+    }
+    return { order: nextOrder, map: nextMap };
+}
 // --- Miniflux server-status reconciliation ----------------------------------
 //
 // Called ONLY right after a successful Miniflux fetch, so the server's view
@@ -569,6 +667,11 @@ if (typeof module !== "undefined" && module.exports) {
         matchesQuery: matchesQuery,
         filterItems: filterItems,
         classifyFetch: classifyFetch,
+        addSummary: addSummary,
+        getSummary: getSummary,
+        hasSummary: hasSummary,
+        pruneSummaries: pruneSummaries,
+        DEFAULT_SUMMARY_CAP: DEFAULT_SUMMARY_CAP,
         curlExitMessage: curlExitMessage,
         isFeedEnabled: isFeedEnabled,
         activeFeeds: activeFeeds,

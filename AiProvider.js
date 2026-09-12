@@ -249,9 +249,34 @@ function createAiProvider(config) {
     };
 }
 
+// Resolves the base URL actually to be used, given a chosen preset and
+// whatever the user typed.
+//
+// This exists because of a real bug: the settings panel populated the base
+// URL field from a preset dropdown's change handler, and on a fresh install
+// that handler never fired -- the stored value was absent, so the dropdown
+// loaded its default ("ollama"), which EQUALS the default it already held,
+// so no change was emitted and nothing was written. The field then showed
+// only its placeholder, which looks identical to a filled field, while
+// isConfigured() correctly saw an empty string.
+//
+// The lesson is that a default must be resolvable without an event having
+// fired. So: an explicit URL always wins, otherwise the preset supplies one,
+// and "custom" supplies nothing because there is nothing sensible to guess.
+// Mirrors the reader's effectiveFontFamily ("empty follows the theme").
+function resolveBaseUrl(preset, explicitUrl) {
+    var typed = typeof explicitUrl === "string" ? explicitUrl.trim() : "";
+    if (typed)
+        return typed;
+    var key = typeof preset === "string" ? preset : "";
+    var entry = PRESETS[key];
+    return entry ? entry.baseUrl : "";
+}
+
 if (typeof module !== "undefined" && module.exports) {
     module.exports = {
         createAiProvider: createAiProvider,
+        resolveBaseUrl: resolveBaseUrl,
         PRESETS: PRESETS
     };
 }

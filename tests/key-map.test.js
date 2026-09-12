@@ -330,9 +330,20 @@ describe("one-shot bindings", () => {
         assert.equal(r.action, "toggleStar");
     });
 
+    test("e exports the cursor row", () => {
+        var r = resolveKey(evt(KeyMap.Key_E), baseState({ index: 1 }));
+        assert.equal(r.action, "exportItem");
+    });
+
     test("o opens", () => {
         var r = resolveKey(evt(KeyMap.Key_O), baseState({ index: 1 }));
         assert.equal(r.action, "open");
+    });
+
+    test("v views the cursor row", () => {
+        var r = resolveKey(evt(KeyMap.Key_V), baseState({ index: 1 }));
+        assert.equal(r.action, "view");
+        assert.equal(r.index, 1);
     });
 
     test("Enter (Return) opens", () => {
@@ -383,6 +394,21 @@ describe("m/s with a selection act on the selection, not the cursor", () => {
         var r = resolveKey(evt(KeyMap.Key_S), baseState({ index: 1, hasSelection: false }));
         assert.equal(r.action, "toggleStar");
     });
+
+    test("e acts on the selection, not the cursor row", () => {
+        var r = resolveKey(evt(KeyMap.Key_E), baseState({ index: 1, hasSelection: true }));
+        assert.equal(r.action, "exportSelected");
+    });
+
+    test("e acts on the selection even with no cursor (index -1)", () => {
+        var r = resolveKey(evt(KeyMap.Key_E), baseState({ index: -1, hasSelection: true }));
+        assert.equal(r.action, "exportSelected");
+    });
+
+    test("e falls back to exportItem on the cursor row once the selection is gone", () => {
+        var r = resolveKey(evt(KeyMap.Key_E), baseState({ index: 1, hasSelection: false }));
+        assert.equal(r.action, "exportItem");
+    });
 });
 
 // ─── The -1 "nothing focused" rule ───
@@ -394,8 +420,10 @@ describe("currentIndex === -1: row actions blocked, cursor-independent ones not"
     [
         ["Enter/open", KeyMap.Key_Return, 0],
         ["o", KeyMap.Key_O, 0],
+        ["v (view)", KeyMap.Key_V, 0],
         ["m (toggleRead)", KeyMap.Key_M, 0],
         ["s (toggleStar)", KeyMap.Key_S, 0],
+        ["e (exportItem)", KeyMap.Key_E, 0],
         ["Space (toggleSelect)", KeyMap.Key_Space, 0],
         ["k", KeyMap.Key_K, 0]
     ].forEach(function (row) {
@@ -460,8 +488,10 @@ describe("empty list (count === 0) never yields an out-of-range index", () => {
         ["Space", KeyMap.Key_Space, 0],
         ["Enter", KeyMap.Key_Return, 0],
         ["o", KeyMap.Key_O, 0],
+        ["v", KeyMap.Key_V, 0],
         ["m", KeyMap.Key_M, 0],
         ["s", KeyMap.Key_S, 0],
+        ["e", KeyMap.Key_E, 0],
         ["r", KeyMap.Key_R, 0],
         ["A", KeyMap.Key_A, KeyMap.ShiftModifier],
         ["/", KeyMap.Key_Slash, 0]
@@ -487,5 +517,59 @@ describe("robustness", () => {
         var r = resolveKey(evt(KeyMap.Key_J), {});
         assert.equal(r.action, null);
         assert.equal(r.index, -1);
+    });
+});
+
+// ─── "i" summarises the cursor row ───
+//
+// "i" was originally reader-only and this suite asserted it did nothing in
+// the list. That changed deliberately: "i" now opens the reader on the cursor
+// row showing only the summary. What has NOT changed is that it is a row
+// action, never a selection action -- summarising a forty-item selection from
+// one keystroke would be forty GPU jobs, which is the single thing this
+// feature is shaped to avoid. These tests pin that distinction.
+
+describe("summarise (i)", () => {
+    test("Key_I is exported with the Qt value for 'i'", () => {
+        assert.equal(KeyMap.Key_I, 0x49);
+    });
+
+    test("summarises the row under the cursor", () => {
+        var r = resolveKey(evt(KeyMap.Key_I), baseState({ index: 2 }));
+        assert.equal(r.action, "summarise");
+        assert.equal(r.index, 2);
+    });
+
+    test("does nothing with no cursor, like every other row action", () => {
+        var r = resolveKey(evt(KeyMap.Key_I), baseState({ index: -1 }));
+        assert.equal(r.action, null);
+        assert.equal(r.index, -1);
+    });
+
+    test("acts on the CURSOR ROW even during a selection, never the selection", () => {
+        var r = resolveKey(evt(KeyMap.Key_I), baseState({ index: 2, hasSelection: true }));
+        assert.equal(r.action, "summarise", "must not become a bulk action");
+        assert.equal(r.index, 2);
+    });
+
+    test("unlike m/s/e, a selection does not let it bypass the no-cursor gate", () => {
+        var r = resolveKey(evt(KeyMap.Key_I), baseState({ index: -1, hasSelection: true }));
+        assert.equal(r.action, null);
+    });
+
+    test("is swallowed by an active search, like any other printable key", () => {
+        var r = resolveKey(evt(KeyMap.Key_I), baseState({ index: 2, searchActive: true }));
+        assert.notEqual(r.action, "summarise");
+    });
+
+    test("does nothing on an empty list", () => {
+        var r = resolveKey(evt(KeyMap.Key_I), baseState({ index: -1, count: 0 }));
+        assert.equal(r.action, null);
+        assert.equal(r.index, -1);
+    });
+
+    test("shift+i is not a separate binding", () => {
+        var r = resolveKey(evt(KeyMap.Key_I, KeyMap.ShiftModifier), baseState({ index: 2 }));
+        assert.equal(r.action, "summarise", "shift is simply ignored, not a second action");
     });
 });

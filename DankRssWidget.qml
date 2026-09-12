@@ -13,6 +13,9 @@ import "Backends.js" as Backends
 import "GoogleReader.js" as GoogleReader
 import "ChainRunner.js" as ChainRunner
 import "KeyMap.js" as KeyMap
+import "ExportProvider.js" as ExportProvider
+import "HtmlExtract.js" as HtmlExtract
+import "AiProvider.js" as AiProvider
 
 DesktopPluginComponent {
     id: root
@@ -52,6 +55,74 @@ DesktopPluginComponent {
     property string greaderUrl: (pluginData.greaderUrl ?? "").replace(/\/$/, "")
     property string greaderUsername: pluginData.greaderUsername ?? ""
     property string greaderPassword: pluginData.greaderPassword ?? ""
+
+    // --- Notes export settings ---
+    // DesktopPluginWrapper.qml's loadPluginData reads the instance config
+    // first and falls back to the global plugin-wide store; savePluginData
+    // writes to the instance config only. So these are per-instance for an
+    // instanced widget and global otherwise -- the same as every other
+    // setting in this file.
+    // Stage 4d replaced the fixed markdown/obsidian/neovim provider dropdown
+    // with an editable open-command template (exportOpenCommand); exportKind
+    // is now the id of whichever preset is active rather than a closed set
+    // of three values. resolveExportConfig() reads BOTH of those the same
+    // way regardless of whether pluginData is in the old or new shape, so a
+    // config saved before this stage (e.g. exportKind: "obsidian" with no
+    // exportOpenCommand at all) lands on the equivalent preset instead of
+    // silently losing its open-after-export behaviour.
+    readonly property var _exportResolved: ExportProvider.resolveExportConfig(pluginData)
+    property string exportKind: root._exportResolved.exportKind
+    property string exportOpenCommand: root._exportResolved.exportOpenCommand
+    property string exportRoot: pluginData.exportRoot ?? ""
+    property string exportVault: pluginData.exportVault ?? ""
+    property string exportTemplate: pluginData.exportTemplate ?? "{title}.md"
+    property var exportTags: pluginData.exportTags ?? []
+    // Off by default: this makes one outbound HTTP request per exported
+    // article to whatever third-party site the feed links to, which is not
+    // something to do without the user having opted in.
+    property bool exportFullText: pluginData.exportFullText ?? false
+
+    // Empty means follow Theme.fontFamily -- see ReaderWindow.qml.
+    property string readerFontFamily: pluginData.readerFontFamily ?? ""
+
+    // --- AI summaries (stage 3b) ---
+    //
+    // All four are global rather than per-instance. The design doc asked for
+    // the toggle to be per-instance so a small ticker could stay dumb while a
+    // large widget summarises, but every setting in this plugin goes through
+    // savePluginData(pluginId, ...), which is keyed by plugin and not by
+    // instance. Per-instance would mean adopting the DMS plugin-variant
+    // system, which this widget has never used, for one boolean. Recorded as
+    // a deviation rather than done quietly.
+    property bool aiEnabled: pluginData.aiEnabled ?? false
+    // Resolved exactly as the settings panel resolves it, through the same
+    // pure function -- a second copy of "what does empty mean" is how the two
+    // sides drift apart and the widget disagrees with its own settings page.
+    property string aiPreset: pluginData.aiPreset ?? "ollama"
+    property string aiBaseUrl: AiProvider.resolveBaseUrl(root.aiPreset, pluginData.aiBaseUrl ?? "")
+    property string aiModel: pluginData.aiModel ?? ""
+    property string aiApiKey: pluginData.aiApiKey ?? ""
+
+    readonly property var aiProvider: AiProvider.createAiProvider({
+        baseUrl: root.aiBaseUrl,
+        model: root.aiModel,
+        apiKey: root.aiApiKey
+    })
+
+    // The single gate on every summary affordance. "Enabled but unconfigured"
+    // must look exactly like "disabled": no button, no key, no error. An AI
+    // feature that advertises itself while unusable is the failure mode the
+    // design doc calls the most important behavioural requirement in the phase.
+    readonly property bool aiReady: root.aiEnabled && root.aiProvider.isConfigured()
+
+    readonly property var exportProvider: ExportProvider.createExportProvider({
+        kind: root.exportKind,
+        root: root.exportRoot,
+        vault: root.exportVault,
+        filenameTemplate: root.exportTemplate,
+        tags: root.exportTags,
+        exportOpenCommand: root.exportOpenCommand
+    })
 
     // --- Backend provider interface ---
     // JS owns every backend-specific decision (URL, method, headers, body,
@@ -166,11 +237,103 @@ DesktopPluginComponent {
     // Bindings help overlay, toggled by "?" (KeyMap's "toggleHelp" action).
     property bool helpVisible: false
 
+    // The keyboard bindings help overlay's row data. A plain array except
+    // for "e", which is left out entirely when no export folder is
+    // configured -- pressing "e" does nothing in that state (see
+    // exportArticles()), so documenting it would be advertising a feature
+    // that silently fails.
+    readonly property var helpBindingsModel: {
+        var rows = [
+            {
+                keys: ["j", "k"],
+                desc: "Move cursor down / up"
+            },
+            {
+                keys: ["o", "Enter"],
+                desc: "Open item"
+            },
+            {
+                keys: ["v"],
+                desc: "View in reader window"
+            },
+            {
+                keys: ["shift+j", "shift+k"],
+                desc: "Next / previous article (in reader window)"
+            },
+            {
+                keys: ["m"],
+                desc: "Toggle read / unread (whole selection, if any)"
+            },
+            {
+                keys: ["s"],
+                desc: "Toggle star (whole selection, if any)"
+            }
+        ];
+        if (root.exportRoot)
+            rows.push({
+                keys: ["e"],
+                desc: "Export to notes (whole selection, if any)"
+            });
+        // Gated on aiReady for the same reason "e" is gated on exportRoot:
+        // with no runtime configured "i" does nothing, and documenting a key
+        // that silently fails is worse than not documenting it.
+        if (root.aiReady)
+            rows.push({
+                keys: ["i"],
+                desc: "Summarise (opens the reader on the summary)"
+            });
+        rows.push({
+            keys: ["Space"],
+            desc: "Toggle selection"
+        });
+        rows.push({
+            keys: ["g", "g"],
+            desc: "Jump to first item"
+        });
+        rows.push({
+            keys: ["G"],
+            desc: "Jump to last item"
+        });
+        rows.push({
+            keys: ["/"],
+            desc: "Focus search"
+        });
+        rows.push({
+            keys: ["Esc"],
+            desc: "Close search, clear selection, or clear cursor"
+        });
+        rows.push({
+            keys: ["r"],
+            desc: "Refresh feeds"
+        });
+        rows.push({
+            keys: ["A"],
+            desc: "Mark all read / unread"
+        });
+        rows.push({
+            keys: ["?"],
+            desc: "Toggle this help"
+        });
+        return rows;
+    }
+
     // Read tracking, keyed by stable item id. `readMap` is replaced (not mutated)
     // so QML property-change notification fires; `readOrder` keeps newest-first
     // insertion order so the persisted list can be bounded predictably.
     property var readMap: ({})
     property var readOrder: []
+
+    // Bounded summary cache, persisted like readIds/bookmarkedIds. Capped far
+    // lower than idHistoryCap because these store paragraphs rather than ids:
+    // the whole map is rewritten on every change, so the cap is a write-cost
+    // decision, not just a memory one.
+    property var summaryMap: ({})
+    property var summaryOrder: []
+    // Discards a summary that arrives after the user moved on, so a 5s
+    // response can never render against the article they are looking at now.
+    // Same pattern as fetchGeneration, deliberately a separate counter: a
+    // feed refresh must not invalidate an in-flight summary or vice versa.
+    property int summaryGeneration: 0
     property var seenIds: []
     property bool readerStateLoaded: false
 
@@ -217,6 +380,7 @@ DesktopPluginComponent {
     property var feedStatuses: []
 
     readonly property int idHistoryCap: 1000
+    readonly property int summaryCap: ReaderState.DEFAULT_SUMMARY_CAP
 
     readonly property int unreadCount: ReaderState.countUnread(root.allItems, root.readMap)
 
@@ -404,7 +568,96 @@ DesktopPluginComponent {
         root.bookmarkMap = ReaderState.buildIdMap(bookmarks);
         root.bookmarkOrder = bookmarks;
 
+        var summaries = root.readState("summaries", null);
+        if (summaries && typeof summaries === "object" && Array.isArray(summaries.order)) {
+            // Rebuilt through addSummary rather than trusted wholesale: a
+            // state file hand-edited or written by an older build could carry
+            // an order longer than the current cap, or ids with no entry.
+            var rebuilt = { order: [], map: {} };
+            for (var si = summaries.order.length - 1; si >= 0; si--) {
+                var sid = summaries.order[si];
+                if (typeof sid === "string" && typeof summaries.map[sid] === "string")
+                    rebuilt = ReaderState.addSummary(rebuilt.order, rebuilt.map, sid, summaries.map[sid], root.summaryCap);
+            }
+            root.summaryOrder = rebuilt.order;
+            root.summaryMap = rebuilt.map;
+        }
+
         root.readerStateLoaded = true;
+    }
+
+    function persistSummaries() {
+        root.writeState("summaries", {
+            order: root.summaryOrder,
+            map: root.summaryMap
+        });
+    }
+
+    // Called by the reader window's "i" / Summarise button. Everything the
+    // window needs comes back on its summary* properties -- it never sees the
+    // provider, the cache or Proc.
+    function requestSummary(itemId) {
+        if (!root.aiReady || !itemId)
+            return;
+
+        var cached = ReaderState.getSummary(root.summaryMap, itemId);
+        if (cached !== null) {
+            readerWindow.summaryLoading = false;
+            readerWindow.summaryError = "";
+            readerWindow.summaryText = cached;
+            return;
+        }
+
+        var article = root.itemById(itemId);
+        if (!article)
+            return;
+
+        var req = root.aiProvider.summariseRequest(article);
+        if (!req)
+            return;
+
+        readerWindow.summaryError = "";
+        readerWindow.summaryText = "";
+        readerWindow.summaryLoading = true;
+
+        root.summaryGeneration++;
+        var generation = root.summaryGeneration;
+
+        root.runRequest(req, function (output, code) {
+            if (generation !== root.summaryGeneration)
+                return;
+
+            readerWindow.summaryLoading = false;
+
+            if (code !== null && code !== 0) {
+                // No toast, by design. The reader window shows this and
+                // nothing else does -- a local runtime that is simply not
+                // running is not an event worth interrupting anyone for.
+                readerWindow.summaryError = code === 124 ? "The model timed out." : "Could not reach the AI runtime.";
+                return;
+            }
+
+            var result = req.parse(output);
+            if (result.error) {
+                readerWindow.summaryError = result.error;
+                return;
+            }
+            if (result.text === null || result.text === "") {
+                readerWindow.summaryError = "The model returned an empty summary.";
+                return;
+            }
+
+            var next = ReaderState.addSummary(root.summaryOrder, root.summaryMap, itemId, result.text, root.summaryCap);
+            root.summaryOrder = next.order;
+            root.summaryMap = next.map;
+            root.persistSummaries();
+
+            // Only render if the reader is still on the article that asked.
+            // The generation check above catches a newer request; this catches
+            // the user navigating to an article that has never been asked for.
+            if (readerWindow.itemId === itemId)
+                readerWindow.summaryText = result.text;
+        });
     }
 
     function saveReadState() {
@@ -489,6 +742,88 @@ DesktopPluginComponent {
                 ToastService.showError("Could not open link", link);
             }
         }
+    }
+
+    // Shared by the "v" keyboard action and the row's view button. Opening
+    // the reader window IS reading the article -- the same read-marking half
+    // of openItem() runs here -- but unlike openItem() it never opens the
+    // link externally; that is the reader window's own "o" binding once it's
+    // open.
+    // index is the row's position in feedModel, when the caller has it (a
+    // keyboard row action or a row's own view button always does) -- it
+    // becomes the reader window's cursor, so shift+j/shift+k and the position
+    // indicator have a list position to work from. Omit it (or pass < 0) to
+    // leave keyboardIndex alone.
+    function viewItem(itemId, index) {
+        if (!itemId)
+            return;
+        if (typeof index === "number" && index >= 0)
+            root.keyboardIndex = index;
+        root.markRead(itemId);
+        if (root.syncReadOnOpen) {
+            var numId = root.backendItemId(itemId);
+            root.runRequest(root.backend.markReadRequest(root.backendConfig, root.backendSession, numId ? [numId] : []), function (output, code) {
+                if (code !== null && code !== 0)
+                    root.toastError("Failed to mark as read");
+            });
+        }
+        var article = root.itemById(itemId);
+        if (article) {
+            readerWindow.openArticle(article);
+            // openArticle() clears the summary fields; put a cached one back
+            // straight away so revisiting an article already summarised is
+            // instant and never re-runs the model.
+            var cached = root.aiReady ? ReaderState.getSummary(root.summaryMap, itemId) : null;
+            if (cached !== null)
+                readerWindow.summaryText = cached;
+        }
+    }
+
+    // "i" from the list: open the reader on this row showing only the summary,
+    // and ask for that summary immediately.
+    //
+    // Deliberately NOT routed through viewItem() the way the reader's own
+    // navigation is, for one reason: viewItem() marks the article read, and
+    // reading a summary is not reading the article. An item you skimmed and
+    // passed over must still be there next time you filter to unread --
+    // otherwise this feature quietly empties your unread list on your behalf.
+    // That is also why the cursor still moves: you looked at this row, so the
+    // cursor should be on it, but you have not consumed it.
+    function summariseItem(itemId, index) {
+        if (!root.aiReady || !itemId)
+            return;
+        if (index !== undefined && index >= 0)
+            root.keyboardIndex = index;
+
+        var article = root.itemById(itemId);
+        if (!article)
+            return;
+
+        readerWindow.openArticle(article, true);
+
+        var cached = ReaderState.getSummary(root.summaryMap, itemId);
+        if (cached !== null) {
+            readerWindow.summaryText = cached;
+            return;
+        }
+        root.requestSummary(itemId);
+    }
+
+    // Wired to the reader window's shift+j/shift+k (nextRequested/prevRequested).
+    // Deliberately reuses viewItem() rather than calling
+    // readerWindow.openArticle() straight from here -- opening an article
+    // must always go through the same read-marking wrapper "v" and the row's
+    // view button already use, not a second copy of it. No wraparound: past
+    // either end of feedModel this is a no-op, same as "j"/"k" at rest.
+    function readerAdvance(delta) {
+        if (root.keyboardIndex < 0 || feedModel.count === 0)
+            return;
+        var newIndex = root.keyboardIndex + delta;
+        if (newIndex < 0 || newIndex >= feedModel.count)
+            return;
+        feedListView.positionViewAtIndex(newIndex, ListView.Contain);
+        var row = feedModel.get(newIndex);
+        root.viewItem(row.itemId, newIndex);
     }
 
     // Shared by the mark-read button and the "m" keyboard action. An
@@ -577,6 +912,18 @@ DesktopPluginComponent {
                 root.openItem(openRow.itemId, openRow.link);
                 break;
             }
+        case "view":
+            {
+                var viewRow = feedModel.get(result.index);
+                root.viewItem(viewRow.itemId, result.index);
+                break;
+            }
+        case "summarise":
+            {
+                var sumRow = feedModel.get(result.index);
+                root.summariseItem(sumRow.itemId, result.index);
+                break;
+            }
         case "toggleRead":
             {
                 var readRow = feedModel.get(result.index);
@@ -601,6 +948,22 @@ DesktopPluginComponent {
         case "saveSelected":
             root.bulkSaveSelected();
             break;
+        case "exportSelected":
+            root.exportSelected();
+            break;
+        case "exportItem":
+            {
+                // No affordance/error/prompt at all when nothing is
+                // configured -- silently doing nothing here is the point,
+                // not a shortcut.
+                if (!root.exportRoot)
+                    break;
+                var exportRow = feedModel.get(result.index);
+                var exportArticle = root.itemById(exportRow.itemId);
+                if (exportArticle)
+                    root.exportArticles([exportArticle]);
+                break;
+            }
         case "toggleSelect":
             {
                 var selectRow = feedModel.get(result.index);
@@ -741,6 +1104,242 @@ DesktopPluginComponent {
         }
 
         root.clearSelection();
+    }
+
+    // --- Notes export ---
+    //
+    // One FileView per file being written, created fresh for that write and
+    // destroyed when it finishes. A single shared FileView driven through a
+    // queue (set path, setText(), wait for onSaved, advance) was tried first
+    // and dropped: quickshell's own docs for FileView (fileview.hpp) say
+    // `preload` defaults to true and `blockLoading` only makes text()/data()
+    // *reads* block -- it does not make a `path` change itself synchronous.
+    // So reusing one FileView across N paths starts a background load of
+    // each new path while the previous write may still be in flight, and
+    // the second write can race that load. Giving every write its own
+    // FileView removes the shared `path`/`text` state those two operations
+    // would otherwise race over -- there is nothing left to interleave.
+    //
+    // _exportResults is indexed by the original selection order (not
+    // completion order, since writes now finish in parallel) so the
+    // reported "first" failure always means first in the article list the
+    // user selected, matching the old sequential behaviour exactly.
+    property var _exportResults: []
+    property int _exportPending: 0
+
+    function itemById(id) {
+        for (var i = 0; i < root.allItems.length; i++) {
+            if (root.allItems[i].id === id)
+                return root.allItems[i];
+        }
+        return null;
+    }
+
+    // Shared by the "e" keyboard action (with a selection) and the
+    // selection bar's Export button.
+    function exportSelected() {
+        if (!root.exportRoot)
+            return;
+        var ids = Object.keys(root.selectedMap);
+        var articles = [];
+        for (var i = 0; i < ids.length; i++) {
+            var article = root.itemById(ids[i]);
+            if (article)
+                articles.push(article);
+        }
+        root.exportArticles(articles);
+        root.clearSelection();
+    }
+
+    // Shared entry point for both the "e" keyboard action and the selection
+    // bar's Export button. `articles` is already the list of full article
+    // objects to export -- callers resolve ids to root.allItems entries
+    // before calling this.
+    //
+    // Path validation happens up front and does NOT depend on the article's
+    // body text, so it runs before any network request -- a hostile or
+    // misconfigured title is rejected without ever fetching that article's
+    // page. Each surviving article then becomes one job; jobs that fetch
+    // full text resolve asynchronously and out of order, but _exportPending
+    // (shared with the write-completion path in _exportItemDone) still only
+    // reaches zero once every job -- fetched or not -- has been written.
+    function exportArticles(articles) {
+        if (!root.exportRoot || articles.length === 0)
+            return;
+        // A batch is already running -- dropping a second trigger (a
+        // double keypress, or the key firing while a click is still being
+        // processed) rather than starting a second overlapping batch.
+        if (root._exportPending > 0)
+            return;
+
+        var jobs = [];
+        var firstBuildError = "";
+        for (var i = 0; i < articles.length; i++) {
+            var article = articles[i];
+            var probe = root.exportProvider.buildNote(article, []);
+            if (probe.error) {
+                // Rule 1 of the design doc: buildNote refuses a path that
+                // would escape the export root. Unreachable in practice --
+                // if a user ever sees this, it is a bug report worth having.
+                if (!firstBuildError)
+                    firstBuildError = (article && article.title) || "an article";
+                continue;
+            }
+            jobs.push({ article: article, title: (article && article.title) || "an article" });
+        }
+
+        if (firstBuildError)
+            root.toastError("Could not export \"" + firstBuildError + "\": generated path escaped the export folder");
+
+        if (jobs.length === 0)
+            return;
+
+        root._exportResults = new Array(jobs.length);
+        root._exportPending = jobs.length;
+
+        for (var j = 0; j < jobs.length; j++) {
+            root._prepareExportJob(jobs[j].article, jobs[j].title, j);
+        }
+    }
+
+    // Fetches the article's own page and extracts it, when the user has
+    // opted into full-text export and the item actually has a link -- on
+    // demand only, once per article being exported right now, never on a
+    // feed refresh or a scroll. Falls through to the plain (no-extraction)
+    // path when the toggle is off or there is no link, so the request is
+    // never made unless it was asked for.
+    function _prepareExportJob(article, title, index) {
+        if (!root.exportFullText || !(article && article.link)) {
+            root._writeExportJob(article, title, index, null);
+            return;
+        }
+
+        var req = ExportProvider.buildArticleFetchRequest(article.link);
+        Proc.runCommand(null, req.argv, function (out, code) {
+            // A per-article fetch failure (bad host, 404, timeout, refused
+            // connection) must not abort the batch -- fall back to the
+            // summary for THIS note alone and keep going. `extracted` stays
+            // null here exactly like the toggle-off path above, so buildNote
+            // renders the honest "extracted: false" note either way.
+            var extracted = null;
+            if (code === 0 && out) {
+                // baseUrl resolves the article's site-relative links. Without
+                // it they emit as "/news/articles/x", which reads as a link
+                // and goes nowhere in a markdown file.
+                extracted = HtmlExtract.extractArticle(out, {
+                    summary: ExportProvider.articleSummaryText(article),
+                    baseUrl: article.link || ""
+                });
+            }
+            root._writeExportJob(article, title, index, extracted);
+        }, undefined, req.timeoutMs || undefined);
+    }
+
+    // Builds the final note (now that extraction, if any, has resolved) and
+    // hands it to the same one-FileView-per-write path as before.
+    function _writeExportJob(article, title, index, extracted) {
+        var note = root.exportProvider.buildNote(article, [], extracted);
+        if (note.error) {
+            // The path was already validated by the probe in exportArticles
+            // before any fetch started, so this is unreachable in practice --
+            // treated as a write failure so _exportPending still reaches
+            // zero and the batch still finishes reporting.
+            root._exportItemDone(index, false, title);
+            return;
+        }
+
+        var view = exportFileViewComponent.createObject(root, {
+            exportIndex: index,
+            exportTitle: title,
+            exportRelPath: note.relPath,
+            path: root.exportRoot.replace(/[\/\\]+$/, "") + "/" + note.relPath
+        });
+        view.setText(note.content);
+    }
+
+    // Runs whatever the active preset's open command resolves to, once the
+    // note it names has actually finished writing. `openRequest` returns
+    // null for "no command configured" (write and stop) and for a template
+    // that failed to parse -- both are silent no-ops here, not errors, since
+    // the note itself was still written successfully either way.
+    function _openAfterWrite(relPath) {
+        var req = root.exportProvider.openRequest(relPath);
+        if (!req) return;
+        if (req.url) {
+            // Obsidian is a URL handler, not an executable -- Qt.openUrlExternally
+            // is the same mechanism this widget already uses for article links.
+            Qt.openUrlExternally(req.url);
+        } else if (req.argv) {
+            // execDetached, NOT Proc.runCommand: an editor is a long-lived
+            // process, and runCommand applies a default timeout and kills what
+            // it spawned when that expires -- which closed the terminal a few
+            // seconds after it opened. Fire and forget instead. Still argv
+            // only, never a shell string (see buildOpenRequest's header).
+            Quickshell.execDetached(req.argv);
+        }
+    }
+
+    // Called once per write, in whatever order writes actually finish
+    // (they run in parallel, one FileView each). Only the last one to
+    // finish reports -- _exportResults is filled in article order first,
+    // then walked in that order so "first failure" means first in the
+    // user's selection, not first to complete.
+    function _exportItemDone(index, success, title) {
+        root._exportResults[index] = {
+            success: success,
+            title: title
+        };
+        root._exportPending--;
+        if (root._exportPending > 0)
+            return;
+
+        var written = 0;
+        var firstFailure = "";
+        for (var i = 0; i < root._exportResults.length; i++) {
+            var result = root._exportResults[i];
+            if (result.success)
+                written++;
+            else if (!firstFailure)
+                firstFailure = result.title;
+        }
+
+        if (firstFailure) {
+            root.toastError(written + " note" + (written === 1 ? "" : "s") + " written, failed starting at \"" + firstFailure + "\"");
+        } else if (written > 0) {
+            if (typeof ToastService !== "undefined")
+                ToastService.showInfo(written + " note" + (written === 1 ? "" : "s") + " written");
+        }
+    }
+
+    // blockWrites/atomicWrites match DMS's own cache writer exactly (see
+    // /usr/share/quickshell/dms/Common/CacheData.qml) -- no shell, no Proc,
+    // and a half-written note is never visible to Obsidian's indexer.
+    // preload is off since this FileView only ever writes -- it is never
+    // read from, so there is no reason to load the file it is about to
+    // overwrite.
+    Component {
+        id: exportFileViewComponent
+
+        FileView {
+            id: exportFileViewInstance
+            property int exportIndex: -1
+            property string exportTitle: ""
+            property string exportRelPath: ""
+            blockWrites: true
+            atomicWrites: true
+            preload: false
+
+            onSaved: {
+                root._exportItemDone(exportIndex, true, exportTitle);
+                root._openAfterWrite(exportRelPath);
+                exportFileViewInstance.destroy();
+            }
+
+            onSaveFailed: error => {
+                root._exportItemDone(exportIndex, false, exportTitle);
+                exportFileViewInstance.destroy();
+            }
+        }
     }
 
     function markRead(itemId) {
@@ -1231,6 +1830,23 @@ DesktopPluginComponent {
         // selectedMap rather than the visible model, so this is safe, and the
         // selection-bar label below surfaces the hidden portion explicitly.
         root.selectedMap = ReaderState.pruneSelected(root.selectedMap, root.allItems);
+
+        // Same reasoning as the selection prune above, against the same full
+        // dataset: a cached summary for an item that has aged out of every
+        // feed is unreachable, so it is only occupying the cap. Guarded on
+        // the length actually changing because this function also runs on
+        // every search keystroke and filter-chip click, and persisting the
+        // whole summary map on each of those would be a real write cost --
+        // this is the one cache in the widget whose entries are paragraphs.
+        if (root.summaryOrder.length > 0) {
+            var pruned = ReaderState.pruneSummaries(root.summaryOrder, root.summaryMap, root.allItems);
+            if (pruned.order.length !== root.summaryOrder.length) {
+                root.summaryOrder = pruned.order;
+                root.summaryMap = pruned.map;
+                root.persistSummaries();
+            }
+        }
+
         root.visibleItems = visible;
 
         // feedModel was just rebuilt from scratch -- the cursor must never
@@ -1245,6 +1861,38 @@ DesktopPluginComponent {
 
     ListModel {
         id: feedModel
+    }
+
+    // Reused by "v"/the row's view button. "e"/"s" pressed inside the window
+    // are forwarded here rather than duplicated, so exporting or starring
+    // from the reader behaves exactly like exporting or starring from the
+    // list -- same functions, same settings, same toasts.
+    ReaderWindow {
+        id: readerWindow
+        readerFontFamily: root.readerFontFamily
+        // Bindings, not a one-time copy on open -- j/k/row-click can move
+        // keyboardIndex, or filtering can resize feedModel, while the reader
+        // is still open, and the position indicator/n/p must track that.
+        positionIndex: root.keyboardIndex
+        positionCount: feedModel.count
+        onExportRequested: article => root.exportArticles([article])
+        onStarRequested: itemId => root.toggleBookmark(itemId)
+        onNextRequested: root.readerAdvance(1)
+        onPrevRequested: root.readerAdvance(-1)
+        summaryAvailable: root.aiReady
+        onSummaryRequested: itemId => root.requestSummary(itemId)
+
+        // Closing this window cannot hand Wayland keyboard focus back to the
+        // widget. forceActiveFocus() only sets Qt's own internal focus item,
+        // not compositor keyboard focus -- under layer-shell OnDemand, focus
+        // arrives on a click, and when a floating window closes niri hands
+        // focus to a regular window, not a layer surface. There used to be a
+        // forceActiveFocus() call here; it did not do anything useful, so it
+        // is gone. The actual fix is "n"/"p" (readerAdvance above): moving to
+        // the next/previous article without ever closing the window means
+        // this focus boundary is never crossed. Closing via Esc still needs
+        // a click before j/k work again, same as any other floating window
+        // regaining focus.
     }
 
     // --- UI ---
@@ -1356,6 +2004,10 @@ DesktopPluginComponent {
                         buttonSize: 22
                         enabled: !root.isLoading && root.activeFeedCount > 0
                         onClicked: root.refreshNow()
+
+                        Accessible.role: Accessible.Button
+                        Accessible.name: "Refresh feeds"
+                        Accessible.onPressAction: root.refreshNow()
                     }
                 }
 
@@ -1402,6 +2054,15 @@ DesktopPluginComponent {
                         else
                             root.searchActive = true;
                     }
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: root.searchActive ? "Close search" : "Search"
+                    Accessible.onPressAction: {
+                        if (root.searchActive)
+                            root.closeSearch();
+                        else
+                            root.searchActive = true;
+                    }
                 }
             }
 
@@ -1435,6 +2096,12 @@ DesktopPluginComponent {
                         height: 22
                         radius: Theme.cornerRadius
                         color: active ? Theme.withAlpha(Theme.primary, 0.18) : (filterArea.containsMouse ? Theme.withAlpha(Theme.primary, 0.08) : "transparent")
+
+                        // filterLabel already gives this a name via ordinary
+                        // Text -- only role/checked are needed to expose the
+                        // segmented-toggle semantics.
+                        Accessible.role: Accessible.Button
+                        Accessible.checked: active
 
                         StyledText {
                             id: filterLabel
@@ -1516,6 +2183,14 @@ DesktopPluginComponent {
                                 root.applyFilter();
                         }
                     }
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: markAllRect.allRead ? "Mark all unread" : "Mark all read"
+                    Accessible.onPressAction: {
+                        root.setAllRead(!markAllRect.allRead);
+                        if (root.filterMode === "unread")
+                            root.applyFilter();
+                    }
                 }
             }
 
@@ -1578,6 +2253,53 @@ DesktopPluginComponent {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.bulkSaveSelected()
                     }
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: "Bookmark selected items"
+                    Accessible.onPressAction: root.bulkSaveSelected()
+                }
+
+                // Export to notes -- only shown once a folder is configured
+                // (Notes export section of settings). With nothing set there
+                // must be no affordance at all, not a button that errors.
+                Rectangle {
+                    visible: root.exportRoot !== ""
+                    Layout.preferredWidth: exportRow.implicitWidth + Theme.spacingS * 2
+                    Layout.minimumWidth: 22 + Theme.spacingS * 2
+                    height: 22
+                    radius: Theme.cornerRadius
+                    color: exportArea.containsMouse ? Theme.withAlpha(Theme.primary, 0.15) : "transparent"
+
+                    RowLayout {
+                        id: exportRow
+                        anchors.centerIn: parent
+                        spacing: Theme.spacingXS
+
+                        DankIcon {
+                            name: "note_add"
+                            size: 14
+                            color: exportArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                        }
+
+                        StyledText {
+                            visible: root.widgetWidth >= 300
+                            text: "Export"
+                            font.pixelSize: root.fontSize - 2
+                            color: exportArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                        }
+                    }
+
+                    MouseArea {
+                        id: exportArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.exportSelected()
+                    }
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: "Export selected items"
+                    Accessible.onPressAction: root.exportSelected()
                 }
 
                 // Mark read/unread -- flips label and action based on
@@ -1618,6 +2340,10 @@ DesktopPluginComponent {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.selectedAllRead ? root.bulkMarkUnreadSelected() : root.bulkMarkReadSelected()
                     }
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: root.selectedAllRead ? "Mark selected unread" : "Mark selected read"
+                    Accessible.onPressAction: root.selectedAllRead ? root.bulkMarkUnreadSelected() : root.bulkMarkReadSelected()
                 }
 
                 // The header's filter/search row is replaced by this bar
@@ -1640,6 +2366,10 @@ DesktopPluginComponent {
                     Layout.preferredWidth: 22
                     Layout.preferredHeight: 22
                     onClicked: root.clearSelection()
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: "Clear selection"
+                    Accessible.onPressAction: root.clearSelection()
                 }
             }
 
@@ -1844,6 +2574,19 @@ DesktopPluginComponent {
                                     root.toggleSelected(model.itemId);
                                 }
 
+                                // Checked state is a first-class AT property
+                                // here, not folded into the name string --
+                                // avoids a doubled "checked, Select X,
+                                // checked" announcement.
+                                Accessible.role: Accessible.CheckBox
+                                Accessible.checked: itemDelegate.isSelected
+                                Accessible.name: "Select " + (model.title || "item")
+                                Accessible.onPressAction: {
+                                    if (root._clickFromOverview())
+                                        return;
+                                    root.toggleSelected(model.itemId);
+                                }
+
                                 Behavior on opacity {
                                     NumberAnimation {
                                         duration: Theme.shortDuration
@@ -1995,6 +2738,18 @@ DesktopPluginComponent {
                                     root.toggleReadSynced(model.itemId, itemDelegate.isRead);
                                 }
 
+                                // Names the action the press will perform
+                                // (not the current state), matching the
+                                // phrasing the bulk mark-read label already
+                                // uses.
+                                Accessible.role: Accessible.Button
+                                Accessible.name: "Mark \"" + (model.title || "item") + "\" as " + (itemDelegate.isRead ? "unread" : "read")
+                                Accessible.onPressAction: {
+                                    if (root._clickFromOverview())
+                                        return;
+                                    root.toggleReadSynced(model.itemId, itemDelegate.isRead);
+                                }
+
                                 Behavior on opacity {
                                     NumberAnimation {
                                         duration: Theme.shortDuration
@@ -2021,6 +2776,48 @@ DesktopPluginComponent {
                                     if (root._clickFromOverview())
                                         return;
                                     root.toggleBookmark(model.itemId);
+                                }
+
+                                Accessible.role: Accessible.Button
+                                Accessible.name: (itemDelegate.isBookmarked ? "Remove bookmark from \"" : "Bookmark \"") + (model.title || "item") + "\""
+                                Accessible.onPressAction: {
+                                    if (root._clickFromOverview())
+                                        return;
+                                    root.toggleBookmark(model.itemId);
+                                }
+
+                                Behavior on opacity {
+                                    NumberAnimation {
+                                        duration: Theme.shortDuration
+                                    }
+                                }
+                            }
+
+                            // Trailing #3: open in the reader window. Never
+                            // touches read/bookmark state itself -- viewItem()
+                            // does the read-marking, same as the "v" key.
+                            DankActionButton {
+                                iconName: "menu_book"
+                                iconSize: 14
+                                buttonSize: itemDelegate.controlSize
+                                iconColor: Theme.surfaceVariantText
+                                Layout.alignment: Qt.AlignVCenter
+                                opacity: rowHover.hovered ? 1.0 : 0.45
+                                enabled: true
+                                // See the mark-read button's comment above.
+                                activeFocusOnTab: false
+                                onClicked: {
+                                    if (root._clickFromOverview())
+                                        return;
+                                    root.viewItem(model.itemId, index);
+                                }
+
+                                Accessible.role: Accessible.Button
+                                Accessible.name: "Open \"" + (model.title || "item") + "\" in reader"
+                                Accessible.onPressAction: {
+                                    if (root._clickFromOverview())
+                                        return;
+                                    root.viewItem(model.itemId, index);
                                 }
 
                                 Behavior on opacity {
@@ -2206,6 +3003,10 @@ DesktopPluginComponent {
                         Layout.preferredWidth: 22
                         Layout.preferredHeight: 22
                         onClicked: root.helpVisible = false
+
+                        Accessible.role: Accessible.Button
+                        Accessible.name: "Close keyboard shortcuts"
+                        Accessible.onPressAction: root.helpVisible = false
                     }
                 }
 
@@ -2226,56 +3027,12 @@ DesktopPluginComponent {
                         spacing: Theme.spacingXS
 
                         Repeater {
-                            model: [
-                                {
-                                    keys: ["j", "k"],
-                                    desc: "Move cursor down / up"
-                                },
-                                {
-                                    keys: ["o", "Enter"],
-                                    desc: "Open item"
-                                },
-                                {
-                                    keys: ["m"],
-                                    desc: "Toggle read / unread (whole selection, if any)"
-                                },
-                                {
-                                    keys: ["s"],
-                                    desc: "Toggle star (whole selection, if any)"
-                                },
-                                {
-                                    keys: ["Space"],
-                                    desc: "Toggle selection"
-                                },
-                                {
-                                    keys: ["g", "g"],
-                                    desc: "Jump to first item"
-                                },
-                                {
-                                    keys: ["G"],
-                                    desc: "Jump to last item"
-                                },
-                                {
-                                    keys: ["/"],
-                                    desc: "Focus search"
-                                },
-                                {
-                                    keys: ["Esc"],
-                                    desc: "Close search, clear selection, or clear cursor"
-                                },
-                                {
-                                    keys: ["r"],
-                                    desc: "Refresh feeds"
-                                },
-                                {
-                                    keys: ["A"],
-                                    desc: "Mark all read / unread"
-                                },
-                                {
-                                    keys: ["?"],
-                                    desc: "Toggle this help"
-                                }
-                            ]
+                            // The "e" row lives in root.helpBindingsModel
+                            // rather than a literal here, so it can be left
+                            // out entirely when no export folder is
+                            // configured -- same "no affordance" rule as the
+                            // selection bar's Export button.
+                            model: root.helpBindingsModel
 
                             RowLayout {
                                 Layout.fillWidth: true

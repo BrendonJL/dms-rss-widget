@@ -1,13 +1,40 @@
 # Staged CI changes
 
 > **Status:** the qml-syntax job below is live in `.github/workflows/tests.yml`
-> (applied in `ebea5c5`). `tests.yml.proposed` is kept in sync as a mirror, not
-> a pending change — diff it against the real workflow before trusting either.
+> (applied in `ebea5c5`). The changelog-path change below is **pending** — it is
+> in `tests.yml.proposed` only. Diff the two before trusting either.
 
 Claude cannot write to `.github/workflows/` — a security hook blocks all
 workflow-file writes. Future changes get staged here for a human to move:
 
     cp docs/ci/tests.yml.proposed .github/workflows/tests.yml
+
+## PENDING — the changelog check now reads `CHANGELOG.md`
+
+The `manifest` job's "version has a changelog entry" step greps for
+`### <version>` matching `plugin.json`. It read `README.md`, because that is
+where the changelog lived.
+
+The changelog has moved to `CHANGELOG.md` (the README was split, with the detail
+going to the wiki and its sources to `docs/wiki/`). **The live workflow will fail
+on the next push until this is copied across**, because `README.md` no longer
+contains any `### ` heading at all.
+
+Diff is one step, three lines:
+
+```diff
+-          grep -qF "### $v" README.md || {
+-            echo "::error file=README.md::No '### $v' section in the README changelog"
++          grep -qF "### $v" CHANGELOG.md || {
++            echo "::error file=CHANGELOG.md::No '### $v' section in CHANGELOG.md"
+```
+
+The check itself is unchanged otherwise, including the reason it exists: the DMS
+registry crawls version and author straight out of `plugin.json`, so a bumped
+manifest with no changelog entry ships a version nobody can read about.
+
+The narrative wiki copy of this page is `docs/wiki/CI.md`; keep the two in step
+when the workflow changes.
 
 ## 2026-09-09 — QML checking: two failed attempts, then the right tool
 

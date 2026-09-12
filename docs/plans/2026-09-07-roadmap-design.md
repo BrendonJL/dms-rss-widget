@@ -1,14 +1,18 @@
 # Design: v3 roadmap
 
 Date: 2026-09-07
-Status: agreed in principle; per-phase specs still to be written
+Status: written up per phase; see each phase doc for what is built
 Scope: architecture for everything after the 2.3.x line
 
-> **Status as of this audit:** Phase 0 (backend interface) and Phase 1
-> (Google Reader, minus the settings UI) are implemented. Phase 3 (AI) and
-> Phase 4 (export) exist only as unwired JS modules + tests (stages 3a/4a) —
-> no UI integration yet. Phase 2 (keyboard navigation) and Phase 5 (reader
-> app) have not been started. See each phase's own design doc for detail.
+> **Status:** Phases 0, 1 (1a/1b/1c) and 2 are implemented and shipped in
+> 2.4.0. Phase 4 (4a–4d) and Phase 5 (5, 5b) are implemented on `develop` and
+> unreleased. Phase 3 is stage 3a only — `AiProvider.js` exists and nothing in
+> `DankRssWidget.qml` references it; 3b/3c/3d are not built (the bounded
+> summary cache in `ReaderState.js` is 3b's groundwork, not 3b). Phase 5 was
+> **redesigned** partway through: it is a reading window, not the reader *and
+> annotation app* described below — see
+> `2026-09-11-phase5-reader-app-design.md`. See each phase's own design doc
+> for detail.
 
 ## Guiding principle
 

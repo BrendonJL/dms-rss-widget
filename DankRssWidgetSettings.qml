@@ -9,6 +9,8 @@ import "FeedParser.js" as FeedParser
 import "ReaderState.js" as ReaderState
 import "Backends.js" as Backends
 import "GoogleReader.js" as GoogleReader
+import "ExportProvider.js" as ExportProvider
+import "AiProvider.js" as AiProvider
 
 PluginSettings {
     id: root
@@ -131,6 +133,14 @@ PluginSettings {
             console.warn("DankRssWidget settings: could not read feed status", e);
             feedStatuses = [];
         }
+    }
+
+    // The base URL actually in force: what was typed, else whatever the
+    // chosen preset supplies. Resolved rather than stored, so a fresh install
+    // that has never touched the dropdown still has a working endpoint --
+    // see AiProvider.resolveBaseUrl for the bug that made this necessary.
+    function effectiveAiBaseUrl() {
+        return AiProvider.resolveBaseUrl(root.loadValue("aiPreset", "ollama"), root.loadValue("aiBaseUrl", ""));
     }
 
     function statusForUrl(url) {
@@ -489,6 +499,267 @@ PluginSettings {
                 greaderPasswordField.text.trim()
             )
         }
+    }
+
+    // ─── Notes Export ───
+    // DesktopPluginWrapper.qml's loadPluginData reads the instance config
+    // first and falls back to the global plugin-wide store; savePluginData
+    // writes to the instance config only. So these are per-instance for an
+    // instanced widget and global otherwise -- the same as every other
+    // setting in this file.
+
+    StyledRect {
+        width: parent.width
+        height: 1
+        color: Theme.outlineVariant
+    }
+
+    StyledText {
+        width: parent.width
+        text: "Notes Export"
+        font.pixelSize: Theme.fontSizeMedium
+        font.weight: Font.Medium
+        color: Theme.surfaceText
+    }
+
+    StyledText {
+        width: parent.width
+        text: "Send an article to a local notes folder and, optionally, open it in an editor of your choice afterward. Leave the folder empty to disable this entirely -- no export button or shortcut appears until one is set."
+        font.pixelSize: Theme.fontSizeSmall
+        color: Theme.surfaceVariantText
+        wrapMode: Text.WordWrap
+    }
+
+    // Stage 4d: editors used to each need their own hardcoded branch (see
+    // ExportProvider.js's design doc). Now there's one open-command template
+    // with `{path}` substituted, and "one more editor" is one more row in
+    // EXPORT_OPEN_PRESETS rather than a new code path. Picking a preset below
+    // fills the Command field; it stays editable afterward, and editing it
+    // does not change which preset is shown selected here -- so tweaking a
+    // preset's flags does not silently look like "Custom" was chosen instead.
+    Column {
+        id: exportPresetColumn
+        width: parent.width
+        spacing: Theme.spacingS
+
+        readonly property var presets: ExportProvider.EXPORT_OPEN_PRESETS
+        // resolveExportConfig() tells "never saved" apart from "saved as
+        // empty" by whether the `exportOpenCommand` KEY is present at all --
+        // so this object must only carry that key when loadValue actually
+        // found one, not whenever this binding happens to construct an
+        // object literal (which would always have the key, undefined or
+        // not, and make every legacy config look already-migrated).
+        readonly property var resolved: {
+            var saved = { exportKind: root.loadValue("exportKind") };
+            var storedCommand = root.loadValue("exportOpenCommand");
+            if (storedCommand !== undefined)
+                saved.exportOpenCommand = storedCommand;
+            return ExportProvider.resolveExportConfig(saved);
+        }
+        property string presetId: resolved.exportKind
+
+        function labelForId(id) {
+            for (var i = 0; i < presets.length; i++) {
+                if (presets[i].id === id) return presets[i].label;
+            }
+            return id;
+        }
+
+        DankDropdown {
+            width: parent.width
+            text: "Open After Export"
+            description: "Pick a starting point, then edit the Command field below to match your setup."
+            currentValue: exportPresetColumn.labelForId(exportPresetColumn.presetId)
+            options: exportPresetColumn.presets.map(p => p.label)
+            onValueChanged: newLabel => {
+                var preset = exportPresetColumn.presets.find(p => p.label === newLabel);
+                if (!preset) return;
+                exportPresetColumn.presetId = preset.id;
+                root.saveValue("exportKind", preset.id);
+                // Fills the command field from the preset -- this is the ONE
+                // place that happens; editing the field afterward never
+                // reaches back here to change presetId again.
+                exportOpenCommandField.text = preset.template;
+            }
+        }
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+
+        StyledText {
+            text: "Folder"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "Absolute path, or vault-relative for Obsidian."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        DankTextField {
+            id: exportRootField
+            width: parent.width
+            placeholderText: "/home/you/notes  or  Inbox"
+            text: root.loadValue("exportRoot", "")
+            onTextChanged: root.saveValue("exportRoot", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(exportRootField);
+            }
+        }
+    }
+
+    // Vault name is Obsidian-specific identity, not a behavioural question --
+    // every other preset's equivalent is baked into the command itself, so
+    // this is gated on which preset is selected directly (same reasoning as
+    // the Google Reader/Miniflux credential fields above, not a capability
+    // check).
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+        visible: exportPresetColumn.presetId === "obsidian"
+
+        StyledText {
+            text: "Vault Name"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "Used only to build the obsidian://open callback after a note is written."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        DankTextField {
+            id: exportVaultField
+            width: parent.width
+            placeholderText: "My Vault"
+            text: root.loadValue("exportVault", "")
+            onTextChanged: root.saveValue("exportVault", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(exportVaultField);
+            }
+        }
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+
+        StyledText {
+            text: "Command"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "{path} is substituted as its own argument, never pasted into a shell string, so a note's path is safe even if its title contained spaces, quotes or semicolons. The terminal-based presets assume kitty, because that is what this machine runs -- edit this if you use a different terminal. Leave empty to just write the file."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        DankTextField {
+            id: exportOpenCommandField
+            width: parent.width
+            placeholderText: "code {path}"
+            text: exportPresetColumn.resolved.exportOpenCommand
+            onTextChanged: root.saveValue("exportOpenCommand", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(exportOpenCommandField);
+            }
+        }
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+
+        StyledText {
+            text: "Filename Template"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "{title}, {id} and {source} are substituted, then sanitised and disambiguated before writing -- see ExportProvider.js."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        DankTextField {
+            id: exportTemplateField
+            width: parent.width
+            placeholderText: "{title}.md"
+            text: root.loadValue("exportTemplate", "{title}.md")
+            onTextChanged: root.saveValue("exportTemplate", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(exportTemplateField);
+            }
+        }
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+
+        StyledText {
+            text: "Tags"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "Comma-separated. Applied to every exported note's frontmatter (and as wikilinks in the body, for Obsidian)."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        DankTextField {
+            id: exportTagsField
+            width: parent.width
+            placeholderText: "reading, rss"
+            text: (root.loadValue("exportTags", []) || []).join(", ")
+            // Parse and save on commit only, not on every keystroke. The
+            // field's `text:` above is a live binding to the saved value,
+            // so saving on every character re-runs that binding mid-type;
+            // a still-empty second tag ("news,") is dropped by the filter
+            // below, and the rebind then overwrites the field with "news"
+            // -- silently eating the comma the user just typed. Committing
+            // only on editingFinished (Enter, or focus lost) means the
+            // rebind never fires until the user is done typing.
+            onEditingFinished: {
+                var tags = text.split(",").map(function (t) {
+                    return t.trim();
+                }).filter(function (t) {
+                    return t.length > 0;
+                });
+                root.saveValue("exportTags", tags);
+            }
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(exportTagsField);
+            }
+        }
+    }
+
+    ToggleSetting {
+        settingKey: "exportFullText"
+        label: "Fetch full article text on export"
+        description: "Fetches each exported item's own page and extracts the article body instead of using the feed's summary. Off by default -- this makes one outbound request per exported article to whatever site the feed links to, so it must be opt-in. A page that cannot be fetched, or that looks like a section front rather than an article, falls back to the summary automatically."
+        defaultValue: false
     }
 
     // ─── Subscription List (read-only) ───
@@ -932,6 +1203,13 @@ PluginSettings {
                         }
 
                         DankToggle {
+                            // State belongs in Accessible.checked, not folded
+                            // into the name -- a screen reader announces
+                            // checked state itself, so putting it in the name
+                            // too reads it out twice.
+                            Accessible.role: Accessible.CheckBox
+                            Accessible.name: "Enable " + (modelData.name || "feed") + " feed"
+                            Accessible.checked: modelData.enabled !== false
                             checked: modelData.enabled !== false
                             onToggled: isChecked => {
                                 var currentFeeds = root.loadValue("feeds", []);
@@ -946,6 +1224,9 @@ PluginSettings {
                             id: moveUpButton
                             width: 32; height: 32; radius: 16
                             enabled: index > 0
+                            Accessible.role: Accessible.Button
+                            Accessible.name: "Move " + (modelData.name || "feed") + " up"
+                            Accessible.onPressAction: moveUpArea.clicked(null)
                             opacity: enabled ? 1.0 : 0.35
                             color: enabled && moveUpArea.containsMouse ? Theme.primary : "transparent"
 
@@ -981,6 +1262,9 @@ PluginSettings {
                             id: moveDownButton
                             width: 32; height: 32; radius: 16
                             enabled: index < feedsListView.count - 1
+                            Accessible.role: Accessible.Button
+                            Accessible.name: "Move " + (modelData.name || "feed") + " down"
+                            Accessible.onPressAction: moveDownArea.clicked(null)
                             opacity: enabled ? 1.0 : 0.35
                             color: enabled && moveDownArea.containsMouse ? Theme.primary : "transparent"
 
@@ -1015,6 +1299,9 @@ PluginSettings {
                         Rectangle {
                             width: 32; height: 32; radius: 16
                             color: editArea.containsMouse ? Theme.primary : "transparent"
+                            Accessible.role: Accessible.Button
+                            Accessible.name: "Edit " + (modelData.name || "feed")
+                            Accessible.onPressAction: editArea.clicked(null)
 
                             DankIcon {
                                 anchors.centerIn: parent
@@ -1042,6 +1329,9 @@ PluginSettings {
                         Rectangle {
                             width: 32; height: 32; radius: 16
                             color: deleteArea.containsMouse ? Theme.error : "transparent"
+                            Accessible.role: Accessible.Button
+                            Accessible.name: "Delete " + (modelData.name || "feed")
+                            Accessible.onPressAction: deleteArea.clicked(null)
 
                             DankIcon {
                                 anchors.centerIn: parent
@@ -1443,5 +1733,258 @@ PluginSettings {
             { label: "Surface", value: "surface" }
         ]
         defaultValue: "primary"
+    }
+
+    // ─── Reader ───
+
+    StyledRect {
+        width: parent.width
+        height: 1
+        color: Theme.outlineVariant
+    }
+
+    StyledText {
+        width: parent.width
+        text: "Reader"
+        font.pixelSize: Theme.fontSizeMedium
+        font.weight: Font.Medium
+        color: Theme.surfaceText
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+
+        StyledText {
+            text: "Reader Font"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "Leave empty to follow your DMS font."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        DankTextField {
+            id: readerFontFamilyField
+            activeFocusOnTab: false
+            width: parent.width
+            placeholderText: "Follows Theme.fontFamily"
+            text: root.loadValue("readerFontFamily", "")
+            onTextChanged: root.saveValue("readerFontFamily", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(readerFontFamilyField);
+            }
+        }
+    }
+
+    // ─── AI Summaries ───
+    // The design doc wanted this toggle per-instance, but this plugin has
+    // never adopted the DMS plugin-variant system -- every setting here goes
+    // through root.loadValue/saveValue, which is savePluginData underneath
+    // and keyed on pluginId only (see the Notes Export comment above). So
+    // "AI Summaries" is a single global on/off for now, the same as every
+    // other setting in this file, not a per-widget-instance choice.
+
+    StyledRect {
+        width: parent.width
+        height: 1
+        color: Theme.outlineVariant
+    }
+
+    StyledText {
+        width: parent.width
+        text: "AI Summaries"
+        font.pixelSize: Theme.fontSizeMedium
+        font.weight: Font.Medium
+        color: Theme.surfaceText
+    }
+
+    ToggleSetting {
+        id: aiEnabledSetting
+        settingKey: "aiEnabled"
+        label: "AI Summaries"
+        description: "Summarise articles on demand using a local OpenAI-compatible runtime (Ollama, vLLM, llama.cpp, LM Studio, ...). Nothing is sent anywhere until you ask for a summary -- this never runs automatically in the background."
+        defaultValue: false
+    }
+
+    SelectionSetting {
+        id: aiPresetSetting
+        visible: aiEnabledSetting.value
+        settingKey: "aiPreset"
+        label: "Runtime"
+        description: "Picking a preset fills the Base URL below. Choose Custom to point at any other OpenAI-compatible endpoint."
+        options: [
+            { label: AiProvider.PRESETS.ollama.label, value: "ollama" },
+            { label: AiProvider.PRESETS.vllm.label, value: "vllm" },
+            { label: AiProvider.PRESETS.llamacpp.label, value: "llamacpp" },
+            { label: AiProvider.PRESETS.lmstudio.label, value: "lmstudio" },
+            { label: AiProvider.PRESETS.custom.label, value: "custom" }
+        ]
+        defaultValue: "ollama"
+        // Fills the Base URL field from the chosen preset -- this is the ONE
+        // place that happens, mirroring the Notes Export preset dropdown
+        // above. "custom" deliberately does nothing here so a URL the user
+        // typed while Custom is selected is never clobbered by this handler
+        // re-firing (e.g. on page reload, when this binding runs once with
+        // the loaded value).
+        onValueChanged: {
+            if (aiPresetSetting.value === "custom")
+                return;
+            var preset = AiProvider.PRESETS[aiPresetSetting.value];
+            if (preset)
+                aiBaseUrlField.text = preset.baseUrl;
+        }
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+        visible: aiEnabledSetting.value
+
+        StyledText {
+            text: "Base URL"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        DankTextField {
+            id: aiBaseUrlField
+            width: parent.width
+            // Seeded with the RESOLVED url, not a placeholder that merely
+            // looks like one. A greyed-out placeholder is indistinguishable
+            // from a real value at a glance, which is precisely how the
+            // original bug hid: the form looked complete and was not.
+            placeholderText: "Set by the runtime preset above"
+            text: root.effectiveAiBaseUrl()
+            onTextChanged: root.saveValue("aiBaseUrl", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(aiBaseUrlField);
+            }
+        }
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+        visible: aiEnabledSetting.value
+
+        StyledText {
+            text: "Model"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "Prefer an instruct-tagged model over a -base one -- base models are not tuned to follow the summarise/digest instructions. If summaries feel slow, try a non-reasoning model; a reasoning model spends extra tokens thinking before it answers."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        DankTextField {
+            id: aiModelField
+            width: parent.width
+            placeholderText: "e.g., qwen3:8b"
+            text: root.loadValue("aiModel", "")
+            onTextChanged: root.saveValue("aiModel", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(aiModelField);
+            }
+        }
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+        visible: aiEnabledSetting.value
+
+        StyledText {
+            text: "API Key"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            width: parent.width
+            text: "Most local runtimes need none -- leave this empty unless yours requires one."
+            font.pixelSize: Theme.fontSizeSmall - 2
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
+        // Never logged and never appears in a toast, matching the Miniflux
+        // token and Google Reader password fields above.
+        DankTextField {
+            id: aiApiKeyField
+            width: parent.width
+            placeholderText: "Optional"
+            text: root.loadValue("aiApiKey", "")
+            onTextChanged: root.saveValue("aiApiKey", text)
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus) root.ensureItemVisible(aiApiKeyField);
+            }
+        }
+    }
+
+    Row {
+        visible: aiEnabledSetting.value
+        spacing: Theme.spacingM
+
+        DankButton {
+            text: "Test Connection"
+            iconName: "wifi_tethering"
+            onClicked: {
+                var provider = AiProvider.createAiProvider({
+                    baseUrl: root.effectiveAiBaseUrl(),
+                    model: root.loadValue("aiModel", ""),
+                    apiKey: root.loadValue("aiApiKey", "")
+                });
+                if (!provider.isConfigured()) {
+                    if (typeof ToastService !== "undefined")
+                        ToastService.showError("Enter a Model first (and a Base URL, if the runtime is Custom)");
+                    return;
+                }
+                var req = provider.probeRequest();
+                // req is only null when unconfigured, which isConfigured()
+                // above already ruled out -- but AiProvider does no I/O of
+                // its own, so nothing stops this from calling Proc directly.
+                if (!req)
+                    return;
+                // Proc id is null, not a fixed string -- see
+                // fetchMinifluxFeeds()'s comment above and the matching
+                // reasoning at DankRssWidget.qml's Proc.runCommand calls: a
+                // fixed id would clobber this callback if the button is
+                // pressed again before the probe returns.
+                Proc.runCommand(null, req.argv,
+                    function(out, code) {
+                        var result = req.parse(out || "");
+                        if (!result || !result.reachable) {
+                            if (typeof ToastService !== "undefined")
+                                ToastService.showError("Connection failed: could not reach " + root.effectiveAiBaseUrl());
+                            return;
+                        }
+                        if (!result.hasModel) {
+                            // Capped: ollama installations routinely hold
+                            // dozens of models, and the point of this toast
+                            // is "your model name is wrong, here is the
+                            // shape of what is there", not a full inventory.
+                            var all = result.models || [];
+                            var available = all.length === 0 ? "none" : (all.slice(0, 5).join(", ") + (all.length > 5 ? " (+" + (all.length - 5) + " more)" : ""));
+                            if (typeof ToastService !== "undefined")
+                                ToastService.showWarning("Reachable, but model \"" + root.loadValue("aiModel", "") + "\" was not found. Available: " + available);
+                            return;
+                        }
+                        if (typeof ToastService !== "undefined")
+                            ToastService.showInfo("AI runtime connection successful!");
+                    }, undefined, req.timeoutMs
+                );
+            }
+        }
     }
 }

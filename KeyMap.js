@@ -21,9 +21,27 @@ var Key_K = 0x4b;
 var Key_G = 0x47;
 var Key_A = 0x41;
 var Key_O = 0x4f;
+var Key_V = 0x56;
 var Key_R = 0x52;
 var Key_M = 0x4d;
 var Key_S = 0x53;
+var Key_E = 0x45;
+// Shift+J / Shift+K are reader-window-only: next/previous article, not routed
+// through resolveKey() -- see ReaderWindow.qml, which handles its own keys
+// directly against these constants the same way it already does for J/K/O/E/S.
+//
+// "i" (summarise) is handled in BOTH places, and means the same thing in
+// each: summarise the article in front of you. In the reader that is the open
+// article; in the list it opens the reader on the cursor row showing only the
+// summary. Resolved here for the list, handled directly in ReaderWindow for
+// the reader, because the reader has no list to consult.
+//
+// "i" rather than the mnemonic "s": "s" is toggleStar everywhere else, and a
+// key that stars in the list but summarises in the reader would be the same
+// finger meaning two different things. "u" was the other free candidate; "i"
+// won on reach -- a middle-finger key rather than an index-finger stretch.
+var Key_I = 0x49;
+
 var Key_Space = 0x20;
 var Key_Slash = 0x2f;
 var Key_Question = 0x3f;
@@ -171,6 +189,18 @@ function resolveKey(event, state) {
         return act("toggleStar", index);
     }
 
+    // "e" (export to notes) follows the exact same rule as "m"/"s" above:
+    // the whole selection when one exists, else the cursor row. Whether the
+    // action actually does anything (a notes folder must be configured) is
+    // a QML-side concern -- this module has no idea export settings exist.
+    if (key === Key_E) {
+        if (hasSelection)
+            return act("exportSelected", index);
+        if (atRest)
+            return noop(-1);
+        return act("exportItem", index);
+    }
+
     // --- row actions: these need a cursor, or they act on an arbitrary item ---
 
     if (atRest)
@@ -185,6 +215,24 @@ function resolveKey(event, state) {
     if (key === Key_O && !shift)
         return act("open", index);
 
+    // "v" (view) opens the cursor row in the reading window -- a row action
+    // like "o", not a whole-selection one like "m"/"s"/"e": a reading window
+    // shows exactly one article, so there is no sensible multi-item form.
+    if (key === Key_V)
+        return act("view", index);
+
+    // "i" (summarise) is a row action for the same reason "v" is: it opens
+    // the reading window on exactly one article. It is deliberately NOT a
+    // whole-selection action like "m"/"s"/"e" -- summarising a selection of
+    // forty items would be forty GPU jobs from one keystroke, which is the
+    // one thing every decision in this feature has been shaped to avoid.
+    //
+    // Whether it does anything (a runtime must be configured and the feature
+    // enabled) is a QML-side concern, exactly as with "e" and export: this
+    // module has no idea AI settings exist.
+    if (key === Key_I)
+        return act("summarise", index);
+
     return noop(index);
 }
 
@@ -197,9 +245,12 @@ if (typeof module !== "undefined" && module.exports) {
         Key_G: Key_G,
         Key_A: Key_A,
         Key_O: Key_O,
+        Key_V: Key_V,
         Key_R: Key_R,
         Key_M: Key_M,
         Key_S: Key_S,
+        Key_E: Key_E,
+        Key_I: Key_I,
         Key_Space: Key_Space,
         Key_Slash: Key_Slash,
         Key_Question: Key_Question,

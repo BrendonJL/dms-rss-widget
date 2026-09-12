@@ -158,7 +158,17 @@ function yamlQuote(value) {
     return "\"" + out + "\"";
 }
 
-function buildFrontmatter(article, config) {
+// Did this note's body come from a full extraction of the article page, or
+// from the feed's own summary? `extracted` is whatever HtmlExtract.js's
+// extractArticle() returned (or null/undefined -- the toggle is off, the
+// item had no link, or the fetch was never attempted). A reader must be
+// able to tell a mangled extraction apart from a deliberate summary, so
+// this is recorded rather than left implicit.
+function wasExtracted(extracted) {
+    return !!(extracted && !extracted.usedFallback && extracted.markdown);
+}
+
+function buildFrontmatter(article, config, extracted) {
     var tags = (config && config.tags) || [];
     var tagStrs = [];
     for (var i = 0; i < tags.length; i++) tagStrs.push(yamlQuote(tags[i]));
@@ -169,6 +179,7 @@ function buildFrontmatter(article, config) {
         "source: " + yamlQuote((article && article.source) || ""),
         "link: " + yamlQuote((article && article.link) || ""),
         "date: " + yamlQuote(articleDate(article)),
+        "extracted: " + (wasExtracted(extracted) ? "true" : "false"),
         "tags: [" + tagStrs.join(", ") + "]",
         "---"
     ];
@@ -199,31 +210,120 @@ function renderAnnotations(annotations) {
     return blocks.join("\n\n");
 }
 
-function buildBody(article, annotations, caps, config) {
+// The feed's own summary text -- what the note falls back to when full-text
+// extraction is off, unavailable, or rejected the page (see HtmlExtract.js's
+// index-page guard). Shared with the caller so it can pass the SAME text to
+// extractArticle() as options.summary for its own fallback comparison.
+function articleSummaryText(article) {
+    return (article && (article.description || article.content)) || "";
+}
+
+function buildBody(article, annotations, caps, config, extracted) {
     var parts = [];
     parts.push("# " + ((article && article.title) || ""));
+
+    // Prefer a successful full-text extraction over the feed's summary --
+    // but only when extraction actually produced usable article markdown.
+    // usedFallback:true means HtmlExtract.js already decided the extraction
+    // was worse than (or indistinguishable from junk versus) the summary,
+    // so falling through to the summary here is that decision, not a
+    // separate one.
+    var text = wasExtracted(extracted) ? extracted.markdown : articleSummaryText(article);
+    if (text) parts.push(text);
+
+    // A link back to the source, so the note is useful on its own once the
+    // item has scrolled out of the feed. The frontmatter carries the url too,
+    // but frontmatter is metadata -- this is for a human reading the note.
+    if (article && article.link) parts.push("[Read the original](" + article.link + ")");
 
     var rendered = renderAnnotations(annotations);
     if (rendered) parts.push(rendered);
 
-    var tags = (config && config.tags) || [];
-    if (tags.length > 0) {
-        if (caps.wikilinks) {
-            parts.push(tags.map(function (t) { return "[[" + t + "]]"; }).join(" "));
-        } else {
-            parts.push(tags.map(function (t) { return "#" + String(t).replace(/\s+/g, "-"); }).join(" "));
-        }
-    }
+
+    // Tags are not repeated in the body. The frontmatter already carries
+    // them, and every markdown tool that cares about tags reads it from
+    // there -- Obsidian included. Emitting "[[rss]]" under the article as
+    // well just leaves a stray line to delete in every note.
 
     return parts.join("\n\n") + "\n";
 }
 
-// ─── capabilities table ───
+// ─── open-command presets (stage 4d) ───
+//
+// Adding an editor used to mean adding a branch to buildOpenRequest for
+// each one. The file being opened is identical in every case -- the only
+// editor-specific thing is the command that opens it afterward -- so that
+// becomes a single command TEMPLATE with `{path}` substituted, and "one more
+// editor" becomes "one more row in this table", not a new code path.
+//
+// GUI editors (VS Code, Zed, Emacs) ship a launcher that takes a bare path.
+// Terminal ones (Neovim, Helix, Vim) need a terminal emulator wrapped around
+// them, and which terminal is the user's business -- these presets assume
+// `kitty` because that is what this machine runs. They are a starting point
+// to edit, not a claim about anyone's setup; the settings panel says so.
+var EXPORT_OPEN_PRESETS = [
+    { id: "none", label: "None", template: "" },
+    { id: "obsidian", label: "Obsidian", template: "obsidian://open?vault={vault}&file={file}" },
+    { id: "vscode", label: "VS Code", template: "code {path}" },
+    { id: "zed", label: "Zed", template: "zed {path}" },
+    { id: "emacs", label: "Emacs", template: "emacsclient -n {path}" },
+    { id: "nvim-remote", label: "Neovim (running instance)", template: "nvim --server $NVIM --remote {path}" },
+    { id: "nvim-terminal", label: "Neovim (terminal)", template: "kitty nvim {path}" },
+    { id: "helix", label: "Helix", template: "kitty hx {path}" },
+    { id: "vim", label: "Vim", template: "kitty vim {path}" },
+    { id: "custom", label: "Custom", template: "" }
+];
 
-function capabilitiesFor(kind) {
-    if (kind === "obsidian") return { openAfterWrite: true, wikilinks: true };
-    if (kind === "neovim") return { openAfterWrite: true, wikilinks: false };
-    return { openAfterWrite: false, wikilinks: false }; // "markdown" and any unknown kind
+function presetById(id) {
+    for (var i = 0; i < EXPORT_OPEN_PRESETS.length; i++) {
+        if (EXPORT_OPEN_PRESETS[i].id === id) return EXPORT_OPEN_PRESETS[i];
+    }
+    return null;
+}
+
+// ─── legacy config migration (stage 4d) ───
+//
+// Before this stage "exportKind" was one of exactly three values and fully
+// determined behaviour by itself. It is now the id of whichever preset is
+// active, and the actual open command lives in `exportOpenCommand`. A saved
+// config from before this stage has no `exportOpenCommand` key at all --
+// that absence is what marks it as legacy, not the value of exportKind
+// (which stays a normal, possibly-empty string forever after). A config
+// that already HAS the key, even set to "", has already been through this
+// (or was created after it existed) and is returned unchanged.
+function resolveExportConfig(saved) {
+    saved = saved || {};
+    if (Object.prototype.hasOwnProperty.call(saved, "exportOpenCommand")) {
+        return {
+            exportKind: saved.exportKind || "custom",
+            exportOpenCommand: saved.exportOpenCommand || ""
+        };
+    }
+
+    // "obsidian" and "neovim" were the only legacy kinds with any open
+    // behaviour at all -- "markdown" (and anything unrecognised) had none,
+    // and maps to "no preset selected" rather than to a real one.
+    var legacyPresetId = { obsidian: "obsidian", neovim: "nvim-remote" }[saved.exportKind];
+    if (!legacyPresetId)
+        return { exportKind: "none", exportOpenCommand: "" };
+
+    var preset = presetById(legacyPresetId);
+    return { exportKind: preset.id, exportOpenCommand: preset.template };
+}
+
+// ─── capabilities table ───
+//
+// Obsidian's wikilink tags change the note's CONTENT (adding "[[tag]]"
+// links), not how the note is opened afterward -- that is what makes them a
+// capability flag rather than something baked into the open-command
+// template, and why this keys off `kind` (which preset is active) rather
+// than off the template text itself.
+function capabilitiesFor(config) {
+    config = config || {};
+    return {
+        openAfterWrite: !!(config.exportOpenCommand && String(config.exportOpenCommand).trim()),
+        wikilinks: config.kind === "obsidian"
+    };
 }
 
 // ─── path building ───
@@ -277,20 +377,29 @@ function buildRelPath(config, article) {
     if (!safeBase) {
         base = idForFallback || "untitled";
     } else {
-        var idSource = (article && (article.id || article.link || article.title)) || "";
-        base = safeBase + "-" + fnv1aHex(String(idSource));
+        // Clamp the TITLE, then append the hash -- not the other way round.
+        // Clamping the assembled "title-hash" truncates from the end, which
+        // eats the hash itself: two articles with long titles sharing a
+        // prefix then produce the SAME filename and one silently overwrites
+        // the other. Reserve the hash and extension first.
+        var suffix = "-" + fnv1aHex(String((article && (article.id || article.link || article.title)) || ""));
+        var reserved = suffix.length + ext.length;
+        base = clampUtf8Bytes(safeBase, 255 - reserved) + suffix;
     }
 
     return clampFilenameBytes(base, ext, 255);
 }
 
-function buildNote(config, article, annotations) {
+// `extracted` is optional and defaults to absent -- existing callers that
+// pass only (article, annotations) keep writing exactly the summary-only
+// note they always did, with `extracted: false` in the frontmatter.
+function buildNote(config, article, annotations, extracted) {
     if (!config || !config.root)
         return { error: "No export root configured" };
     if (!article)
         return { error: "No article to export" };
 
-    var caps = capabilitiesFor(config.kind);
+    var caps = capabilitiesFor(config);
     var relPath = buildRelPath(config, article);
 
     // Rule 1: re-check containment on the assembled path. This should be
@@ -300,47 +409,129 @@ function buildNote(config, article, annotations) {
     if (!isRelPathContained(relPath))
         return { error: "Generated path escapes the export root" };
 
-    var content = buildFrontmatter(article, config) + "\n\n" + buildBody(article, annotations, caps, config);
+    var content = buildFrontmatter(article, config, extracted) + "\n\n" +
+        buildBody(article, annotations, caps, config, extracted);
 
     return { relPath: relPath, content: content };
 }
 
+// `{path}` is substituted as its OWN argv element, never concatenated into a
+// shell string: the template is trusted local config, but the path is
+// derived from feed content, which is not (see the header comment). Argv
+// separation -- never a shell -- is what makes a filename containing a
+// space, a quote or a semicolon a non-event rather than an injection.
 function buildOpenRequest(config, relPath) {
-    var caps = capabilitiesFor(config.kind);
-    if (!caps.openAfterWrite || !relPath) return null;
+    config = config || {};
+    if (!relPath) return null;
+
+    var template = String(config.exportOpenCommand || "").trim();
+    if (!template) return null; // "None" / unconfigured -- write the file and stop
 
     var root = String(config.root || "").replace(/[\/\\]+$/, "");
     var fullPath = root + "/" + relPath;
 
+    // Obsidian is a URL handler, not an executable, so its template is a URI
+    // with `{vault}`/`{file}` substituted directly into the string rather
+    // than split into argv. The extension is stripped because Obsidian
+    // addresses a note by its wikilink name, not its filename.
     if (config.kind === "obsidian") {
         if (!config.vault) return null;
         var noExt = relPath.replace(/\.md$/, "");
-        return {
-            kind: "obsidian",
-            url: "obsidian://open?vault=" + encodeURIComponent(config.vault) + "&file=" + encodeURIComponent(noExt)
-        };
+        var url = template
+            .replace(/\{vault\}/g, encodeURIComponent(config.vault))
+            .replace(/\{file\}/g, encodeURIComponent(noExt));
+        return { kind: "obsidian", url: url };
     }
 
-    if (config.kind === "neovim") {
-        if (!config.nvimServer) return null;
-        return {
-            kind: "neovim",
-            argv: ["nvim", "--server", config.nvimServer, "--remote", fullPath]
-        };
+    // Split BEFORE substituting fullPath in: joining it into the template
+    // string first and splitting afterward would let a path containing a
+    // space re-fragment into two argv elements, exactly the injection this
+    // split exists to prevent. This also means a template cannot itself
+    // contain a quoted argument with a space in it -- an accepted limit on
+    // the shape of command this is, and it beats invoking a shell to parse
+    // it.
+    var parts = template.split(/\s+/).filter(function (s) { return s.length > 0; });
+    var argv = [];
+    var sawPath = false;
+    for (var i = 0; i < parts.length; i++) {
+        if (parts[i] === "{path}") {
+            sawPath = true;
+            argv.push(fullPath);
+        } else {
+            argv.push(parts[i]);
+        }
     }
 
-    return null;
+    // A template with no {path} would run a command that never receives the
+    // note at all -- silently opening nothing while looking like success.
+    // Refuse it outright rather than run it.
+    if (!sawPath) return null;
+
+    // `$NVIM` and any other environment variable is deliberately NOT
+    // expanded here. argv is handed straight to the OS with no shell in
+    // between, so there is nothing to expand it anyway -- and reimplementing
+    // shell variable expansion ourselves, by hand, on a string next to
+    // attacker-adjacent input, just to make one preset more convenient, is
+    // exactly the kind of thing this file exists to avoid doing (see the
+    // header comment). The nvim --server $NVIM preset only resolves where
+    // the process that ultimately runs it already has $NVIM in its own
+    // environment.
+    return { kind: "custom", argv: argv };
+}
+
+// ─── article fetch (stage 4c-b) ───
+//
+// Full-text export needs the article page itself, not just the feed's
+// summary. Same curl discipline as every other outbound request in this
+// widget: argv array (never a shell string, so nothing here is ever
+// vulnerable to shell injection), explicit connect/max timeouts, and the
+// protocol pinned to http/https on both the initial request and any
+// redirect.
+//
+// -L IS wanted here, unlike the authenticated Miniflux/Google-Reader calls
+// elsewhere in this widget (see minifluxCurlArgv in Backends.js): those
+// never follow a redirect because curl resends the same Authorization
+// header to whatever host the redirect names, handing a token to a third
+// party. An article fetch carries no credentials at all -- there is
+// nothing to leak -- and articles redirect constantly (AMP variants,
+// canonical-URL bounces, paywall interstitials), so refusing to follow
+// would silently break the common case instead of protecting anything.
+//
+// On demand only: this is called once per article the user has explicitly
+// chosen to export, never from a feed refresh or a scroll handler. Ten
+// selected articles is ten requests to ten different sites; that must
+// always be something the user asked for.
+var ARTICLE_FETCH_CONNECT_TIMEOUT_S = 5;
+var ARTICLE_FETCH_MAX_TIME_S = 15;
+var ARTICLE_FETCH_MAX_BYTES = 5000000;
+
+function buildArticleFetchRequest(url) {
+    return {
+        argv: [
+            "curl", "-sS",
+            "--connect-timeout", String(ARTICLE_FETCH_CONNECT_TIMEOUT_S),
+            "--max-time", String(ARTICLE_FETCH_MAX_TIME_S),
+            "-L",
+            "--proto", "=http,https",
+            "--proto-redir", "=http,https",
+            "--max-redirs", "5",
+            "--max-filesize", String(ARTICLE_FETCH_MAX_BYTES),
+            "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0",
+            String(url)
+        ],
+        timeoutMs: null
+    };
 }
 
 // ─── factory ───
 
 function createExportProvider(config) {
     config = config || {};
-    var caps = capabilitiesFor(config.kind);
+    var caps = capabilitiesFor(config);
 
     return {
-        buildNote: function (article, annotations) {
-            return buildNote(config, article, annotations);
+        buildNote: function (article, annotations, extracted) {
+            return buildNote(config, article, annotations, extracted);
         },
 
         capabilities: caps,
@@ -353,6 +544,10 @@ function createExportProvider(config) {
 
 if (typeof module !== "undefined" && module.exports) {
     module.exports = {
-        createExportProvider: createExportProvider
+        createExportProvider: createExportProvider,
+        buildArticleFetchRequest: buildArticleFetchRequest,
+        articleSummaryText: articleSummaryText,
+        EXPORT_OPEN_PRESETS: EXPORT_OPEN_PRESETS,
+        resolveExportConfig: resolveExportConfig
     };
 }
