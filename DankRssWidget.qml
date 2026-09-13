@@ -144,6 +144,11 @@ DesktopPluginComponent {
     // and conflating the two would either re-announce on every refresh or
     // silently swallow the first match.
     property var notifiedIds: []
+    // sourceUrl -> epoch ms until which that feed's items stay hidden.
+    // Lives in the state tier beside read/bookmark ids, and expired entries
+    // are pruned on every refresh so a map of long-dead snoozes cannot
+    // accumulate in the state file.
+    property var snoozeMap: ({})
 
     // --- Interest ranking (stage 3d) ---
     //
@@ -726,6 +731,9 @@ DesktopPluginComponent {
 
         root.notifiedIds = ReaderState.boundIdList(root.readState("notifiedIds", []), root.idHistoryCap);
 
+        var stored = root.readState("snoozes", {});
+        root.snoozeMap = ReaderState.pruneSnoozes((stored && typeof stored === "object") ? stored : {}, Date.now());
+
         root.readerStateLoaded = true;
     }
 
@@ -941,6 +949,67 @@ DesktopPluginComponent {
             }
             readerWindow.digestText = result.text;
         });
+    }
+
+    // Marks everything the cursor scrolled past, given the row now at the top.
+    // The id bookkeeping lives in ReaderState so the "which ids" question is
+    // testable; this only supplies the anchors and writes the result.
+    property string _scrollTopId: ""
+
+    function markScrolledPastRead(topIndex) {
+        if (!root.markReadOnScroll || topIndex < 0 || topIndex >= feedModel.count)
+            return;
+
+        var orderedIds = [];
+        for (var i = 0; i < feedModel.count; i++)
+            orderedIds.push(feedModel.get(i).itemId);
+
+        var topId = feedModel.get(topIndex).itemId;
+        var previous = root._scrollTopId;
+        root._scrollTopId = topId;
+        if (!previous || previous === topId)
+            return;
+
+        // visibleIds[0] IS the new top anchor -- passing an empty array
+        // makes the module return nothing, every time, silently.
+        var passed = ReaderState.itemsScrolledPast([topId], previous, orderedIds);
+        if (!passed || passed.length === 0)
+            return;
+
+        var order = root.readOrder;
+        for (var j = 0; j < passed.length; j++) {
+            if (root.readMap[passed[j]] !== true)
+                order = ReaderState.addRead(order, passed[j], root.idHistoryCap);
+        }
+        if (order === root.readOrder)
+            return;
+
+        root.readOrder = ReaderState.boundIdList(order, root.idHistoryCap);
+        root.readMap = ReaderState.buildIdMap(root.readOrder);
+        root.saveReadState();
+    }
+
+    // --- Per-source snooze ---
+    //
+    // Hides one feed's items until a deadline, without disabling the feed:
+    // a disabled feed stops being fetched at all and its items vanish from
+    // history, whereas a snoozed one keeps syncing quietly and simply stops
+    // shouting. They are different intentions and deserve different controls.
+    function snoozeSource(sourceUrl, hours) {
+        if (!sourceUrl)
+            return;
+        var until = Date.now() + Math.max(1, hours) * 3600000;
+        root.snoozeMap = ReaderState.snoozeSource(root.snoozeMap, sourceUrl, until);
+        root.writeState("snoozes", root.snoozeMap);
+        root.applyFilter();
+    }
+
+    function unsnoozeSource(sourceUrl) {
+        if (!sourceUrl)
+            return;
+        root.snoozeMap = ReaderState.unsnoozeSource(root.snoozeMap, sourceUrl);
+        root.writeState("snoozes", root.snoozeMap);
+        root.applyFilter();
     }
 
     function persistSummaries() {
@@ -2157,6 +2226,11 @@ DesktopPluginComponent {
 
         root.allItems = items;
         root.pruneSummaryCache(items);
+        var prunedSnoozes = ReaderState.pruneSnoozes(root.snoozeMap, Date.now());
+        if (Object.keys(prunedSnoozes).length !== Object.keys(root.snoozeMap).length) {
+            root.snoozeMap = prunedSnoozes;
+            root.writeState("snoozes", root.snoozeMap);
+        }
         root.refreshRanking();
         root.feedStatuses = ctx.statuses.slice();
         root.notifyForNewItems(items);
@@ -2246,6 +2320,20 @@ DesktopPluginComponent {
             readMap: root.readMap,
             bookmarkMap: root.bookmarkMap
         });
+
+        // Snoozed sources drop out here rather than at fetch time, so their
+        // items still arrive, still count as seen, and reappear intact the
+        // moment the snooze lapses -- no gap in history to explain later.
+        var nowMs = Date.now();
+        var anySnoozed = false;
+        for (var sk in root.snoozeMap) {
+            if (Object.prototype.hasOwnProperty.call(root.snoozeMap, sk)) {
+                anySnoozed = true;
+                break;
+            }
+        }
+        if (anySnoozed)
+            visible = ReaderState.filterSnoozed(visible, root.snoozeMap, nowMs);
 
         // Ranking reorders what the filter chose; it never changes WHAT is
         // shown. Keeping the two separate matters: a ranking that also hid
@@ -2882,6 +2970,28 @@ DesktopPluginComponent {
                     spacing: root.viewMode === "compact" ? 1 : Theme.spacingXS
                     model: feedModel
                     visible: feedModel.count > 0
+
+                    // Mark-read-on-scroll, debounced rather than per-frame.
+                    //
+                    // The decision itself is ReaderState.itemsScrolledPast,
+                    // which only marks on a SETTLED forward move -- and
+                    // settled is this timer's job. Running it per frame would
+                    // mark the whole list read on a fast fling to the bottom,
+                    // which is the failure mode the module's semantics were
+                    // chosen to avoid; the module can express "only when
+                    // settled" but cannot enforce it, because it owns no
+                    // timer.
+                    onContentYChanged: {
+                        if (root.markReadOnScroll)
+                            scrollSettleTimer.restart();
+                    }
+
+                    Timer {
+                        id: scrollSettleTimer
+                        interval: 400
+                        repeat: false
+                        onTriggered: root.markScrolledPastRead(feedListView.indexAt(0, feedListView.contentY + 1))
+                    }
 
                     delegate: Rectangle {
                         id: itemDelegate
