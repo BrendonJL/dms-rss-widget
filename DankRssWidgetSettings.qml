@@ -496,6 +496,10 @@ PluginSettings {
         title: "Google Reader Connection"
         expanded: false
 
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
+
             StyledText {
                 text: "Server URL"
                 font.pixelSize: Theme.fontSizeSmall
@@ -901,103 +905,13 @@ PluginSettings {
             }
         }
     }
-
-    // ─── Subscription List (read-only) ───
-    // Shown for any backend that keeps subscriptions on the server rather
-    // than in this plugin's own settings -- there is nothing local to add,
-    // edit, or reorder, only a snapshot of what the server already has.
-    // The list itself is still populated only by fetchMinifluxFeeds()
-    // (Miniflux's /v1/feeds); Google Reader shows this section empty until
-    // it gets its own feed-listing call.
-
-    StyledRect {
-        width: parent.width
-        height: 1
-        color: root.roleColours.outlineVariant
-        visible: currentBackend.capabilities.serverState
-    }
-
-    StyledText {
-        width: parent.width
-        text: "Subscription List"
-        font.pixelSize: Theme.fontSizeMedium
-        font.weight: Font.Medium
-        color: root.roleColours.surfaceText
-        visible: currentBackend.capabilities.serverState
-    }
-
-    StyledRect {
-        width: parent.width
-        height: Math.max(80, minifluxFeedsColumn.implicitHeight + Theme.spacingL * 2)
-        radius: Theme.cornerRadius
-        color: root.roleColours.surfaceContainerHigh
-        visible: currentBackend.capabilities.serverState
-
-        Column {
-            id: minifluxFeedsColumn
-            anchors.fill: parent
-            anchors.margins: Theme.spacingL
-            spacing: Theme.spacingS
-
-            Repeater {
-                model: root.minifluxFeedsList
-
-                delegate: RowLayout {
-                    required property var modelData
-                    width: minifluxFeedsColumn.width
-                    spacing: Theme.spacingS
-
-                    DankIcon {
-                        name: "rss_feed"
-                        size: 14
-                        color: root.roleColours.primary
-                    }
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 1
-
-                        StyledText {
-                            text: modelData.title || ""
-                            font.pixelSize: Theme.fontSizeSmall
-                            font.weight: Font.Medium
-                            color: root.roleColours.surfaceText
-                            Layout.fillWidth: true
-                            elide: Text.ElideRight
-                        }
-
-                        StyledText {
-                            text: modelData.feed_url || modelData.site_url || ""
-                            font.pixelSize: Theme.fontSizeSmall - 2
-                            color: root.roleColours.surfaceVariantText
-                            Layout.fillWidth: true
-                            elide: Text.ElideMiddle
-                        }
-                    }
-                }
-            }
-
-            StyledText {
-                text: root.minifluxFeedsList.length === 0
-                    ? "No feeds loaded — test connection first"
-                    : ""
-                visible: root.minifluxFeedsList.length === 0
-                font.pixelSize: Theme.fontSizeSmall
-                color: root.roleColours.surfaceVariantText
-                width: parent.width
-            }
-        }
-    }
+    } // end Notes Export DankCollapsibleSection
 
     // ─── Refresh Settings (always visible) ───
-
-    StyledText {
+    DankCollapsibleSection {
         width: parent.width
-        text: "Refresh Settings"
-        font.pixelSize: Theme.fontSizeMedium
-        font.weight: Font.Medium
-        color: root.roleColours.surfaceText
-    }
+        title: "Refresh Settings"
+        expanded: false
 
     SliderSetting {
         settingKey: "updateInterval"
@@ -1089,36 +1003,116 @@ PluginSettings {
         description: "Click feed items to open them in your browser"
         defaultValue: true
     }
-
-    StyledRect {
-        width: parent.width
-        height: 1
-        color: root.roleColours.outlineVariant
-        visible: !currentBackend.capabilities.serverState
-    }
+    } // end Refresh Settings DankCollapsibleSection
 
     // ─── Feed Management ───
-    // Only meaningful for a backend with no server-side subscription list of
-    // its own -- adding, editing, and reordering feeds here is exactly what
-    // a serverState backend's own subscription management already covers.
-
-    StyledText {
+    // Covers BOTH the read-only server-side subscription snapshot (Miniflux,
+    // Google Reader -- see the Subscription List comment below) and the
+    // locally-editable list (add/edit form, autodiscovery, configured feeds,
+    // OPML import/export, quick-add presets) -- only one half is ever
+    // visible at a time, gated on currentBackend.capabilities.serverState,
+    // but both are "managing your feeds" so they share one section rather
+    // than the user having to find two.
+    //
+    // The only section that starts expanded, per the settings-panel
+    // requirements: it's the section most people open this panel for.
+    DankCollapsibleSection {
         width: parent.width
-        text: "Feed Management"
-        font.pixelSize: Theme.fontSizeMedium
-        font.weight: Font.Medium
-        color: root.roleColours.surfaceText
-        visible: !currentBackend.capabilities.serverState
-    }
+        title: "Feed Management"
+        expanded: true
 
-    StyledRect {
-        width: parent.width
-        height: addFeedColumn.implicitHeight + Theme.spacingL * 2
-        radius: Theme.cornerRadius
-        color: root.roleColours.surfaceContainerHigh
-        visible: !currentBackend.capabilities.serverState
+        // ─── Subscription List (read-only) ───
+        // Shown for any backend that keeps subscriptions on the server rather
+        // than in this plugin's own settings -- there is nothing local to add,
+        // edit, or reorder, only a snapshot of what the server already has.
+        // The list itself is still populated only by fetchMinifluxFeeds()
+        // (Miniflux's /v1/feeds); Google Reader shows this section empty until
+        // it gets its own feed-listing call.
+        StyledText {
+            Layout.fillWidth: true
+            text: "Subscription List"
+            font.pixelSize: Theme.fontSizeMedium
+            font.weight: Font.Medium
+            color: root.roleColours.surfaceText
+            visible: currentBackend.capabilities.serverState
+        }
 
-        Column {
+        StyledRect {
+            Layout.fillWidth: true
+            height: Math.max(80, minifluxFeedsColumn.implicitHeight + Theme.spacingL * 2)
+            radius: Theme.cornerRadius
+            color: root.roleColours.surfaceContainerHigh
+            visible: currentBackend.capabilities.serverState
+
+            Column {
+                id: minifluxFeedsColumn
+                anchors.fill: parent
+                anchors.margins: Theme.spacingL
+                spacing: Theme.spacingS
+
+                Repeater {
+                    model: root.minifluxFeedsList
+
+                    delegate: RowLayout {
+                        required property var modelData
+                        width: minifluxFeedsColumn.width
+                        spacing: Theme.spacingS
+
+                        DankIcon {
+                            name: "rss_feed"
+                            size: 14
+                            color: root.roleColours.primary
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 1
+
+                            StyledText {
+                                text: modelData.title || ""
+                                font.pixelSize: Theme.fontSizeSmall
+                                font.weight: Font.Medium
+                                color: root.roleColours.surfaceText
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                            }
+
+                            StyledText {
+                                text: modelData.feed_url || modelData.site_url || ""
+                                font.pixelSize: Theme.fontSizeSmall - 2
+                                color: root.roleColours.surfaceVariantText
+                                Layout.fillWidth: true
+                                elide: Text.ElideMiddle
+                            }
+                        }
+                    }
+                }
+
+                StyledText {
+                    text: root.minifluxFeedsList.length === 0
+                        ? "No feeds loaded — test connection first"
+                        : ""
+                    visible: root.minifluxFeedsList.length === 0
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: root.roleColours.surfaceVariantText
+                    width: parent.width
+                }
+            }
+        }
+
+        // Only meaningful for a backend with no server-side subscription list
+        // of its own -- adding, editing, and reordering feeds here is exactly
+        // what a serverState backend's own subscription management (above)
+        // already covers. The section title itself now says "Feed
+        // Management" so this inner heading is dropped as redundant.
+        StyledRect {
+            Layout.fillWidth: true
+            height: addFeedColumn.implicitHeight + Theme.spacingL * 2
+            radius: Theme.cornerRadius
+            color: root.roleColours.surfaceContainerHigh
+            visible: !currentBackend.capabilities.serverState
+
+            Column {
             id: addFeedColumn
             anchors.fill: parent
             anchors.margins: Theme.spacingL
@@ -1215,7 +1209,7 @@ PluginSettings {
     // button above uses), so a discovered URL gets the same URL validation
     // and dedupe-on-edit behaviour as one typed in by hand.
     StyledRect {
-        width: parent.width
+        Layout.fillWidth: true
         height: discoveryColumn.implicitHeight + Theme.spacingL * 2
         radius: Theme.cornerRadius
         color: root.roleColours.surfaceContainerHigh
@@ -1353,7 +1347,7 @@ PluginSettings {
     }
 
     StyledRect {
-        width: parent.width
+        Layout.fillWidth: true
         height: Math.max(120, feedsListColumn.implicitHeight + Theme.spacingL * 2)
         radius: Theme.cornerRadius
         color: root.roleColours.surfaceContainerHigh
@@ -1651,7 +1645,7 @@ PluginSettings {
     // OPML Import: feeds live locally only when the backend has no server
     // subscription list of its own to import into instead.
     StyledRect {
-        width: parent.width
+        Layout.fillWidth: true
         height: opmlColumn.implicitHeight + Theme.spacingL * 2
         radius: Theme.cornerRadius
         color: root.roleColours.surfaceContainerHigh
@@ -1818,20 +1812,16 @@ PluginSettings {
         }
     }
 
-    StyledRect {
-        width: parent.width
-        height: 1
-        color: root.roleColours.outlineVariant
-        visible: !currentBackend.capabilities.serverState
-    }
-
     // ─── Preset Feeds (Quick Add) ───
     // Wrapped in one Column with a single `visible` binding rather than
     // repeating it on every child below -- there are a lot of them. Adding a
     // preset writes straight into local `feeds`, so it only makes sense for
-    // a backend with no server-side subscription list of its own.
+    // a backend with no server-side subscription list of its own. The
+    // divider that used to separate this from the OPML card above is
+    // dropped -- redundant now that this whole group lives inside one
+    // collapsible section.
     Column {
-        width: parent.width
+        Layout.fillWidth: true
         spacing: Theme.spacingM
         visible: !currentBackend.capabilities.serverState
 
@@ -2000,6 +1990,11 @@ PluginSettings {
 
     } // end Quick Add Column
 
+    // Still lexically nested under the Feed Management section (same as it
+    // was nested under `root` before) -- QML resolves the unqualified
+    // addPresetFeed(...) calls in the Quick Add buttons above by walking
+    // outward through the enclosing object tree, so moving this one level
+    // deeper alongside them changes nothing about how it's found.
     function addPresetFeed(name, url) {
         var currentFeeds = root.loadValue("feeds", []);
         for (var i = 0; i < currentFeeds.length; i++) {
@@ -2016,22 +2011,13 @@ PluginSettings {
             ToastService.showInfo("Added " + name);
         }
     }
-
-    StyledRect {
-        width: parent.width
-        height: 1
-        color: root.roleColours.outlineVariant
-    }
+    } // end Feed Management DankCollapsibleSection
 
     // ─── Appearance Settings ───
-
-    StyledText {
+    DankCollapsibleSection {
         width: parent.width
-        text: "Appearance"
-        font.pixelSize: Theme.fontSizeMedium
-        font.weight: Font.Medium
-        color: root.roleColours.surfaceText
-    }
+        title: "Appearance"
+        expanded: false
 
     SliderSetting {
         settingKey: "fontSize"
@@ -2093,25 +2079,16 @@ PluginSettings {
         ]
         defaultValue: "primary"
     }
+    } // end Appearance DankCollapsibleSection
 
     // ─── Reader ───
-
-    StyledRect {
+    DankCollapsibleSection {
         width: parent.width
-        height: 1
-        color: root.roleColours.outlineVariant
-    }
-
-    StyledText {
-        width: parent.width
-        text: "Reader"
-        font.pixelSize: Theme.fontSizeMedium
-        font.weight: Font.Medium
-        color: root.roleColours.surfaceText
-    }
+        title: "Reader"
+        expanded: false
 
     Column {
-        width: parent.width
+        Layout.fillWidth: true
         spacing: Theme.spacingXS
 
         StyledText {
@@ -2140,6 +2117,7 @@ PluginSettings {
             }
         }
     }
+    } // end Reader DankCollapsibleSection
 
     // ─── AI Summaries ───
     // The design doc wanted this toggle per-instance, but this plugin has
@@ -2147,21 +2125,14 @@ PluginSettings {
     // through root.loadValue/saveValue, which is savePluginData underneath
     // and keyed on pluginId only (see the Notes Export comment above). So
     // "AI Summaries" is a single global on/off for now, the same as every
-    // other setting in this file, not a per-widget-instance choice.
-
-    StyledRect {
+    // other setting in this file, not a per-widget-instance choice. Not
+    // gated on the section itself -- the toggle that enables it lives inside
+    // and must stay visible even when AI Summaries is off, so every OTHER
+    // field in here keeps its own visible: aiEnabledSetting.value instead.
+    DankCollapsibleSection {
         width: parent.width
-        height: 1
-        color: root.roleColours.outlineVariant
-    }
-
-    StyledText {
-        width: parent.width
-        text: "AI Summaries"
-        font.pixelSize: Theme.fontSizeMedium
-        font.weight: Font.Medium
-        color: root.roleColours.surfaceText
-    }
+        title: "AI Summaries"
+        expanded: false
 
     ToggleSetting {
         id: aiEnabledSetting
@@ -2201,7 +2172,7 @@ PluginSettings {
     }
 
     Column {
-        width: parent.width
+        Layout.fillWidth: true
         spacing: Theme.spacingXS
         visible: aiEnabledSetting.value
 
@@ -2228,7 +2199,7 @@ PluginSettings {
     }
 
     Column {
-        width: parent.width
+        Layout.fillWidth: true
         spacing: Theme.spacingXS
         visible: aiEnabledSetting.value
 
@@ -2259,7 +2230,7 @@ PluginSettings {
     }
 
     Column {
-        width: parent.width
+        Layout.fillWidth: true
         spacing: Theme.spacingXS
         visible: aiEnabledSetting.value
 
@@ -2292,7 +2263,7 @@ PluginSettings {
     }
 
     Column {
-        width: parent.width
+        Layout.fillWidth: true
         spacing: Theme.spacingXS
         visible: aiEnabledSetting.value
 
@@ -2406,6 +2377,7 @@ PluginSettings {
             }
         }
     }
+    } // end AI Summaries DankCollapsibleSection
 
     // ─── Interest Ranking ───
     // Off by default, deliberately: this is the riskiest feature in the
@@ -2414,20 +2386,10 @@ PluginSettings {
     // asks for "a visible reason and an obvious way back" for exactly that
     // reason; the description text below IS that way back -- read it before
     // trimming it.
-
-    StyledRect {
+    DankCollapsibleSection {
         width: parent.width
-        height: 1
-        color: root.roleColours.outlineVariant
-    }
-
-    StyledText {
-        width: parent.width
-        text: "Interest Ranking"
-        font.pixelSize: Theme.fontSizeMedium
-        font.weight: Font.Medium
-        color: root.roleColours.surfaceText
-    }
+        title: "Interest Ranking"
+        expanded: false
 
     ToggleSetting {
         id: rankingEnabledSetting
@@ -2447,6 +2409,7 @@ PluginSettings {
         maximum: 100
         unit: "%"
     }
+    } // end Interest Ranking DankCollapsibleSection
 
     // ─── Colour Theme ───
     // See Palette.js's header: the widget's owner has deuteranopia, and a
@@ -2455,20 +2418,10 @@ PluginSettings {
     // presets fix that. Deliberately does NOT restyle anything else in this
     // panel -- that is a separate, serialised pass (see the plan doc) and
     // this file only owns the one setting plus its own preview swatches.
-
-    StyledRect {
+    DankCollapsibleSection {
         width: parent.width
-        height: 1
-        color: root.roleColours.outlineVariant
-    }
-
-    StyledText {
-        width: parent.width
-        text: "Colour Theme"
-        font.pixelSize: Theme.fontSizeMedium
-        font.weight: Font.Medium
-        color: root.roleColours.surfaceText
-    }
+        title: "Colour Theme"
+        expanded: false
 
     SelectionSetting {
         id: colourPresetSetting
@@ -2495,7 +2448,7 @@ PluginSettings {
     // colours it's resolved against.
     Row {
         id: colourPreviewRow
-        width: parent.width
+        Layout.fillWidth: true
         spacing: Theme.spacingL
 
         property var previewPalette: Palette.resolvePalette(colourPresetSetting.value, root.themeBasePalette())
@@ -2526,40 +2479,26 @@ PluginSettings {
             }
         }
     }
+    } // end Colour Theme DankCollapsibleSection
 
     // ─── Notification Rules ───
     // Add/list/delete only -- a full rule builder is out of scope (see the
     // design doc). Each rule is { query, sources }; sources stays [] here
     // (meaning "all feeds") since a per-rule source picker is exactly the
     // kind of scope this section is deliberately not taking on.
-
-    StyledRect {
+    //
+    // The whole point of reusing the search syntax rather than inventing a
+    // separate rule language: whatever you already know from the widget's
+    // own search box works here unchanged. That explanation is one line, so
+    // it moved into `description` instead of staying a separate StyledText.
+    DankCollapsibleSection {
         width: parent.width
-        height: 1
-        color: root.roleColours.outlineVariant
-    }
-
-    StyledText {
-        width: parent.width
-        text: "Notification Rules"
-        font.pixelSize: Theme.fontSizeMedium
-        font.weight: Font.Medium
-        color: root.roleColours.surfaceText
-    }
-
-    StyledText {
-        width: parent.width
-        // The whole point of reusing the search syntax rather than inventing
-        // a separate rule language: whatever you already know from the
-        // widget's own search box works here unchanged.
-        text: "Get notified when an item matches a query, using the SAME search syntax as the widget's search box."
-        font.pixelSize: Theme.fontSizeSmall
-        color: root.roleColours.surfaceVariantText
-        wrapMode: Text.WordWrap
-    }
+        title: "Notification Rules"
+        description: "Get notified when an item matches a query, using the SAME search syntax as the widget's search box."
+        expanded: false
 
     Row {
-        width: parent.width
+        Layout.fillWidth: true
         spacing: Theme.spacingM
 
         DankTextField {
@@ -2591,7 +2530,7 @@ PluginSettings {
     }
 
     Column {
-        width: parent.width
+        Layout.fillWidth: true
         spacing: Theme.spacingXS
 
         Repeater {
@@ -2653,4 +2592,5 @@ PluginSettings {
             visible: root.loadValue("notificationRules", []).length === 0
         }
     }
+    } // end Notification Rules DankCollapsibleSection
 }

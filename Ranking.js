@@ -332,6 +332,12 @@ function rankItems(items, vectorsById, profile, options) {
 // sorted by similarity desc, deterministic tie-break on id ascending so a
 // constructed unambiguous case always returns the same order.
 // When itemVector or starredVectors is missing/empty, nearest is [].
+// NOT YET WIRED. This is an API surface for a "why is this ranked here?"
+// affordance that does not exist in the UI: the reason string the widget shows
+// today is hand-authored English about why ranking is *unavailable*, which is a
+// different question. Kept because the backlog's requirement is a visible
+// reason and this is the honest way to build one -- structured facts, wording
+// left to the UI. Flagged so nobody reads it as load-bearing.
 function explainRank(rankedItem, options) {
     var opts = options || {};
     var topN = (typeof opts.topN === "number") ? opts.topN : 3;

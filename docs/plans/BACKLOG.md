@@ -10,19 +10,6 @@ believed for weeks and only measurement settled it.
 
 ## Still open
 
-- **Per-feed refresh intervals.** Today one interval governs every feed, and a
-  news feed does not deserve the same poll rate as a weekly blog.
-
-  Deliberately not attempted blind. It means skipping descriptors in
-  `fetchAllFeeds`, but `finalizeFetch` rebuilds `allItems` from whatever came
-  back that cycle -- so a skipped feed's articles would vanish from the list.
-  Doing it safely needs items retained for skipped feeds and merged back in,
-  which is a real change to the most important code path in the widget. There
-  is no way to execute QML on this machine, and the failure mode of getting it
-  subtly wrong is articles silently disappearing, which nobody notices until
-  they have already lost track of something. It wants a session where it can
-  actually be run.
-
 - **Audio enclosures to MPRIS -- half done, and the honest half is the
   remaining one.** Parsing and playback exist: feeds expose `audioUrl`, and
   "p" hands it to a configurable player. What does NOT exist is the stated
@@ -54,6 +41,13 @@ one of these is *shipped but unproven* until the owner has lived with it.
   singleton shared shell-wide. Palettes are Okabe-Ito and Paul Tol, cited, and
   their distinctness is asserted through simulated dichromacy rather than
   taken on trust.
+- **Per-feed refresh intervals.** The fetch-path problem that kept this open
+  is solved: skipped feeds' articles are restored from a retention pool before
+  the dedupe, and "no descriptors because everything is disabled" is now
+  distinguished from "no descriptors because nothing is due". The decision is
+  `ReaderState.isFeedDue`, biased so that anything malformed answers *due* --
+  fetching too often costs a request, fetching too rarely loses content. The
+  settings UI is still owed.
 - **OPML export**, **feed autodiscovery**, **images in exported notes**,
   **per-source snooze** (`z` / `Shift+Z`), **mark-read-on-scroll**,
   **rule-based notifications**, and **sibling merging** in the extractor.
