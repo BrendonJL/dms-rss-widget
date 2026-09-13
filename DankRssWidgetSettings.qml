@@ -42,28 +42,18 @@ PluginSettings {
         var token = root.loadValue("minifluxToken", "");
         if (!url || !token)
             return;
-        Proc.runCommand(null,
-            ["curl", "-sS", "--fail",
-             "--connect-timeout", "5", "--max-time", "25",
-             "--proto", "=http,https",
-             "--proto-redir", "=http,https",
-             "--max-redirs", "5",
-             "--max-filesize", "5000000",
-             "-H", "X-Auth-Token: " + token,
-             url + "/v1/feeds"],
-            function(output, exitCode) {
-                if (exitCode !== 0)
-                    return;
-                if (output && output.length > 5000000)
-                    return;
-                try {
-                    var data = JSON.parse(output);
-                    root.minifluxFeedsList = Array.isArray(data) ? data : [];
-                } catch (e) {
-                    // leave the previous list in place on a bad response
-                }
-            }, undefined, 30000
-        );
+        Proc.runCommand(null, ["curl", "-sS", "--fail", "--connect-timeout", "5", "--max-time", "25", "--proto", "=http,https", "--proto-redir", "=http,https", "--max-redirs", "5", "--max-filesize", "5000000", "-H", "X-Auth-Token: " + token, url + "/v1/feeds"], function (output, exitCode) {
+            if (exitCode !== 0)
+                return;
+            if (output && output.length > 5000000)
+                return;
+            try {
+                var data = JSON.parse(output);
+                root.minifluxFeedsList = Array.isArray(data) ? data : [];
+            } catch (e) {
+                // leave the previous list in place on a bad response
+            }
+        }, undefined, 30000);
     }
 
     // ClientLogin succeeding only proves the server is reachable and the
@@ -82,47 +72,48 @@ PluginSettings {
                 ToastService.showError("Enter URL, username, and password first");
             return;
         }
-        var config = { greaderUrl: url, greaderUsername: username, greaderPassword: password };
-        var loginRequest = GoogleReader.buildClientLoginRequest(config, { linkIndex: 1, reauthAttempted: false }, FeedParser);
+        var config = {
+            greaderUrl: url,
+            greaderUsername: username,
+            greaderPassword: password
+        };
+        var loginRequest = GoogleReader.buildClientLoginRequest(config, {
+            linkIndex: 1,
+            reauthAttempted: false
+        }, FeedParser);
         if (!loginRequest) {
             if (typeof ToastService !== "undefined")
                 ToastService.showError("Connection failed: could not build request");
             return;
         }
-        Proc.runCommand(null, loginRequest.argv,
-            function(output, exitCode) {
-                var loginResult = loginRequest.parse(output || "");
-                if (!loginResult || loginResult.error || !loginResult.session || !loginResult.session.authToken) {
-                    // Never include the URL/password in this message -- describe
-                    // the failure only (same rule as the Miniflux button above).
+        Proc.runCommand(null, loginRequest.argv, function (output, exitCode) {
+            var loginResult = loginRequest.parse(output || "");
+            if (!loginResult || loginResult.error || !loginResult.session || !loginResult.session.authToken) {
+                // Never include the URL/password in this message -- describe
+                // the failure only (same rule as the Miniflux button above).
+                if (typeof ToastService !== "undefined")
+                    ToastService.showError("Connection failed: check the Google Reader integration username and password (Miniflux Settings → Integrations, not your web login)");
+                return;
+            }
+            var userInfoArgv = GoogleReader.greaderCurlArgv("GET", url, "/reader/api/0/user-info", loginResult.session.authToken, null);
+            Proc.runCommand(null, userInfoArgv, function (userInfoOutput, userInfoExitCode) {
+                var split = GoogleReader.splitHttpStatus(userInfoOutput || "");
+                if (split.status === 200) {
                     if (typeof ToastService !== "undefined")
-                        ToastService.showError("Connection failed: check the Google Reader integration username and password (Miniflux Settings → Integrations, not your web login)");
-                    return;
+                        ToastService.showInfo("Google Reader connection successful!");
+                } else {
+                    if (typeof ToastService !== "undefined")
+                        ToastService.showError("Connection failed: server rejected the authenticated request");
                 }
-                var userInfoArgv = GoogleReader.greaderCurlArgv("GET", url, "/reader/api/0/user-info", loginResult.session.authToken, null);
-                Proc.runCommand(null, userInfoArgv,
-                    function(userInfoOutput, userInfoExitCode) {
-                        var split = GoogleReader.splitHttpStatus(userInfoOutput || "");
-                        if (split.status === 200) {
-                            if (typeof ToastService !== "undefined")
-                                ToastService.showInfo("Google Reader connection successful!");
-                        } else {
-                            if (typeof ToastService !== "undefined")
-                                ToastService.showError("Connection failed: server rejected the authenticated request");
-                        }
-                    }, undefined, 30000
-                );
-            }, undefined, 30000
-        );
+            }, undefined, 30000);
+        }, undefined, 30000);
     }
 
     // The injected pluginService is NOT always the real PluginService: a
     // desktop-widget instance gets a reduced shim with no load/savePluginState.
     // Feature-detect and fall back rather than throwing (which would abort this
     // handler and leave the settings page half-initialised).
-    readonly property var stateService: ReaderState.resolveStateService(
-        typeof PluginService !== "undefined" ? PluginService : null,
-        root.pluginService)
+    readonly property var stateService: ReaderState.resolveStateService(typeof PluginService !== "undefined" ? PluginService : null, root.pluginService)
 
     // Asked, never string-matched, for every question that is really about
     // backend behaviour rather than which backend is selected -- see the
@@ -130,7 +121,9 @@ PluginSettings {
     // a stored mode from a build that predates a given backend (e.g. a user
     // who downgrades past "greader") must not bind this to undefined.
     readonly property var backends: Backends.createBackends({
-        FeedParser: FeedParser, ReaderState: ReaderState, GoogleReader: GoogleReader
+        FeedParser: FeedParser,
+        ReaderState: ReaderState,
+        GoogleReader: GoogleReader
     })
     readonly property var currentBackend: backends[sourceModeSetting.value] || backends.standard
 
@@ -175,7 +168,14 @@ PluginSettings {
                 return;
             }
         }
-        currentFeeds = currentFeeds.concat([{ name: name, url: url, enabled: true, addedAt: Date.now() }]);
+        currentFeeds = currentFeeds.concat([
+            {
+                name: name,
+                url: url,
+                enabled: true,
+                addedAt: Date.now()
+            }
+        ]);
         root.saveValue("feeds", currentFeeds);
         if (typeof ToastService !== "undefined") {
             ToastService.showInfo("Added " + name);
@@ -195,16 +195,28 @@ PluginSettings {
     function validateFeedUrl(rawUrl) {
         var url = (rawUrl || "").trim();
         if (!url) {
-            return { ok: false, error: "Feed URL is required", url: "" };
+            return {
+                ok: false,
+                error: "Feed URL is required",
+                url: ""
+            };
         }
         if (!/^https?:\/\//i.test(url)) {
             url = "https://" + url;
         }
         var looksValid = /^https?:\/\/[^\s]+\.[^\s]+/i.test(url) || /^https?:\/\/localhost(:\d+)?/i.test(url);
         if (!looksValid) {
-            return { ok: false, error: "Enter a valid URL (starting with http:// or https://)", url: "" };
+            return {
+                ok: false,
+                error: "Enter a valid URL (starting with http:// or https://)",
+                url: ""
+            };
         }
-        return { ok: true, error: "", url: url };
+        return {
+            ok: true,
+            error: "",
+            url: url
+        };
     }
 
     // The ONE place a feed is actually written into the `feeds` array from
@@ -231,7 +243,15 @@ PluginSettings {
 
         var currentFeeds = root.loadValue("feeds", []);
         if (root.editingIndex === -1) {
-            currentFeeds = currentFeeds.concat([{ name: name, url: url, enabled: true, addedAt: Date.now(), intervalMinutes: interval }]);
+            currentFeeds = currentFeeds.concat([
+                {
+                    name: name,
+                    url: url,
+                    enabled: true,
+                    addedAt: Date.now(),
+                    intervalMinutes: interval
+                }
+            ]);
         } else {
             var existing = currentFeeds[root.editingIndex] || {};
             currentFeeds[root.editingIndex] = {
@@ -347,7 +367,6 @@ PluginSettings {
         }
     }
 
-
     // The status list is a SNAPSHOT read from the state tier, and the widget
     // writes that tier from a different component whenever a fetch finalises.
     // Refreshing only on open meant a feed added while this panel was already
@@ -404,9 +423,18 @@ PluginSettings {
         label: "Source Mode"
         description: "Standard fetches RSS/Atom feeds directly. Miniflux and Google Reader sync with a server."
         options: [
-            { label: "Standard", value: "standard" },
-            { label: "Miniflux", value: "miniflux" },
-            { label: "Google Reader", value: "greader" }
+            {
+                label: "Standard",
+                value: "standard"
+            },
+            {
+                label: "Miniflux",
+                value: "miniflux"
+            },
+            {
+                label: "Google Reader",
+                value: "greader"
+            }
         ]
         defaultValue: "standard"
     }
@@ -440,7 +468,8 @@ PluginSettings {
                 text: root.loadValue("minifluxUrl", "")
                 onTextChanged: root.saveValue("minifluxUrl", text)
                 onFocusStateChanged: hasFocus => {
-                    if (hasFocus) root.ensureItemVisible(minifluxUrlField);
+                    if (hasFocus)
+                        root.ensureItemVisible(minifluxUrlField);
                 }
             }
         }
@@ -464,7 +493,8 @@ PluginSettings {
                 text: root.loadValue("minifluxToken", "")
                 onTextChanged: root.saveValue("minifluxToken", text)
                 onFocusStateChanged: hasFocus => {
-                    if (hasFocus) root.ensureItemVisible(minifluxTokenField);
+                    if (hasFocus)
+                        root.ensureItemVisible(minifluxTokenField);
                 }
             }
         }
@@ -500,28 +530,18 @@ PluginSettings {
                             ToastService.showError("Enter URL and token first");
                         return;
                     }
-                    Proc.runCommand(null,
-                        ["curl", "-sS", "--fail",
-                         "--connect-timeout", "5", "--max-time", "25",
-                         "--proto", "=http,https",
-                         "--proto-redir", "=http,https",
-                         "--max-redirs", "5",
-                         "--max-filesize", "5000000",
-                         "-H", "X-Auth-Token: " + token,
-                         url + "/v1/me"],
-                        function(output, exitCode) {
-                            if (exitCode === 0 && output && output.indexOf('"id"') !== -1) {
-                                if (typeof ToastService !== "undefined")
-                                    ToastService.showInfo("Miniflux connection successful!");
-                                root.fetchMinifluxFeeds();
-                            } else {
-                                // Never include the URL/token in this message --
-                                // describe the failure only (same rule as above).
-                                if (typeof ToastService !== "undefined")
-                                    ToastService.showError("Connection failed: check URL and token");
-                            }
-                        }, undefined, 30000
-                    );
+                    Proc.runCommand(null, ["curl", "-sS", "--fail", "--connect-timeout", "5", "--max-time", "25", "--proto", "=http,https", "--proto-redir", "=http,https", "--max-redirs", "5", "--max-filesize", "5000000", "-H", "X-Auth-Token: " + token, url + "/v1/me"], function (output, exitCode) {
+                        if (exitCode === 0 && output && output.indexOf('"id"') !== -1) {
+                            if (typeof ToastService !== "undefined")
+                                ToastService.showInfo("Miniflux connection successful!");
+                            root.fetchMinifluxFeeds();
+                        } else {
+                            // Never include the URL/token in this message --
+                            // describe the failure only (same rule as above).
+                            if (typeof ToastService !== "undefined")
+                                ToastService.showError("Connection failed: check URL and token");
+                        }
+                    }, undefined, 30000);
                 }
             }
 
@@ -565,7 +585,8 @@ PluginSettings {
                 text: root.loadValue("greaderUrl", "")
                 onTextChanged: root.saveValue("greaderUrl", text)
                 onFocusStateChanged: hasFocus => {
-                    if (hasFocus) root.ensureItemVisible(greaderUrlField);
+                    if (hasFocus)
+                        root.ensureItemVisible(greaderUrlField);
                 }
             }
         }
@@ -599,7 +620,8 @@ PluginSettings {
                 text: root.loadValue("greaderUsername", "")
                 onTextChanged: root.saveValue("greaderUsername", text)
                 onFocusStateChanged: hasFocus => {
-                    if (hasFocus) root.ensureItemVisible(greaderUsernameField);
+                    if (hasFocus)
+                        root.ensureItemVisible(greaderUsernameField);
                 }
             }
         }
@@ -632,7 +654,8 @@ PluginSettings {
                 text: root.loadValue("greaderPassword", "")
                 onTextChanged: root.saveValue("greaderPassword", text)
                 onFocusStateChanged: hasFocus => {
-                    if (hasFocus) root.ensureItemVisible(greaderPasswordField);
+                    if (hasFocus)
+                        root.ensureItemVisible(greaderPasswordField);
                 }
             }
         }
@@ -644,11 +667,7 @@ PluginSettings {
             DankButton {
                 text: "Test Connection"
                 iconName: "wifi_tethering"
-                onClicked: root.testGreaderConnection(
-                    greaderUrlField.text.trim().replace(/\/$/, ""),
-                    greaderUsernameField.text.trim(),
-                    greaderPasswordField.text.trim()
-                )
+                onClicked: root.testGreaderConnection(greaderUrlField.text.trim().replace(/\/$/, ""), greaderUsernameField.text.trim(), greaderPasswordField.text.trim())
             }
         }
     }
@@ -691,275 +710,285 @@ PluginSettings {
             Layout.fillWidth: true
             spacing: Theme.spacingS
 
-        readonly property var presets: ExportProvider.EXPORT_OPEN_PRESETS
-        // resolveExportConfig() tells "never saved" apart from "saved as
-        // empty" by whether the `exportOpenCommand` KEY is present at all --
-        // so this object must only carry that key when loadValue actually
-        // found one, not whenever this binding happens to construct an
-        // object literal (which would always have the key, undefined or
-        // not, and make every legacy config look already-migrated).
-        readonly property var resolved: {
-            var saved = { exportKind: root.loadValue("exportKind") };
-            var storedCommand = root.loadValue("exportOpenCommand");
-            if (storedCommand !== undefined)
-                saved.exportOpenCommand = storedCommand;
-            return ExportProvider.resolveExportConfig(saved);
-        }
-        property string presetId: resolved.exportKind
-
-        function labelForId(id) {
-            for (var i = 0; i < presets.length; i++) {
-                if (presets[i].id === id) return presets[i].label;
+            readonly property var presets: ExportProvider.EXPORT_OPEN_PRESETS
+            // resolveExportConfig() tells "never saved" apart from "saved as
+            // empty" by whether the `exportOpenCommand` KEY is present at all --
+            // so this object must only carry that key when loadValue actually
+            // found one, not whenever this binding happens to construct an
+            // object literal (which would always have the key, undefined or
+            // not, and make every legacy config look already-migrated).
+            readonly property var resolved: {
+                var saved = {
+                    exportKind: root.loadValue("exportKind")
+                };
+                var storedCommand = root.loadValue("exportOpenCommand");
+                if (storedCommand !== undefined)
+                    saved.exportOpenCommand = storedCommand;
+                return ExportProvider.resolveExportConfig(saved);
             }
-            return id;
-        }
+            property string presetId: resolved.exportKind
 
-        DankDropdown {
-            width: parent.width
-            text: "Open After Export"
-            description: "Pick a starting point, then edit the Command field below to match your setup."
-            currentValue: exportPresetColumn.labelForId(exportPresetColumn.presetId)
-            options: exportPresetColumn.presets.map(p => p.label)
-            onValueChanged: newLabel => {
-                var preset = exportPresetColumn.presets.find(p => p.label === newLabel);
-                if (!preset) return;
-                exportPresetColumn.presetId = preset.id;
-                root.saveValue("exportKind", preset.id);
-                // Fills the command field from the preset -- this is the ONE
-                // place that happens; editing the field afterward never
-                // reaches back here to change presetId again.
-                exportOpenCommandField.text = preset.template;
+            function labelForId(id) {
+                for (var i = 0; i < presets.length; i++) {
+                    if (presets[i].id === id)
+                        return presets[i].label;
+                }
+                return id;
             }
-        }
-    }
 
-    Column {
-        Layout.fillWidth: true
-        spacing: Theme.spacingXS
-
-        StyledText {
-            text: "Folder"
-            font.pixelSize: Theme.fontSizeSmall
-            color: root.roleColours.surfaceVariantText
-        }
-
-        StyledText {
-            width: parent.width
-            text: "Absolute path, or vault-relative for Obsidian."
-            font.pixelSize: Theme.fontSizeSmall - 2
-            color: root.roleColours.surfaceVariantText
-            wrapMode: Text.WordWrap
-        }
-
-        DankTextField {
-            id: exportRootField
-            width: parent.width
-            placeholderText: "/home/you/notes  or  Inbox"
-            text: root.loadValue("exportRoot", "")
-            onTextChanged: root.saveValue("exportRoot", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(exportRootField);
+            DankDropdown {
+                width: parent.width
+                text: "Open After Export"
+                description: "Pick a starting point, then edit the Command field below to match your setup."
+                currentValue: exportPresetColumn.labelForId(exportPresetColumn.presetId)
+                options: exportPresetColumn.presets.map(p => p.label)
+                onValueChanged: newLabel => {
+                    var preset = exportPresetColumn.presets.find(p => p.label === newLabel);
+                    if (!preset)
+                        return;
+                    exportPresetColumn.presetId = preset.id;
+                    root.saveValue("exportKind", preset.id);
+                    // Fills the command field from the preset -- this is the ONE
+                    // place that happens; editing the field afterward never
+                    // reaches back here to change presetId again.
+                    exportOpenCommandField.text = preset.template;
+                }
             }
         }
-    }
 
-    // Vault name is Obsidian-specific identity, not a behavioural question --
-    // every other preset's equivalent is baked into the command itself, so
-    // this is gated on which preset is selected directly (same reasoning as
-    // the Google Reader/Miniflux credential fields above, not a capability
-    // check).
-    Column {
-        Layout.fillWidth: true
-        spacing: Theme.spacingXS
-        visible: exportPresetColumn.presetId === "obsidian"
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
 
-        StyledText {
-            text: "Vault Name"
-            font.pixelSize: Theme.fontSizeSmall
-            color: root.roleColours.surfaceVariantText
-        }
+            StyledText {
+                text: "Folder"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
 
-        StyledText {
-            width: parent.width
-            text: "Used only to build the obsidian://open callback after a note is written."
-            font.pixelSize: Theme.fontSizeSmall - 2
-            color: root.roleColours.surfaceVariantText
-            wrapMode: Text.WordWrap
-        }
+            StyledText {
+                width: parent.width
+                text: "Absolute path, or vault-relative for Obsidian."
+                font.pixelSize: Theme.fontSizeSmall - 2
+                color: root.roleColours.surfaceVariantText
+                wrapMode: Text.WordWrap
+            }
 
-        DankTextField {
-            id: exportVaultField
-            width: parent.width
-            placeholderText: "My Vault"
-            text: root.loadValue("exportVault", "")
-            onTextChanged: root.saveValue("exportVault", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(exportVaultField);
+            DankTextField {
+                id: exportRootField
+                width: parent.width
+                placeholderText: "/home/you/notes  or  Inbox"
+                text: root.loadValue("exportRoot", "")
+                onTextChanged: root.saveValue("exportRoot", text)
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus)
+                        root.ensureItemVisible(exportRootField);
+                }
             }
         }
-    }
 
-    Column {
-        Layout.fillWidth: true
-        spacing: Theme.spacingXS
+        // Vault name is Obsidian-specific identity, not a behavioural question --
+        // every other preset's equivalent is baked into the command itself, so
+        // this is gated on which preset is selected directly (same reasoning as
+        // the Google Reader/Miniflux credential fields above, not a capability
+        // check).
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
+            visible: exportPresetColumn.presetId === "obsidian"
 
-        StyledText {
-            text: "Command"
-            font.pixelSize: Theme.fontSizeSmall
-            color: root.roleColours.surfaceVariantText
-        }
+            StyledText {
+                text: "Vault Name"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
 
-        StyledText {
-            width: parent.width
-            text: "{path} is substituted as its own argument, never pasted into a shell string, so a note's path is safe even if its title contained spaces, quotes or semicolons. The terminal-based presets assume kitty, because that is what this machine runs -- edit this if you use a different terminal. Leave empty to just write the file."
-            font.pixelSize: Theme.fontSizeSmall - 2
-            color: root.roleColours.surfaceVariantText
-            wrapMode: Text.WordWrap
-        }
+            StyledText {
+                width: parent.width
+                text: "Used only to build the obsidian://open callback after a note is written."
+                font.pixelSize: Theme.fontSizeSmall - 2
+                color: root.roleColours.surfaceVariantText
+                wrapMode: Text.WordWrap
+            }
 
-        DankTextField {
-            id: exportOpenCommandField
-            width: parent.width
-            placeholderText: "code {path}"
-            text: exportPresetColumn.resolved.exportOpenCommand
-            onTextChanged: root.saveValue("exportOpenCommand", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(exportOpenCommandField);
+            DankTextField {
+                id: exportVaultField
+                width: parent.width
+                placeholderText: "My Vault"
+                text: root.loadValue("exportVault", "")
+                onTextChanged: root.saveValue("exportVault", text)
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus)
+                        root.ensureItemVisible(exportVaultField);
+                }
             }
         }
-    }
 
-    Column {
-        Layout.fillWidth: true
-        spacing: Theme.spacingXS
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
 
-        StyledText {
-            text: "Filename Template"
-            font.pixelSize: Theme.fontSizeSmall
-            color: root.roleColours.surfaceVariantText
-        }
+            StyledText {
+                text: "Command"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
 
-        StyledText {
-            width: parent.width
-            text: "{title}, {id} and {source} are substituted, then sanitised and disambiguated before writing -- see ExportProvider.js."
-            font.pixelSize: Theme.fontSizeSmall - 2
-            color: root.roleColours.surfaceVariantText
-            wrapMode: Text.WordWrap
-        }
+            StyledText {
+                width: parent.width
+                text: "{path} is substituted as its own argument, never pasted into a shell string, so a note's path is safe even if its title contained spaces, quotes or semicolons. The terminal-based presets assume kitty, because that is what this machine runs -- edit this if you use a different terminal. Leave empty to just write the file."
+                font.pixelSize: Theme.fontSizeSmall - 2
+                color: root.roleColours.surfaceVariantText
+                wrapMode: Text.WordWrap
+            }
 
-        DankTextField {
-            id: exportTemplateField
-            width: parent.width
-            placeholderText: "{title}.md"
-            text: root.loadValue("exportTemplate", "{title}.md")
-            onTextChanged: root.saveValue("exportTemplate", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(exportTemplateField);
+            DankTextField {
+                id: exportOpenCommandField
+                width: parent.width
+                placeholderText: "code {path}"
+                text: exportPresetColumn.resolved.exportOpenCommand
+                onTextChanged: root.saveValue("exportOpenCommand", text)
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus)
+                        root.ensureItemVisible(exportOpenCommandField);
+                }
             }
         }
-    }
 
-    Column {
-        Layout.fillWidth: true
-        spacing: Theme.spacingXS
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
 
-        StyledText {
-            text: "Tags"
-            font.pixelSize: Theme.fontSizeSmall
-            color: root.roleColours.surfaceVariantText
-        }
-
-        StyledText {
-            width: parent.width
-            text: "Comma-separated. Applied to every exported note's frontmatter (and as wikilinks in the body, for Obsidian)."
-            font.pixelSize: Theme.fontSizeSmall - 2
-            color: root.roleColours.surfaceVariantText
-            wrapMode: Text.WordWrap
-        }
-
-        DankTextField {
-            id: exportTagsField
-            width: parent.width
-            placeholderText: "reading, rss"
-            text: (root.loadValue("exportTags", []) || []).join(", ")
-            // Parse and save on commit only, not on every keystroke. The
-            // field's `text:` above is a live binding to the saved value,
-            // so saving on every character re-runs that binding mid-type;
-            // a still-empty second tag ("news,") is dropped by the filter
-            // below, and the rebind then overwrites the field with "news"
-            // -- silently eating the comma the user just typed. Committing
-            // only on editingFinished (Enter, or focus lost) means the
-            // rebind never fires until the user is done typing.
-            onEditingFinished: {
-                var tags = text.split(",").map(function (t) {
-                    return t.trim();
-                }).filter(function (t) {
-                    return t.length > 0;
-                });
-                root.saveValue("exportTags", tags);
+            StyledText {
+                text: "Filename Template"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
             }
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(exportTagsField);
+
+            StyledText {
+                width: parent.width
+                text: "{title}, {id} and {source} are substituted, then sanitised and disambiguated before writing -- see ExportProvider.js."
+                font.pixelSize: Theme.fontSizeSmall - 2
+                color: root.roleColours.surfaceVariantText
+                wrapMode: Text.WordWrap
+            }
+
+            DankTextField {
+                id: exportTemplateField
+                width: parent.width
+                placeholderText: "{title}.md"
+                text: root.loadValue("exportTemplate", "{title}.md")
+                onTextChanged: root.saveValue("exportTemplate", text)
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus)
+                        root.ensureItemVisible(exportTemplateField);
+                }
             }
         }
-    }
 
-    ToggleSetting {
-        Layout.fillWidth: true
-        settingKey: "exportFullText"
-        label: "Fetch full article text on export"
-        description: "Fetches each exported item's own page and extracts the article body instead of using the feed's summary. Off by default -- this makes one outbound request per exported article to whatever site the feed links to, so it must be opt-in. A page that cannot be fetched, or that looks like a section front rather than an article, falls back to the summary automatically."
-        defaultValue: false
-    }
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
 
-    // Gated on the export folder being set, same as the header comment above
-    // already promises for this whole section ("no export button or
-    // shortcut appears until one is set") -- an attachment folder is
-    // meaningless with nowhere to export notes into in the first place.
-    ToggleSetting {
-        Layout.fillWidth: true
-        id: exportImagesSetting
-        visible: exportRootField.text.trim() !== ""
-        settingKey: "exportImages"
-        label: "Download Images on Export"
-        description: "Downloads each exported article's images into an attachments folder next to the notes, so they render locally in Obsidian and Neovim instead of depending on the original site staying up."
-        defaultValue: false
-    }
+            StyledText {
+                text: "Tags"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
 
-    Column {
-        Layout.fillWidth: true
-        spacing: Theme.spacingXS
-        visible: exportRootField.text.trim() !== "" && exportImagesSetting.value
+            StyledText {
+                width: parent.width
+                text: "Comma-separated. Applied to every exported note's frontmatter (and as wikilinks in the body, for Obsidian)."
+                font.pixelSize: Theme.fontSizeSmall - 2
+                color: root.roleColours.surfaceVariantText
+                wrapMode: Text.WordWrap
+            }
 
-        StyledText {
-            text: "Attachment Folder"
-            font.pixelSize: Theme.fontSizeSmall
-            color: root.roleColours.surfaceVariantText
-        }
-
-        StyledText {
-            width: parent.width
-            // Spelled out because the default is a folder the user never
-            // chose: images landing in a subfolder they did not ask for reads
-            // as the setting being ignored, even though a subfolder is the
-            // tidier answer and what most vaults expect.
-            text: "Relative to the notes folder above. Defaults to \"attachments\"; clear it to keep images beside the notes instead."
-            font.pixelSize: Theme.fontSizeSmall - 2
-            color: root.roleColours.surfaceVariantText
-            wrapMode: Text.WordWrap
-        }
-
-        DankTextField {
-            id: attachmentDirField
-            width: parent.width
-            placeholderText: "attachments"
-            text: root.loadValue("attachmentDir", "attachments")
-            onTextChanged: root.saveValue("attachmentDir", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(attachmentDirField);
+            DankTextField {
+                id: exportTagsField
+                width: parent.width
+                placeholderText: "reading, rss"
+                text: (root.loadValue("exportTags", []) || []).join(", ")
+                // Parse and save on commit only, not on every keystroke. The
+                // field's `text:` above is a live binding to the saved value,
+                // so saving on every character re-runs that binding mid-type;
+                // a still-empty second tag ("news,") is dropped by the filter
+                // below, and the rebind then overwrites the field with "news"
+                // -- silently eating the comma the user just typed. Committing
+                // only on editingFinished (Enter, or focus lost) means the
+                // rebind never fires until the user is done typing.
+                onEditingFinished: {
+                    var tags = text.split(",").map(function (t) {
+                        return t.trim();
+                    }).filter(function (t) {
+                        return t.length > 0;
+                    });
+                    root.saveValue("exportTags", tags);
+                }
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus)
+                        root.ensureItemVisible(exportTagsField);
+                }
             }
         }
-    }
+
+        ToggleSetting {
+            Layout.fillWidth: true
+            settingKey: "exportFullText"
+            label: "Fetch full article text on export"
+            description: "Fetches each exported item's own page and extracts the article body instead of using the feed's summary. Off by default -- this makes one outbound request per exported article to whatever site the feed links to, so it must be opt-in. A page that cannot be fetched, or that looks like a section front rather than an article, falls back to the summary automatically."
+            defaultValue: false
+        }
+
+        // Gated on the export folder being set, same as the header comment above
+        // already promises for this whole section ("no export button or
+        // shortcut appears until one is set") -- an attachment folder is
+        // meaningless with nowhere to export notes into in the first place.
+        ToggleSetting {
+            id: exportImagesSetting
+            Layout.fillWidth: true
+            visible: exportRootField.text.trim() !== ""
+            settingKey: "exportImages"
+            label: "Download Images on Export"
+            description: "Downloads each exported article's images into an attachments folder next to the notes, so they render locally in Obsidian and Neovim instead of depending on the original site staying up."
+            defaultValue: false
+        }
+
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
+            visible: exportRootField.text.trim() !== "" && exportImagesSetting.value
+
+            StyledText {
+                text: "Attachment Folder"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
+
+            StyledText {
+                width: parent.width
+                // Spelled out because the default is a folder the user never
+                // chose: images landing in a subfolder they did not ask for reads
+                // as the setting being ignored, even though a subfolder is the
+                // tidier answer and what most vaults expect.
+                text: "Relative to the notes folder above. Defaults to \"attachments\"; clear it to keep images beside the notes instead."
+                font.pixelSize: Theme.fontSizeSmall - 2
+                color: root.roleColours.surfaceVariantText
+                wrapMode: Text.WordWrap
+            }
+
+            DankTextField {
+                id: attachmentDirField
+                width: parent.width
+                placeholderText: "attachments"
+                text: root.loadValue("attachmentDir", "attachments")
+                onTextChanged: root.saveValue("attachmentDir", text)
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus)
+                        root.ensureItemVisible(attachmentDirField);
+                }
+            }
+        }
     } // end Notes Export DankCollapsibleSection
 
     // ─── Refresh Settings (always visible) ───
@@ -968,106 +997,121 @@ PluginSettings {
         title: "Refresh Settings"
         expanded: false
 
-    SliderSetting {
-        Layout.fillWidth: true
-        settingKey: "updateInterval"
-        label: "Refresh Interval"
-        description: "How often feeds are fetched (in minutes)"
-        defaultValue: 30
-        minimum: 5
-        maximum: 1440
-        unit: "min"
-        // Note: stored as minutes in settings, converted to seconds in widget
-    }
+        SliderSetting {
+            Layout.fillWidth: true
+            settingKey: "updateInterval"
+            label: "Refresh Interval"
+            description: "How often feeds are fetched (in minutes)"
+            defaultValue: 30
+            minimum: 5
+            maximum: 1440
+            unit: "min"
+            // Note: stored as minutes in settings, converted to seconds in widget
+        }
 
-    SliderSetting {
-        Layout.fillWidth: true
-        settingKey: "maxItems"
-        label: "Maximum Items"
-        description: "Maximum number of feed items to display"
-        defaultValue: 20
-        minimum: 5
-        maximum: 50
-        unit: ""
-    }
+        SliderSetting {
+            Layout.fillWidth: true
+            settingKey: "maxItems"
+            label: "Maximum Items"
+            description: "Maximum number of feed items to display"
+            defaultValue: 20
+            minimum: 5
+            maximum: 50
+            unit: ""
+        }
 
-    SelectionSetting {
-        Layout.fillWidth: true
-        id: sortModeSetting
-        settingKey: "sortMode"
-        label: "Sort Order"
-        description: "How feed items are ordered in the widget"
-        options: [
-            { label: "Newest First", value: "newest" },
-            { label: "Oldest First", value: "oldest" },
-            { label: "Group by Feed", value: "byFeed" }
-        ]
-        defaultValue: "newest"
-    }
+        SelectionSetting {
+            id: sortModeSetting
+            Layout.fillWidth: true
+            settingKey: "sortMode"
+            label: "Sort Order"
+            description: "How feed items are ordered in the widget"
+            options: [
+                {
+                    label: "Newest First",
+                    value: "newest"
+                },
+                {
+                    label: "Oldest First",
+                    value: "oldest"
+                },
+                {
+                    label: "Group by Feed",
+                    value: "byFeed"
+                }
+            ]
+            defaultValue: "newest"
+        }
 
-    SliderSetting {
-        Layout.fillWidth: true
-        visible: sortModeSetting.value === "byFeed"
-        settingKey: "maxPerFeed"
-        label: "Items per Feed"
-        description: "Maximum items shown from each feed when grouping"
-        defaultValue: 5
-        minimum: 1
-        maximum: 20
-        unit: ""
-    }
+        SliderSetting {
+            Layout.fillWidth: true
+            visible: sortModeSetting.value === "byFeed"
+            settingKey: "maxPerFeed"
+            label: "Items per Feed"
+            description: "Maximum items shown from each feed when grouping"
+            defaultValue: 5
+            minimum: 1
+            maximum: 20
+            unit: ""
+        }
 
-    SelectionSetting {
-        Layout.fillWidth: true
-        settingKey: "viewMode"
-        label: "View Mode"
-        description: "Compact shows title-only rows; Expanded shows descriptions and thumbnails"
-        options: [
-            { label: "Expanded", value: "expanded" },
-            { label: "Compact", value: "compact" }
-        ]
-        defaultValue: "expanded"
-    }
+        SelectionSetting {
+            Layout.fillWidth: true
+            settingKey: "viewMode"
+            label: "View Mode"
+            description: "Compact shows title-only rows; Expanded shows descriptions and thumbnails"
+            options: [
+                {
+                    label: "Expanded",
+                    value: "expanded"
+                },
+                {
+                    label: "Compact",
+                    value: "compact"
+                }
+            ]
+            defaultValue: "expanded"
+        }
 
-    ToggleSetting {
-        Layout.fillWidth: true
-        settingKey: "notifyNewItems"
-        label: "New Item Notifications"
-        description: "Show a toast notification when new items appear after a refresh"
-        defaultValue: true
-    }
+        ToggleSetting {
+            Layout.fillWidth: true
+            settingKey: "notifyNewItems"
+            label: "New Item Notifications"
+            description: "Show a toast notification when new items appear after a refresh"
+            defaultValue: true
+        }
 
-    ToggleSetting {
-        Layout.fillWidth: true
-        settingKey: "showFeedName"
-        label: "Show Feed Source"
-        description: "Display the feed name next to each item title"
-        defaultValue: true
-    }
+        ToggleSetting {
+            Layout.fillWidth: true
+            settingKey: "showFeedName"
+            label: "Show Feed Source"
+            description: "Display the feed name next to each item title"
+            defaultValue: true
+        }
 
-    ToggleSetting {
-        Layout.fillWidth: true
-        settingKey: "showImages"
-        label: "Show Thumbnails"
-        description: "Display thumbnail images when available in feed items"
-        defaultValue: true
-    }
+        ToggleSetting {
+            Layout.fillWidth: true
+            settingKey: "showImages"
+            label: "Show Thumbnails"
+            description: "Display thumbnail images when available in feed items"
+            defaultValue: true
+        }
 
-    ToggleSetting {
-        Layout.fillWidth: true
-        settingKey: "markReadOnScroll"
-        label: "Mark Read on Scroll"
-        description: "Mark items as read automatically as they scroll past, instead of only on click or open"
-        defaultValue: false
-    }
+        ToggleSetting {
+            Layout.fillWidth: true
+            settingKey: "markReadOnScroll"
+            label: "Mark Read on Scroll"
+            description: "Mark items as read automatically as they scroll past, instead of only on click or open"
+            defaultValue: false
+        }
 
-    ToggleSetting {
-        Layout.fillWidth: true
-        settingKey: "openInBrowser"
-        label: "Open Links in Browser"
-        description: "Click feed items to open them in your browser"
-        defaultValue: true
-    }
+        ToggleSetting {
+            Layout.fillWidth: true
+            settingKey: "openInBrowser"
+            label: "Open Links in Browser"
+            description: "Click feed items to open them in your browser"
+            defaultValue: true
+        }
     } // end Refresh Settings DankCollapsibleSection
 
     // ─── Feed Management ───
@@ -1081,103 +1125,113 @@ PluginSettings {
     //
     // The only section that starts expanded, per the settings-panel
     // requirements: it's the section most people open this panel for.
-    DankCollapsibleSection {
+    // Feed Management is deliberately NOT collapsible.
+    //
+    // It is a thousand lines across seven blocks -- an add/edit form, a
+    // discovery panel, the feed list, OPML, quick-add presets and a
+    // server-side subscription list -- and wrapping that much structure in a
+    // clipped, height-animated container rendered it jumbled. It is also the
+    // section the panel is usually opened for, so it was going to be expanded
+    // every time regardless. The sections that are genuinely a handful of
+    // controls each stay collapsible; this one earns its space.
+    StyledText {
         width: parent.width
-        title: "Feed Management"
-        expanded: true
+        text: "Feed Management"
+        font.pixelSize: Theme.fontSizeMedium
+        font.weight: Font.Medium
+        color: root.roleColours.surfaceText
+    }
 
-        // ─── Subscription List (read-only) ───
-        // Shown for any backend that keeps subscriptions on the server rather
-        // than in this plugin's own settings -- there is nothing local to add,
-        // edit, or reorder, only a snapshot of what the server already has.
-        // The list itself is still populated only by fetchMinifluxFeeds()
-        // (Miniflux's /v1/feeds); Google Reader shows this section empty until
-        // it gets its own feed-listing call.
-        StyledText {
-            Layout.fillWidth: true
-            text: "Subscription List"
-            font.pixelSize: Theme.fontSizeMedium
-            font.weight: Font.Medium
-            color: root.roleColours.surfaceText
-            visible: currentBackend.capabilities.serverState
-        }
+    // ─── Subscription List (read-only) ───
+    // Shown for any backend that keeps subscriptions on the server rather
+    // than in this plugin's own settings -- there is nothing local to add,
+    // edit, or reorder, only a snapshot of what the server already has.
+    // The list itself is still populated only by fetchMinifluxFeeds()
+    // (Miniflux's /v1/feeds); Google Reader shows this section empty until
+    // it gets its own feed-listing call.
+    StyledText {
+        width: parent.width
+        text: "Subscription List"
+        font.pixelSize: Theme.fontSizeMedium
+        font.weight: Font.Medium
+        color: root.roleColours.surfaceText
+        visible: currentBackend.capabilities.serverState
+    }
 
-        StyledRect {
-            Layout.fillWidth: true
-            height: Math.max(80, minifluxFeedsColumn.implicitHeight + Theme.spacingL * 2)
-            radius: Theme.cornerRadius
-            color: root.roleColours.surfaceContainerHigh
-            visible: currentBackend.capabilities.serverState
+    StyledRect {
+        width: parent.width
+        height: Math.max(80, minifluxFeedsColumn.implicitHeight + Theme.spacingL * 2)
+        radius: Theme.cornerRadius
+        color: root.roleColours.surfaceContainerHigh
+        visible: currentBackend.capabilities.serverState
 
-            Column {
-                id: minifluxFeedsColumn
-                anchors.fill: parent
-                anchors.margins: Theme.spacingL
-                spacing: Theme.spacingS
+        Column {
+            id: minifluxFeedsColumn
+            anchors.fill: parent
+            anchors.margins: Theme.spacingL
+            spacing: Theme.spacingS
 
-                Repeater {
-                    model: root.minifluxFeedsList
+            Repeater {
+                model: root.minifluxFeedsList
 
-                    delegate: RowLayout {
-                        required property var modelData
-                        width: minifluxFeedsColumn.width
-                        spacing: Theme.spacingS
+                delegate: RowLayout {
+                    required property var modelData
+                    width: minifluxFeedsColumn.width
+                    spacing: Theme.spacingS
 
-                        DankIcon {
-                            name: "rss_feed"
-                            size: 14
-                            color: root.roleColours.primary
+                    DankIcon {
+                        name: "rss_feed"
+                        size: 14
+                        color: root.roleColours.primary
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 1
+
+                        StyledText {
+                            text: modelData.title || ""
+                            font.pixelSize: Theme.fontSizeSmall
+                            font.weight: Font.Medium
+                            color: root.roleColours.surfaceText
+                            Layout.fillWidth: true
+                            elide: Text.ElideRight
                         }
 
-                        ColumnLayout {
+                        StyledText {
+                            text: modelData.feed_url || modelData.site_url || ""
+                            font.pixelSize: Theme.fontSizeSmall - 2
+                            color: root.roleColours.surfaceVariantText
                             Layout.fillWidth: true
-                            spacing: 1
-
-                            StyledText {
-                                text: modelData.title || ""
-                                font.pixelSize: Theme.fontSizeSmall
-                                font.weight: Font.Medium
-                                color: root.roleColours.surfaceText
-                                Layout.fillWidth: true
-                                elide: Text.ElideRight
-                            }
-
-                            StyledText {
-                                text: modelData.feed_url || modelData.site_url || ""
-                                font.pixelSize: Theme.fontSizeSmall - 2
-                                color: root.roleColours.surfaceVariantText
-                                Layout.fillWidth: true
-                                elide: Text.ElideMiddle
-                            }
+                            elide: Text.ElideMiddle
                         }
                     }
                 }
+            }
 
-                StyledText {
-                    text: root.minifluxFeedsList.length === 0
-                        ? "No feeds loaded — test connection first"
-                        : ""
-                    visible: root.minifluxFeedsList.length === 0
-                    font.pixelSize: Theme.fontSizeSmall
-                    color: root.roleColours.surfaceVariantText
-                    width: parent.width
-                }
+            StyledText {
+                text: root.minifluxFeedsList.length === 0 ? "No feeds loaded — test connection first" : ""
+                visible: root.minifluxFeedsList.length === 0
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+                width: parent.width
             }
         }
+    }
 
-        // Only meaningful for a backend with no server-side subscription list
-        // of its own -- adding, editing, and reordering feeds here is exactly
-        // what a serverState backend's own subscription management (above)
-        // already covers. The section title itself now says "Feed
-        // Management" so this inner heading is dropped as redundant.
-        StyledRect {
-            Layout.fillWidth: true
-            height: addFeedColumn.implicitHeight + Theme.spacingL * 2
-            radius: Theme.cornerRadius
-            color: root.roleColours.surfaceContainerHigh
-            visible: !currentBackend.capabilities.serverState
+    // Only meaningful for a backend with no server-side subscription list
+    // of its own -- adding, editing, and reordering feeds here is exactly
+    // what a serverState backend's own subscription management (above)
+    // already covers. The section title itself now says "Feed
+    // Management" so this inner heading is dropped as redundant.
+    StyledRect {
+        width: parent.width
+        height: addFeedColumn.implicitHeight + Theme.spacingL * 2
+        radius: Theme.cornerRadius
+        color: root.roleColours.surfaceContainerHigh
+        visible: !currentBackend.capabilities.serverState
 
-            Column {
+        Column {
             id: addFeedColumn
             anchors.fill: parent
             anchors.margins: Theme.spacingL
@@ -1205,7 +1259,8 @@ PluginSettings {
                     width: parent.width
                     placeholderText: "e.g., Hacker News"
                     onFocusStateChanged: hasFocus => {
-                        if (hasFocus) root.ensureItemVisible(nameField);
+                        if (hasFocus)
+                            root.ensureItemVisible(nameField);
                     }
                 }
             }
@@ -1240,7 +1295,8 @@ PluginSettings {
                     width: parent.width
                     placeholderText: "Follows the global interval"
                     onFocusStateChanged: hasFocus => {
-                        if (hasFocus) root.ensureItemVisible(intervalField);
+                        if (hasFocus)
+                            root.ensureItemVisible(intervalField);
                     }
                 }
             }
@@ -1260,7 +1316,8 @@ PluginSettings {
                     width: parent.width
                     placeholderText: "e.g., https://hnrss.org/newest"
                     onFocusStateChanged: hasFocus => {
-                        if (hasFocus) root.ensureItemVisible(urlField);
+                        if (hasFocus)
+                            root.ensureItemVisible(urlField);
                     }
                     onTextChanged: root.urlError = ""
                 }
@@ -1309,7 +1366,7 @@ PluginSettings {
     // button above uses), so a discovered URL gets the same URL validation
     // and dedupe-on-edit behaviour as one typed in by hand.
     StyledRect {
-        Layout.fillWidth: true
+        width: parent.width
         height: discoveryColumn.implicitHeight + Theme.spacingL * 2
         radius: Theme.cornerRadius
         color: root.roleColours.surfaceContainerHigh
@@ -1345,7 +1402,8 @@ PluginSettings {
                     width: parent.width - findFeedButton.width - Theme.spacingM
                     placeholderText: "e.g., https://example.com"
                     onFocusStateChanged: hasFocus => {
-                        if (hasFocus) root.ensureItemVisible(discoverySiteField);
+                        if (hasFocus)
+                            root.ensureItemVisible(discoverySiteField);
                     }
                 }
 
@@ -1365,12 +1423,10 @@ PluginSettings {
                         var req = FeedParser.buildDiscoveryRequest(validated.url);
                         // null Proc id -- see fetchMinifluxFeeds()'s comment
                         // above for why a fixed id would be wrong here too.
-                        Proc.runCommand(null, req.argv,
-                            function(out, code) {
-                                root.discoveredFeeds = req.parse(out || "");
-                                root.discoverySearched = true;
-                            }, undefined, req.timeoutMs || 15000
-                        );
+                        Proc.runCommand(null, req.argv, function (out, code) {
+                            root.discoveredFeeds = req.parse(out || "");
+                            root.discoverySearched = true;
+                        }, undefined, req.timeoutMs || 15000);
                     }
                 }
             }
@@ -1447,7 +1503,7 @@ PluginSettings {
     }
 
     StyledRect {
-        Layout.fillWidth: true
+        width: parent.width
         height: Math.max(120, feedsListColumn.implicitHeight + Theme.spacingL * 2)
         radius: Theme.cornerRadius
         color: root.roleColours.surfaceContainerHigh
@@ -1543,18 +1599,26 @@ PluginSettings {
                                     font.pixelSize: Theme.fontSizeSmall - 2
                                     text: {
                                         var st = root.statusForUrl(modelData.url);
-                                        if (modelData.enabled === false) return "Disabled";
-                                        if (!st) return "Not fetched yet";
-                                        if (st.state === "ok") return (st.itemCount || 0) + " items";
-                                        if (st.state === "error" || st.state === "timeout") return st.lastError || "Fetch failed";
-                                        if (st.state === "disabled") return "Disabled";
+                                        if (modelData.enabled === false)
+                                            return "Disabled";
+                                        if (!st)
+                                            return "Not fetched yet";
+                                        if (st.state === "ok")
+                                            return (st.itemCount || 0) + " items";
+                                        if (st.state === "error" || st.state === "timeout")
+                                            return st.lastError || "Fetch failed";
+                                        if (st.state === "disabled")
+                                            return "Disabled";
                                         return "Not fetched yet";
                                     }
                                     color: {
                                         var st = root.statusForUrl(modelData.url);
-                                        if (modelData.enabled === false) return root.roleColours.surfaceVariantText;
-                                        if (st && (st.state === "error" || st.state === "timeout")) return root.roleColours.error;
-                                        if (st && st.state === "ok") return root.roleColours.success;
+                                        if (modelData.enabled === false)
+                                            return root.roleColours.surfaceVariantText;
+                                        if (st && (st.state === "error" || st.state === "timeout"))
+                                            return root.roleColours.error;
+                                        if (st && st.state === "ok")
+                                            return root.roleColours.success;
                                         return root.roleColours.surfaceVariantText;
                                     }
                                 }
@@ -1581,7 +1645,9 @@ PluginSettings {
 
                         Rectangle {
                             id: moveUpButton
-                            width: 32; height: 32; radius: 16
+                            width: 32
+                            height: 32
+                            radius: 16
                             enabled: index > 0
                             Accessible.role: Accessible.Button
                             Accessible.name: "Move " + (modelData.name || "feed") + " up"
@@ -1619,7 +1685,9 @@ PluginSettings {
 
                         Rectangle {
                             id: moveDownButton
-                            width: 32; height: 32; radius: 16
+                            width: 32
+                            height: 32
+                            radius: 16
                             enabled: index < feedsListView.count - 1
                             Accessible.role: Accessible.Button
                             Accessible.name: "Move " + (modelData.name || "feed") + " down"
@@ -1656,7 +1724,9 @@ PluginSettings {
                         }
 
                         Rectangle {
-                            width: 32; height: 32; radius: 16
+                            width: 32
+                            height: 32
+                            radius: 16
                             color: editArea.containsMouse ? root.roleColours.primary : "transparent"
                             Accessible.role: Accessible.Button
                             Accessible.name: "Edit " + (modelData.name || "feed")
@@ -1687,7 +1757,9 @@ PluginSettings {
                         }
 
                         Rectangle {
-                            width: 32; height: 32; radius: 16
+                            width: 32
+                            height: 32
+                            radius: 16
                             color: deleteArea.containsMouse ? root.roleColours.error : "transparent"
                             Accessible.role: Accessible.Button
                             Accessible.name: "Delete " + (modelData.name || "feed")
@@ -1707,7 +1779,9 @@ PluginSettings {
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: {
                                     var currentFeeds = root.loadValue("feeds", []);
-                                    currentFeeds = currentFeeds.filter(function(_, i) { return i !== index; });
+                                    currentFeeds = currentFeeds.filter(function (_, i) {
+                                        return i !== index;
+                                    });
                                     root.saveValue("feeds", currentFeeds);
                                     if (root.editingIndex === index) {
                                         root.editingIndex = -1;
@@ -1726,9 +1800,15 @@ PluginSettings {
                         anchors.fill: parent
                         hoverEnabled: true
                         propagateComposedEvents: true
-                        onClicked: function(mouse) { mouse.accepted = false; }
-                        onPressed: function(mouse) { mouse.accepted = false; }
-                        onReleased: function(mouse) { mouse.accepted = false; }
+                        onClicked: function (mouse) {
+                            mouse.accepted = false;
+                        }
+                        onPressed: function (mouse) {
+                            mouse.accepted = false;
+                        }
+                        onReleased: function (mouse) {
+                            mouse.accepted = false;
+                        }
                     }
                 }
 
@@ -1746,7 +1826,7 @@ PluginSettings {
     // OPML Import: feeds live locally only when the backend has no server
     // subscription list of its own to import into instead.
     StyledRect {
-        Layout.fillWidth: true
+        width: parent.width
         height: opmlColumn.implicitHeight + Theme.spacingL * 2
         radius: Theme.cornerRadius
         color: root.roleColours.surfaceContainerHigh
@@ -1778,7 +1858,8 @@ PluginSettings {
                 width: parent.width
                 placeholderText: "Paste OPML XML here..."
                 onFocusStateChanged: hasFocus => {
-                    if (hasFocus) root.ensureItemVisible(opmlField);
+                    if (hasFocus)
+                        root.ensureItemVisible(opmlField);
                 }
             }
 
@@ -1851,7 +1932,8 @@ PluginSettings {
                 text: root.loadValue("opmlExportPath", "")
                 onTextChanged: root.saveValue("opmlExportPath", text)
                 onFocusStateChanged: hasFocus => {
-                    if (hasFocus) root.ensureItemVisible(opmlExportPathField);
+                    if (hasFocus)
+                        root.ensureItemVisible(opmlExportPathField);
                 }
             }
 
@@ -1874,8 +1956,12 @@ PluginSettings {
                     if (path.charAt(path.length - 1) === "/" || last.indexOf(".") < 0)
                         path = path.replace(/\/+$/, "") + "/dank-rss-feeds.opml";
 
-                    var xml = FeedParser.buildOpml(root.loadValue("feeds", []), { dateCreated: new Date().toUTCString() });
-                    var view = opmlExportFileViewComponent.createObject(root, { path: path });
+                    var xml = FeedParser.buildOpml(root.loadValue("feeds", []), {
+                        dateCreated: new Date().toUTCString()
+                    });
+                    var view = opmlExportFileViewComponent.createObject(root, {
+                        path: path
+                    });
                     view.setText(xml);
                 }
             }
@@ -1922,176 +2008,173 @@ PluginSettings {
     // dropped -- redundant now that this whole group lives inside one
     // collapsible section.
     Column {
-        Layout.fillWidth: true
+        width: parent.width
         spacing: Theme.spacingM
         visible: !currentBackend.capabilities.serverState
 
-    StyledText {
-        width: parent.width
-        text: "Quick Add"
-        font.pixelSize: Theme.fontSizeMedium
-        font.weight: Font.Medium
-        color: root.roleColours.surfaceText
-    }
-
-    StyledText {
-        width: parent.width
-        text: "Quickly add popular feeds"
-        font.pixelSize: Theme.fontSizeSmall
-        color: root.roleColours.surfaceVariantText
-    }
-
-    StyledText {
-        width: parent.width
-        text: "News — US"
-        font.pixelSize: Theme.fontSizeSmall
-        font.weight: Font.Medium
-        color: root.roleColours.primary
-    }
-
-    Flow {
-        width: parent.width
-        spacing: Theme.spacingS
-
-        DankButton {
-            text: "AP News"
-            iconName: "add"
-            onClicked: addPresetFeed("AP News", "https://rsshub.app/apnews/topics/apf-topnews")
+        StyledText {
+            width: parent.width
+            text: "Quick Add"
+            font.pixelSize: Theme.fontSizeMedium
+            font.weight: Font.Medium
+            color: root.roleColours.surfaceText
         }
 
-        DankButton {
-            text: "NPR"
-            iconName: "add"
-            onClicked: addPresetFeed("NPR", "https://feeds.npr.org/1001/rss.xml")
+        StyledText {
+            width: parent.width
+            text: "Quickly add popular feeds"
+            font.pixelSize: Theme.fontSizeSmall
+            color: root.roleColours.surfaceVariantText
         }
 
-        DankButton {
-            text: "Reuters"
-            iconName: "add"
-            onClicked: addPresetFeed("Reuters", "https://rsshub.app/reuters/world")
-        }
-    }
-
-    StyledText {
-        width: parent.width
-        text: "News — Global"
-        font.pixelSize: Theme.fontSizeSmall
-        font.weight: Font.Medium
-        color: root.roleColours.primary
-    }
-
-    Flow {
-        width: parent.width
-        spacing: Theme.spacingS
-
-        DankButton {
-            text: "BBC World"
-            iconName: "add"
-            onClicked: addPresetFeed("BBC World", "https://feeds.bbci.co.uk/news/world/rss.xml")
+        StyledText {
+            width: parent.width
+            text: "News — US"
+            font.pixelSize: Theme.fontSizeSmall
+            font.weight: Font.Medium
+            color: root.roleColours.primary
         }
 
-        DankButton {
-            text: "Al Jazeera"
-            iconName: "add"
-            onClicked: addPresetFeed("Al Jazeera", "https://www.aljazeera.com/xml/rss/all.xml")
+        Flow {
+            width: parent.width
+            spacing: Theme.spacingS
+
+            DankButton {
+                text: "AP News"
+                iconName: "add"
+                onClicked: addPresetFeed("AP News", "https://rsshub.app/apnews/topics/apf-topnews")
+            }
+
+            DankButton {
+                text: "NPR"
+                iconName: "add"
+                onClicked: addPresetFeed("NPR", "https://feeds.npr.org/1001/rss.xml")
+            }
+
+            DankButton {
+                text: "Reuters"
+                iconName: "add"
+                onClicked: addPresetFeed("Reuters", "https://rsshub.app/reuters/world")
+            }
         }
 
-        DankButton {
-            text: "The Guardian"
-            iconName: "add"
-            onClicked: addPresetFeed("The Guardian", "https://www.theguardian.com/world/rss")
-        }
-    }
-
-    StyledText {
-        width: parent.width
-        text: "Tech"
-        font.pixelSize: Theme.fontSizeSmall
-        font.weight: Font.Medium
-        color: root.roleColours.primary
-    }
-
-    Flow {
-        width: parent.width
-        spacing: Theme.spacingS
-
-        DankButton {
-            text: "Hacker News"
-            iconName: "add"
-            onClicked: addPresetFeed("Hacker News", "https://hnrss.org/newest")
+        StyledText {
+            width: parent.width
+            text: "News — Global"
+            font.pixelSize: Theme.fontSizeSmall
+            font.weight: Font.Medium
+            color: root.roleColours.primary
         }
 
-        DankButton {
-            text: "Ars Technica"
-            iconName: "add"
-            onClicked: addPresetFeed("Ars Technica", "https://feeds.arstechnica.com/arstechnica/index")
+        Flow {
+            width: parent.width
+            spacing: Theme.spacingS
+
+            DankButton {
+                text: "BBC World"
+                iconName: "add"
+                onClicked: addPresetFeed("BBC World", "https://feeds.bbci.co.uk/news/world/rss.xml")
+            }
+
+            DankButton {
+                text: "Al Jazeera"
+                iconName: "add"
+                onClicked: addPresetFeed("Al Jazeera", "https://www.aljazeera.com/xml/rss/all.xml")
+            }
+
+            DankButton {
+                text: "The Guardian"
+                iconName: "add"
+                onClicked: addPresetFeed("The Guardian", "https://www.theguardian.com/world/rss")
+            }
         }
 
-        DankButton {
-            text: "The Verge"
-            iconName: "add"
-            onClicked: addPresetFeed("The Verge", "https://www.theverge.com/rss/index.xml")
-        }
-    }
-
-    StyledText {
-        width: parent.width
-        text: "Reddit"
-        font.pixelSize: Theme.fontSizeSmall
-        font.weight: Font.Medium
-        color: root.roleColours.primary
-    }
-
-    Flow {
-        width: parent.width
-        spacing: Theme.spacingS
-
-        DankButton {
-            text: "r/linux"
-            iconName: "add"
-            onClicked: addPresetFeed("r/linux", "https://www.reddit.com/r/linux/.rss")
+        StyledText {
+            width: parent.width
+            text: "Tech"
+            font.pixelSize: Theme.fontSizeSmall
+            font.weight: Font.Medium
+            color: root.roleColours.primary
         }
 
-        DankButton {
-            text: "r/niri"
-            iconName: "add"
-            onClicked: addPresetFeed("r/niri", "https://www.reddit.com/r/niri/.rss")
+        Flow {
+            width: parent.width
+            spacing: Theme.spacingS
+
+            DankButton {
+                text: "Hacker News"
+                iconName: "add"
+                onClicked: addPresetFeed("Hacker News", "https://hnrss.org/newest")
+            }
+
+            DankButton {
+                text: "Ars Technica"
+                iconName: "add"
+                onClicked: addPresetFeed("Ars Technica", "https://feeds.arstechnica.com/arstechnica/index")
+            }
+
+            DankButton {
+                text: "The Verge"
+                iconName: "add"
+                onClicked: addPresetFeed("The Verge", "https://www.theverge.com/rss/index.xml")
+            }
         }
 
-        DankButton {
-            text: "r/hyprland"
-            iconName: "add"
-            onClicked: addPresetFeed("r/hyprland", "https://www.reddit.com/r/hyprland/.rss")
+        StyledText {
+            width: parent.width
+            text: "Reddit"
+            font.pixelSize: Theme.fontSizeSmall
+            font.weight: Font.Medium
+            color: root.roleColours.primary
         }
 
-        DankButton {
-            text: "r/fedora"
-            iconName: "add"
-            onClicked: addPresetFeed("r/fedora", "https://www.reddit.com/r/fedora/.rss")
-        }
+        Flow {
+            width: parent.width
+            spacing: Theme.spacingS
 
-        DankButton {
-            text: "r/archlinux"
-            iconName: "add"
-            onClicked: addPresetFeed("r/archlinux", "https://www.reddit.com/r/archlinux/.rss")
-        }
+            DankButton {
+                text: "r/linux"
+                iconName: "add"
+                onClicked: addPresetFeed("r/linux", "https://www.reddit.com/r/linux/.rss")
+            }
 
-        DankButton {
-            text: "r/NixOS"
-            iconName: "add"
-            onClicked: addPresetFeed("r/NixOS", "https://www.reddit.com/r/NixOS/.rss")
-        }
+            DankButton {
+                text: "r/niri"
+                iconName: "add"
+                onClicked: addPresetFeed("r/niri", "https://www.reddit.com/r/niri/.rss")
+            }
 
-        DankButton {
-            text: "r/Ubuntu"
-            iconName: "add"
-            onClicked: addPresetFeed("r/Ubuntu", "https://www.reddit.com/r/Ubuntu/.rss")
-        }
-    }
+            DankButton {
+                text: "r/hyprland"
+                iconName: "add"
+                onClicked: addPresetFeed("r/hyprland", "https://www.reddit.com/r/hyprland/.rss")
+            }
 
+            DankButton {
+                text: "r/fedora"
+                iconName: "add"
+                onClicked: addPresetFeed("r/fedora", "https://www.reddit.com/r/fedora/.rss")
+            }
+
+            DankButton {
+                text: "r/archlinux"
+                iconName: "add"
+                onClicked: addPresetFeed("r/archlinux", "https://www.reddit.com/r/archlinux/.rss")
+            }
+
+            DankButton {
+                text: "r/NixOS"
+                iconName: "add"
+                onClicked: addPresetFeed("r/NixOS", "https://www.reddit.com/r/NixOS/.rss")
+            }
+
+            DankButton {
+                text: "r/Ubuntu"
+                iconName: "add"
+                onClicked: addPresetFeed("r/Ubuntu", "https://www.reddit.com/r/Ubuntu/.rss")
+            }
+        }
     } // end Quick Add Column
-
-    } // end Feed Management DankCollapsibleSection
 
     // ─── Appearance Settings ───
     DankCollapsibleSection {
@@ -2099,72 +2182,81 @@ PluginSettings {
         title: "Appearance"
         expanded: false
 
-    SliderSetting {
-        Layout.fillWidth: true
-        settingKey: "fontSize"
-        label: "Font Size"
-        description: "Text size for feed items"
-        defaultValue: Theme.fontSizeSmall
-        minimum: 8
-        maximum: 24
-        unit: "px"
-    }
+        SliderSetting {
+            Layout.fillWidth: true
+            settingKey: "fontSize"
+            label: "Font Size"
+            description: "Text size for feed items"
+            defaultValue: Theme.fontSizeSmall
+            minimum: 8
+            maximum: 24
+            unit: "px"
+        }
 
-    SliderSetting {
-        Layout.fillWidth: true
-        settingKey: "backgroundOpacity"
-        label: "Background Opacity"
-        defaultValue: 60
-        minimum: 0
-        maximum: 100
-        unit: "%"
-    }
+        SliderSetting {
+            Layout.fillWidth: true
+            settingKey: "backgroundOpacity"
+            label: "Background Opacity"
+            defaultValue: 60
+            minimum: 0
+            maximum: 100
+            unit: "%"
+        }
 
-    ToggleSetting {
-        Layout.fillWidth: true
-        id: borderToggle
-        settingKey: "enableBorder"
-        label: "Enable Border"
-        defaultValue: false
-    }
+        ToggleSetting {
+            id: borderToggle
+            Layout.fillWidth: true
+            settingKey: "enableBorder"
+            label: "Enable Border"
+            defaultValue: false
+        }
 
-    SliderSetting {
-        Layout.fillWidth: true
-        opacity: borderToggle.value ? 1.0 : 0.2
-        enabled: borderToggle.value
-        settingKey: "borderThickness"
-        label: "Border Thickness"
-        defaultValue: 1
-        minimum: 1
-        maximum: 10
-        unit: "px"
-    }
+        SliderSetting {
+            Layout.fillWidth: true
+            opacity: borderToggle.value ? 1.0 : 0.2
+            enabled: borderToggle.value
+            settingKey: "borderThickness"
+            label: "Border Thickness"
+            defaultValue: 1
+            minimum: 1
+            maximum: 10
+            unit: "px"
+        }
 
-    SliderSetting {
-        Layout.fillWidth: true
-        opacity: borderToggle.value ? 1.0 : 0.2
-        enabled: borderToggle.value
-        settingKey: "borderOpacity"
-        label: "Border Opacity"
-        defaultValue: 100
-        minimum: 0
-        maximum: 100
-        unit: "%"
-    }
+        SliderSetting {
+            Layout.fillWidth: true
+            opacity: borderToggle.value ? 1.0 : 0.2
+            enabled: borderToggle.value
+            settingKey: "borderOpacity"
+            label: "Border Opacity"
+            defaultValue: 100
+            minimum: 0
+            maximum: 100
+            unit: "%"
+        }
 
-    SelectionSetting {
-        Layout.fillWidth: true
-        opacity: borderToggle.value ? 1.0 : 0.2
-        enabled: borderToggle.value
-        settingKey: "borderColor"
-        label: "Border Color"
-        options: [
-            { label: "Primary", value: "primary" },
-            { label: "Secondary", value: "secondary" },
-            { label: "Surface", value: "surface" }
-        ]
-        defaultValue: "primary"
-    }
+        SelectionSetting {
+            Layout.fillWidth: true
+            opacity: borderToggle.value ? 1.0 : 0.2
+            enabled: borderToggle.value
+            settingKey: "borderColor"
+            label: "Border Color"
+            options: [
+                {
+                    label: "Primary",
+                    value: "primary"
+                },
+                {
+                    label: "Secondary",
+                    value: "secondary"
+                },
+                {
+                    label: "Surface",
+                    value: "surface"
+                }
+            ]
+            defaultValue: "primary"
+        }
     } // end Appearance DankCollapsibleSection
 
     // ─── Reader ───
@@ -2173,36 +2265,37 @@ PluginSettings {
         title: "Reader"
         expanded: false
 
-    Column {
-        Layout.fillWidth: true
-        spacing: Theme.spacingXS
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
 
-        StyledText {
-            text: "Reader Font"
-            font.pixelSize: Theme.fontSizeSmall
-            color: root.roleColours.surfaceVariantText
-        }
+            StyledText {
+                text: "Reader Font"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
 
-        StyledText {
-            width: parent.width
-            text: "Leave empty to follow your DMS font."
-            font.pixelSize: Theme.fontSizeSmall - 2
-            color: root.roleColours.surfaceVariantText
-            wrapMode: Text.WordWrap
-        }
+            StyledText {
+                width: parent.width
+                text: "Leave empty to follow your DMS font."
+                font.pixelSize: Theme.fontSizeSmall - 2
+                color: root.roleColours.surfaceVariantText
+                wrapMode: Text.WordWrap
+            }
 
-        DankTextField {
-            id: readerFontFamilyField
-            activeFocusOnTab: false
-            width: parent.width
-            placeholderText: "Follows Theme.fontFamily"
-            text: root.loadValue("readerFontFamily", "")
-            onTextChanged: root.saveValue("readerFontFamily", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(readerFontFamilyField);
+            DankTextField {
+                id: readerFontFamilyField
+                activeFocusOnTab: false
+                width: parent.width
+                placeholderText: "Follows Theme.fontFamily"
+                text: root.loadValue("readerFontFamily", "")
+                onTextChanged: root.saveValue("readerFontFamily", text)
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus)
+                        root.ensureItemVisible(readerFontFamilyField);
+                }
             }
         }
-    }
     } // end Reader DankCollapsibleSection
 
     // ─── AI Summaries ───
@@ -2220,219 +2313,236 @@ PluginSettings {
         title: "AI Summaries"
         expanded: false
 
-    ToggleSetting {
-        Layout.fillWidth: true
-        id: aiEnabledSetting
-        settingKey: "aiEnabled"
-        label: "AI Summaries"
-        description: "Summarise articles on demand using a local OpenAI-compatible runtime (Ollama, vLLM, llama.cpp, LM Studio, ...). Nothing is sent anywhere until you ask for a summary -- this never runs automatically in the background."
-        defaultValue: false
-    }
-
-    SelectionSetting {
-        Layout.fillWidth: true
-        id: aiPresetSetting
-        visible: aiEnabledSetting.value
-        settingKey: "aiPreset"
-        label: "Runtime"
-        description: "Picking a preset fills the Base URL below. Choose Custom to point at any other OpenAI-compatible endpoint."
-        options: [
-            { label: AiProvider.PRESETS.ollama.label, value: "ollama" },
-            { label: AiProvider.PRESETS.vllm.label, value: "vllm" },
-            { label: AiProvider.PRESETS.llamacpp.label, value: "llamacpp" },
-            { label: AiProvider.PRESETS.lmstudio.label, value: "lmstudio" },
-            { label: AiProvider.PRESETS.custom.label, value: "custom" }
-        ]
-        defaultValue: "ollama"
-        // Fills the Base URL field from the chosen preset -- this is the ONE
-        // place that happens, mirroring the Notes Export preset dropdown
-        // above. "custom" deliberately does nothing here so a URL the user
-        // typed while Custom is selected is never clobbered by this handler
-        // re-firing (e.g. on page reload, when this binding runs once with
-        // the loaded value).
-        onValueChanged: {
-            if (aiPresetSetting.value === "custom")
-                return;
-            var preset = AiProvider.PRESETS[aiPresetSetting.value];
-            if (preset)
-                aiBaseUrlField.text = preset.baseUrl;
-        }
-    }
-
-    Column {
-        Layout.fillWidth: true
-        spacing: Theme.spacingXS
-        visible: aiEnabledSetting.value
-
-        StyledText {
-            text: "Base URL"
-            font.pixelSize: Theme.fontSizeSmall
-            color: root.roleColours.surfaceVariantText
+        ToggleSetting {
+            id: aiEnabledSetting
+            Layout.fillWidth: true
+            settingKey: "aiEnabled"
+            label: "AI Summaries"
+            description: "Summarise articles on demand using a local OpenAI-compatible runtime (Ollama, vLLM, llama.cpp, LM Studio, ...). Nothing is sent anywhere until you ask for a summary -- this never runs automatically in the background."
+            defaultValue: false
         }
 
-        DankTextField {
-            id: aiBaseUrlField
-            width: parent.width
-            // Seeded with the RESOLVED url, not a placeholder that merely
-            // looks like one. A greyed-out placeholder is indistinguishable
-            // from a real value at a glance, which is precisely how the
-            // original bug hid: the form looked complete and was not.
-            placeholderText: "Set by the runtime preset above"
-            text: root.effectiveAiBaseUrl()
-            onTextChanged: root.saveValue("aiBaseUrl", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(aiBaseUrlField);
-            }
-        }
-    }
-
-    Column {
-        Layout.fillWidth: true
-        spacing: Theme.spacingXS
-        visible: aiEnabledSetting.value
-
-        StyledText {
-            text: "Model"
-            font.pixelSize: Theme.fontSizeSmall
-            color: root.roleColours.surfaceVariantText
-        }
-
-        StyledText {
-            width: parent.width
-            text: "Prefer an instruct-tagged model over a -base one -- base models are not tuned to follow the summarise/digest instructions. If summaries feel slow, try a non-reasoning model; a reasoning model spends extra tokens thinking before it answers."
-            font.pixelSize: Theme.fontSizeSmall - 2
-            color: root.roleColours.surfaceVariantText
-            wrapMode: Text.WordWrap
-        }
-
-        DankTextField {
-            id: aiModelField
-            width: parent.width
-            placeholderText: "e.g., qwen3:8b"
-            text: root.loadValue("aiModel", "")
-            onTextChanged: root.saveValue("aiModel", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(aiModelField);
-            }
-        }
-    }
-
-    Column {
-        Layout.fillWidth: true
-        spacing: Theme.spacingXS
-        visible: aiEnabledSetting.value
-
-        StyledText {
-            text: "API Key"
-            font.pixelSize: Theme.fontSizeSmall
-            color: root.roleColours.surfaceVariantText
-        }
-
-        StyledText {
-            width: parent.width
-            text: "Most local runtimes need none -- leave this empty unless yours requires one."
-            font.pixelSize: Theme.fontSizeSmall - 2
-            color: root.roleColours.surfaceVariantText
-            wrapMode: Text.WordWrap
-        }
-
-        // Never logged and never appears in a toast, matching the Miniflux
-        // token and Google Reader password fields above.
-        DankTextField {
-            id: aiApiKeyField
-            width: parent.width
-            placeholderText: "Optional"
-            text: root.loadValue("aiApiKey", "")
-            onTextChanged: root.saveValue("aiApiKey", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(aiApiKeyField);
-            }
-        }
-    }
-
-    Column {
-        Layout.fillWidth: true
-        spacing: Theme.spacingXS
-        visible: aiEnabledSetting.value
-
-        StyledText {
-            text: "Embedding Model"
-            font.pixelSize: Theme.fontSizeSmall
-            color: root.roleColours.surfaceVariantText
-        }
-
-        // A DIFFERENT model from "Model" above: that one answers chat
-        // completions (summaries/digests), this one answers /embeddings, and
-        // most chat models either don't serve that endpoint at all or serve
-        // it badly (see AiProvider.resolveEmbedModel's comment -- there is
-        // deliberately no fallback from one to the other). Only interest
-        // ranking below reads this; summaries and digests never touch it.
-        StyledText {
-            width: parent.width
-            text: "e.g., nomic-embed-text. Needed only if you turn on interest ranking below."
-            font.pixelSize: Theme.fontSizeSmall - 2
-            color: root.roleColours.surfaceVariantText
-            wrapMode: Text.WordWrap
-        }
-
-        DankTextField {
-            id: aiEmbedModelField
-            width: parent.width
-            // Seeded with the RESOLVED value (typed, else the preset's
-            // suggested default) -- same "resolve, don't store" reasoning as
-            // aiBaseUrlField above, via effectiveAiEmbedModel(). Never wired
-            // to aiPresetSetting.onValueChanged: that handler does not fire
-            // on a fresh install (see AiProvider.resolveBaseUrl's comment),
-            // so a value populated only there would silently stay empty.
-            placeholderText: "Set by the runtime preset above"
-            text: root.effectiveAiEmbedModel()
-            onTextChanged: root.saveValue("aiEmbedModel", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(aiEmbedModelField);
-            }
-        }
-    }
-
-    Row {
-        Layout.fillWidth: true
-        visible: aiEnabledSetting.value
-        spacing: Theme.spacingM
-
-        DankButton {
-            text: "Test Connection"
-            iconName: "wifi_tethering"
-            onClicked: {
-                var provider = AiProvider.createAiProvider({
-                    baseUrl: root.effectiveAiBaseUrl(),
-                    model: root.loadValue("aiModel", ""),
-                    apiKey: root.loadValue("aiApiKey", "")
-                });
-                if (!provider.isConfigured()) {
-                    if (typeof ToastService !== "undefined")
-                        ToastService.showError("Enter a Model first (and a Base URL, if the runtime is Custom)");
-                    return;
+        SelectionSetting {
+            id: aiPresetSetting
+            Layout.fillWidth: true
+            visible: aiEnabledSetting.value
+            settingKey: "aiPreset"
+            label: "Runtime"
+            description: "Picking a preset fills the Base URL below. Choose Custom to point at any other OpenAI-compatible endpoint."
+            options: [
+                {
+                    label: AiProvider.PRESETS.ollama.label,
+                    value: "ollama"
+                },
+                {
+                    label: AiProvider.PRESETS.vllm.label,
+                    value: "vllm"
+                },
+                {
+                    label: AiProvider.PRESETS.llamacpp.label,
+                    value: "llamacpp"
+                },
+                {
+                    label: AiProvider.PRESETS.lmstudio.label,
+                    value: "lmstudio"
+                },
+                {
+                    label: AiProvider.PRESETS.custom.label,
+                    value: "custom"
                 }
-                var req = provider.probeRequest();
-                // req is only null when unconfigured, which isConfigured()
-                // above already ruled out -- but AiProvider does no I/O of
-                // its own, so nothing stops this from calling Proc directly.
-                if (!req)
+            ]
+            defaultValue: "ollama"
+            // Fills the Base URL field from the chosen preset -- this is the ONE
+            // place that happens, mirroring the Notes Export preset dropdown
+            // above. "custom" deliberately does nothing here so a URL the user
+            // typed while Custom is selected is never clobbered by this handler
+            // re-firing (e.g. on page reload, when this binding runs once with
+            // the loaded value).
+            onValueChanged: {
+                if (aiPresetSetting.value === "custom")
                     return;
-                // Proc id is null, not a fixed string -- see
-                // fetchMinifluxFeeds()'s comment above and the matching
-                // reasoning at DankRssWidget.qml's Proc.runCommand calls: a
-                // fixed id would clobber this callback if the button is
-                // pressed again before the probe returns.
-                Proc.runCommand(null, req.argv,
-                    function(out, code) {
+                var preset = AiProvider.PRESETS[aiPresetSetting.value];
+                if (preset)
+                    aiBaseUrlField.text = preset.baseUrl;
+            }
+        }
+
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
+            visible: aiEnabledSetting.value
+
+            StyledText {
+                text: "Base URL"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
+
+            DankTextField {
+                id: aiBaseUrlField
+                width: parent.width
+                // Seeded with the RESOLVED url, not a placeholder that merely
+                // looks like one. A greyed-out placeholder is indistinguishable
+                // from a real value at a glance, which is precisely how the
+                // original bug hid: the form looked complete and was not.
+                placeholderText: "Set by the runtime preset above"
+                text: root.effectiveAiBaseUrl()
+                onTextChanged: root.saveValue("aiBaseUrl", text)
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus)
+                        root.ensureItemVisible(aiBaseUrlField);
+                }
+            }
+        }
+
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
+            visible: aiEnabledSetting.value
+
+            StyledText {
+                text: "Model"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
+
+            StyledText {
+                width: parent.width
+                text: "Prefer an instruct-tagged model over a -base one -- base models are not tuned to follow the summarise/digest instructions. If summaries feel slow, try a non-reasoning model; a reasoning model spends extra tokens thinking before it answers."
+                font.pixelSize: Theme.fontSizeSmall - 2
+                color: root.roleColours.surfaceVariantText
+                wrapMode: Text.WordWrap
+            }
+
+            DankTextField {
+                id: aiModelField
+                width: parent.width
+                placeholderText: "e.g., qwen3:8b"
+                text: root.loadValue("aiModel", "")
+                onTextChanged: root.saveValue("aiModel", text)
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus)
+                        root.ensureItemVisible(aiModelField);
+                }
+            }
+        }
+
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
+            visible: aiEnabledSetting.value
+
+            StyledText {
+                text: "API Key"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
+
+            StyledText {
+                width: parent.width
+                text: "Most local runtimes need none -- leave this empty unless yours requires one."
+                font.pixelSize: Theme.fontSizeSmall - 2
+                color: root.roleColours.surfaceVariantText
+                wrapMode: Text.WordWrap
+            }
+
+            // Never logged and never appears in a toast, matching the Miniflux
+            // token and Google Reader password fields above.
+            DankTextField {
+                id: aiApiKeyField
+                width: parent.width
+                placeholderText: "Optional"
+                text: root.loadValue("aiApiKey", "")
+                onTextChanged: root.saveValue("aiApiKey", text)
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus)
+                        root.ensureItemVisible(aiApiKeyField);
+                }
+            }
+        }
+
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
+            visible: aiEnabledSetting.value
+
+            StyledText {
+                text: "Embedding Model"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
+
+            // A DIFFERENT model from "Model" above: that one answers chat
+            // completions (summaries/digests), this one answers /embeddings, and
+            // most chat models either don't serve that endpoint at all or serve
+            // it badly (see AiProvider.resolveEmbedModel's comment -- there is
+            // deliberately no fallback from one to the other). Only interest
+            // ranking below reads this; summaries and digests never touch it.
+            StyledText {
+                width: parent.width
+                text: "e.g., nomic-embed-text. Needed only if you turn on interest ranking below."
+                font.pixelSize: Theme.fontSizeSmall - 2
+                color: root.roleColours.surfaceVariantText
+                wrapMode: Text.WordWrap
+            }
+
+            DankTextField {
+                id: aiEmbedModelField
+                width: parent.width
+                // Seeded with the RESOLVED value (typed, else the preset's
+                // suggested default) -- same "resolve, don't store" reasoning as
+                // aiBaseUrlField above, via effectiveAiEmbedModel(). Never wired
+                // to aiPresetSetting.onValueChanged: that handler does not fire
+                // on a fresh install (see AiProvider.resolveBaseUrl's comment),
+                // so a value populated only there would silently stay empty.
+                placeholderText: "Set by the runtime preset above"
+                text: root.effectiveAiEmbedModel()
+                onTextChanged: root.saveValue("aiEmbedModel", text)
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus)
+                        root.ensureItemVisible(aiEmbedModelField);
+                }
+            }
+        }
+
+        Row {
+            Layout.fillWidth: true
+            visible: aiEnabledSetting.value
+            spacing: Theme.spacingM
+
+            DankButton {
+                text: "Test Connection"
+                iconName: "wifi_tethering"
+                onClicked: {
+                    var provider = AiProvider.createAiProvider({
+                        baseUrl: root.effectiveAiBaseUrl(),
+                        model: root.loadValue("aiModel", ""),
+                        apiKey: root.loadValue("aiApiKey", "")
+                    });
+                    if (!provider.isConfigured()) {
+                        if (typeof ToastService !== "undefined")
+                            ToastService.showError("Enter a Model first (and a Base URL, if the runtime is Custom)");
+                        return;
+                    }
+                    var req = provider.probeRequest();
+                    // req is only null when unconfigured, which isConfigured()
+                    // above already ruled out -- but AiProvider does no I/O of
+                    // its own, so nothing stops this from calling Proc directly.
+                    if (!req)
+                        return;
+                    // Proc id is null, not a fixed string -- see
+                    // fetchMinifluxFeeds()'s comment above and the matching
+                    // reasoning at DankRssWidget.qml's Proc.runCommand calls: a
+                    // fixed id would clobber this callback if the button is
+                    // pressed again before the probe returns.
+                    Proc.runCommand(null, req.argv, function (out, code) {
                         // A nonzero exit with no body is a dead socket, not a
                         // bad response. Parsing "" then reporting "Parse
                         // failed" told the user their JSON was malformed when
                         // in fact nothing had answered at all.
                         if (code !== 0 && !out) {
                             if (typeof ToastService !== "undefined")
-                                ToastService.showError("Could not reach " + root.effectiveAiBaseUrl(),
-                                    code === 124 ? "The request timed out." : "Is the runtime running?");
+                                ToastService.showError("Could not reach " + root.effectiveAiBaseUrl(), code === 124 ? "The request timed out." : "Is the runtime running?");
                             return;
                         }
                         var result = req.parse(out || "");
@@ -2461,11 +2571,10 @@ PluginSettings {
                         }
                         if (typeof ToastService !== "undefined")
                             ToastService.showInfo("AI runtime connection successful!");
-                    }, undefined, req.timeoutMs
-                );
+                    }, undefined, req.timeoutMs);
+                }
             }
         }
-    }
     } // end AI Summaries DankCollapsibleSection
 
     // ─── Interest Ranking ───
@@ -2480,26 +2589,26 @@ PluginSettings {
         title: "Interest Ranking"
         expanded: false
 
-    ToggleSetting {
-        Layout.fillWidth: true
-        id: rankingEnabledSetting
-        settingKey: "rankingEnabled"
-        label: "Rank by Interest"
-        description: "Reorders unread items by similarity to the articles you've starred, instead of showing them in plain reverse-chronological order. This needs starred articles to learn from (star a few things first) and an embedding model configured above -- with neither, ranking has nothing to work from and falls back to plain order. Off by default: turn it on to try it, and turn it back off any time to return to exactly the feed you had before."
-        defaultValue: false
-    }
+        ToggleSetting {
+            id: rankingEnabledSetting
+            Layout.fillWidth: true
+            settingKey: "rankingEnabled"
+            label: "Rank by Interest"
+            description: "Reorders unread items by similarity to the articles you've starred, instead of showing them in plain reverse-chronological order. This needs starred articles to learn from (star a few things first) and an embedding model configured above -- with neither, ranking has nothing to work from and falls back to plain order. Off by default: turn it on to try it, and turn it back off any time to return to exactly the feed you had before."
+            defaultValue: false
+        }
 
-    SliderSetting {
-        Layout.fillWidth: true
-        visible: rankingEnabledSetting.value
-        settingKey: "rankingWeight"
-        label: "Ranking Weight"
-        description: "0 is exactly reverse-chronological (ranking has no effect at all); 100 is pure similarity to your starred articles, ignoring recency entirely. Start low and raise it only if the ordering feels right."
-        defaultValue: 50
-        minimum: 0
-        maximum: 100
-        unit: "%"
-    }
+        SliderSetting {
+            Layout.fillWidth: true
+            visible: rankingEnabledSetting.value
+            settingKey: "rankingWeight"
+            label: "Ranking Weight"
+            description: "0 is exactly reverse-chronological (ranking has no effect at all); 100 is pure similarity to your starred articles, ignoring recency entirely. Start low and raise it only if the ordering feels right."
+            defaultValue: 50
+            minimum: 0
+            maximum: 100
+            unit: "%"
+        }
     } // end Interest Ranking DankCollapsibleSection
 
     // ─── Colour Theme ───
@@ -2514,64 +2623,103 @@ PluginSettings {
         title: "Colour Theme"
         expanded: false
 
-    SelectionSetting {
-        Layout.fillWidth: true
-        id: colourPresetSetting
-        settingKey: "colourPreset"
-        label: "Colour Theme"
-        description: "System follows your DMS theme as-is. The first three are colour-vision-deficiency palettes (Okabe-Ito for deuteranopia and protanopia, Paul Tol's bright scheme for tritanopia), chosen so error and success stay apart for that condition. The rest are ordinary themes, offered because this widget never signals state by hue alone — feed status also changes icon shape and text, and read state uses opacity. The swatches below are the real thing: if two of them look the same to you, pick another."
-        options: [
-            { label: "System", value: "system" },
-            { label: "Deuteranopia-safe", value: "deuteranopia" },
-            { label: "Protanopia-safe", value: "protanopia" },
-            { label: "Tritanopia-safe", value: "tritanopia" },
-            { label: "Nord", value: "nord" },
-            { label: "Gruvbox", value: "gruvbox" },
-            { label: "Catppuccin Mocha", value: "catppuccin" },
-            { label: "Dracula", value: "dracula" },
-            { label: "Solarized", value: "solarized" },
-            { label: "Custom", value: "custom" }
-        ]
-        defaultValue: "system"
-    }
-
-    // Live preview: the three roles this feature actually exists to fix.
-    // Recomputed whenever the preset changes; resolvePalette is pure (no
-    // Theme access of its own), so themeBasePalette() supplies the "system"
-    // colours it's resolved against.
-    Row {
-        id: colourPreviewRow
-        Layout.fillWidth: true
-        spacing: Theme.spacingL
-
-        property var previewPalette: Palette.resolvePalette(colourPresetSetting.value, root.themeBasePalette())
-
-        Repeater {
-            model: [
-                { role: "error", label: "Error" },
-                { role: "success", label: "Success" },
-                { role: "primary", label: "Primary" }
-            ]
-
-            delegate: Column {
-                required property var modelData
-                spacing: Theme.spacingXS
-
-                Rectangle {
-                    width: 48
-                    height: 24
-                    radius: Theme.cornerRadius
-                    color: colourPreviewRow.previewPalette[modelData.role]
+        SelectionSetting {
+            id: colourPresetSetting
+            Layout.fillWidth: true
+            settingKey: "colourPreset"
+            label: "Colour Theme"
+            description: "System follows your DMS theme as-is. The first three are colour-vision-deficiency palettes (Okabe-Ito for deuteranopia and protanopia, Paul Tol's bright scheme for tritanopia), chosen so error and success stay apart for that condition. The rest are ordinary themes, offered because this widget never signals state by hue alone — feed status also changes icon shape and text, and read state uses opacity. The swatches below are the real thing: if two of them look the same to you, pick another."
+            options: [
+                {
+                    label: "System",
+                    value: "system"
+                },
+                {
+                    label: "Deuteranopia-safe",
+                    value: "deuteranopia"
+                },
+                {
+                    label: "Protanopia-safe",
+                    value: "protanopia"
+                },
+                {
+                    label: "Tritanopia-safe",
+                    value: "tritanopia"
+                },
+                {
+                    label: "Nord",
+                    value: "nord"
+                },
+                {
+                    label: "Gruvbox",
+                    value: "gruvbox"
+                },
+                {
+                    label: "Catppuccin Mocha",
+                    value: "catppuccin"
+                },
+                {
+                    label: "Dracula",
+                    value: "dracula"
+                },
+                {
+                    label: "Solarized",
+                    value: "solarized"
+                },
+                {
+                    label: "Custom",
+                    value: "custom"
                 }
+            ]
+            defaultValue: "system"
+        }
 
-                StyledText {
-                    text: modelData.label
-                    font.pixelSize: Theme.fontSizeSmall - 2
-                    color: root.roleColours.surfaceVariantText
+        // Live preview: the three roles this feature actually exists to fix.
+        // Recomputed whenever the preset changes; resolvePalette is pure (no
+        // Theme access of its own), so themeBasePalette() supplies the "system"
+        // colours it's resolved against.
+        Row {
+            id: colourPreviewRow
+            Layout.fillWidth: true
+            spacing: Theme.spacingL
+
+            property var previewPalette: Palette.resolvePalette(colourPresetSetting.value, root.themeBasePalette())
+
+            Repeater {
+                model: [
+                    {
+                        role: "error",
+                        label: "Error"
+                    },
+                    {
+                        role: "success",
+                        label: "Success"
+                    },
+                    {
+                        role: "primary",
+                        label: "Primary"
+                    }
+                ]
+
+                delegate: Column {
+                    required property var modelData
+                    spacing: Theme.spacingXS
+
+                    Rectangle {
+                        width: 48
+                        height: 24
+                        radius: Theme.cornerRadius
+                        color: colourPreviewRow.previewPalette[modelData.role]
+                    }
+
+                    StyledText {
+                        text: modelData.label
+                        font.pixelSize: Theme.fontSizeSmall - 2
+                        color: root.roleColours.surfaceVariantText
+                    }
                 }
             }
         }
-    }
     } // end Colour Theme DankCollapsibleSection
 
     // Custom colours. Only the three roles that actually carry meaning are
@@ -2643,7 +2791,8 @@ PluginSettings {
                 text: root.loadValue("audioPlayerCommand", "")
                 onTextChanged: root.saveValue("audioPlayerCommand", text)
                 onFocusStateChanged: hasFocus => {
-                    if (hasFocus) root.ensureItemVisible(audioPlayerField);
+                    if (hasFocus)
+                        root.ensureItemVisible(audioPlayerField);
                 }
             }
         }
@@ -2665,100 +2814,110 @@ PluginSettings {
         description: "Get notified when an item matches a query, using the SAME search syntax as the widget's search box."
         expanded: false
 
-    Row {
-        Layout.fillWidth: true
-        spacing: Theme.spacingM
+        Row {
+            Layout.fillWidth: true
+            spacing: Theme.spacingM
 
-        DankTextField {
-            id: newRuleQueryField
-            width: parent.width - addRuleButton.width - Theme.spacingM
-            placeholderText: "e.g., kernel OR security"
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(newRuleQueryField);
+            DankTextField {
+                id: newRuleQueryField
+                width: parent.width - addRuleButton.width - Theme.spacingM
+                placeholderText: "e.g., kernel OR security"
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus)
+                        root.ensureItemVisible(newRuleQueryField);
+                }
+            }
+
+            DankButton {
+                id: addRuleButton
+                text: "Add Rule"
+                iconName: "add"
+                onClicked: {
+                    var query = newRuleQueryField.text.trim();
+                    if (!query) {
+                        if (typeof ToastService !== "undefined")
+                            ToastService.showError("Enter a query first");
+                        return;
+                    }
+                    var rules = root.loadValue("notificationRules", []);
+                    rules = rules.concat([
+                        {
+                            query: query,
+                            sources: []
+                        }
+                    ]);
+                    root.saveValue("notificationRules", rules);
+                    newRuleQueryField.text = "";
+                }
             }
         }
 
-        DankButton {
-            id: addRuleButton
-            text: "Add Rule"
-            iconName: "add"
-            onClicked: {
-                var query = newRuleQueryField.text.trim();
-                if (!query) {
-                    if (typeof ToastService !== "undefined")
-                        ToastService.showError("Enter a query first");
-                    return;
-                }
-                var rules = root.loadValue("notificationRules", []);
-                rules = rules.concat([{ query: query, sources: [] }]);
-                root.saveValue("notificationRules", rules);
-                newRuleQueryField.text = "";
-            }
-        }
-    }
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
 
-    Column {
-        Layout.fillWidth: true
-        spacing: Theme.spacingXS
+            Repeater {
+                model: root.loadValue("notificationRules", [])
 
-        Repeater {
-            model: root.loadValue("notificationRules", [])
-
-            delegate: RowLayout {
-                required property var modelData
-                required property int index
-                width: parent.width
-                spacing: Theme.spacingS
-
-                DankIcon {
-                    name: "notifications"
-                    size: 14
-                    color: root.roleColours.primary
-                }
-
-                StyledText {
-                    Layout.fillWidth: true
-                    text: modelData.query || ""
-                    font.pixelSize: Theme.fontSizeSmall
-                    color: root.roleColours.surfaceText
-                    elide: Text.ElideRight
-                }
-
-                Rectangle {
-                    width: 28; height: 28; radius: 14
-                    color: deleteRuleArea.containsMouse ? root.roleColours.error : "transparent"
-                    Accessible.role: Accessible.Button
-                    Accessible.name: "Delete notification rule " + (modelData.query || "")
-                    Accessible.onPressAction: deleteRuleArea.clicked(null)
+                delegate: RowLayout {
+                    required property var modelData
+                    required property int index
+                    width: parent.width
+                    spacing: Theme.spacingS
 
                     DankIcon {
-                        anchors.centerIn: parent
-                        name: "delete"
+                        name: "notifications"
                         size: 14
-                        color: deleteRuleArea.containsMouse ? root.roleColours.onError : root.roleColours.surfaceVariantText
+                        color: root.roleColours.primary
                     }
 
-                    MouseArea {
-                        id: deleteRuleArea
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            var rules = root.loadValue("notificationRules", []);
-                            rules = rules.filter(function(_, i) { return i !== index; });
-                            root.saveValue("notificationRules", rules);
+                    StyledText {
+                        Layout.fillWidth: true
+                        text: modelData.query || ""
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: root.roleColours.surfaceText
+                        elide: Text.ElideRight
+                    }
+
+                    Rectangle {
+                        width: 28
+                        height: 28
+                        radius: 14
+                        color: deleteRuleArea.containsMouse ? root.roleColours.error : "transparent"
+                        Accessible.role: Accessible.Button
+                        Accessible.name: "Delete notification rule " + (modelData.query || "")
+                        Accessible.onPressAction: deleteRuleArea.clicked(null)
+
+                        DankIcon {
+                            anchors.centerIn: parent
+                            name: "delete"
+                            size: 14
+                            color: deleteRuleArea.containsMouse ? root.roleColours.onError : root.roleColours.surfaceVariantText
+                        }
+
+                        MouseArea {
+                            id: deleteRuleArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                var rules = root.loadValue("notificationRules", []);
+                                rules = rules.filter(function (_, i) {
+                                    return i !== index;
+                                });
+                                root.saveValue("notificationRules", rules);
+                            }
                         }
                     }
                 }
             }
-        }
 
-        StyledText {
-            text: "No notification rules yet"
-            font.pixelSize: Theme.fontSizeSmall
-            color: root.roleColours.surfaceVariantText
-            visible: root.loadValue("notificationRules", []).length === 0
+            StyledText {
+                text: "No notification rules yet"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+                visible: root.loadValue("notificationRules", []).length === 0
+            }
         }
-    }
     } // end Notification Rules DankCollapsibleSection
 }
