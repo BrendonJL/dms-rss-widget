@@ -10,25 +10,31 @@ believed for weeks and only measurement settled it.
 
 ## Still open
 
-- **Categories / folders.** Miniflux and Google Reader both return them and
-  the widget flattens them. Needs the category threaded through the parsed
-  item shape (additively — the item shape is a frozen contract), a way to
-  enumerate the known categories without walking every item, and a filter in
-  the UI. The standard RSS backend has no concept of categories, so whatever
-  is built must degrade visibly rather than silently doing nothing on one
-  backend — that asymmetry is the fragmentation the backend interface exists
-  to prevent.
-- **Per-feed refresh intervals.** Today one interval governs every feed. A
-  news feed and a weekly blog do not deserve the same poll rate.
-- **Audio enclosures to MPRIS**, so podcast feeds play through the DMS media
-  widget. `FeedParser.js` already parses enclosures for images, so the parsing
-  half largely exists.
-- **Miniflux full-text as a fast path.** `GET /v1/entries/{id}/fetch-content`
-  works and was measured (936 -> 8412 chars on a real article). Deliberately
-  unused so far: a feature that works on one backend and silently does nothing
-  on another is exactly the fragmentation above. Worth wiring behind the
-  `fullText` capability as an optimisation, and never as the only route —
-  local extraction must stay the fallback.
+- **Per-feed refresh intervals.** Today one interval governs every feed, and a
+  news feed does not deserve the same poll rate as a weekly blog.
+
+  Deliberately not attempted blind. It means skipping descriptors in
+  `fetchAllFeeds`, but `finalizeFetch` rebuilds `allItems` from whatever came
+  back that cycle -- so a skipped feed's articles would vanish from the list.
+  Doing it safely needs items retained for skipped feeds and merged back in,
+  which is a real change to the most important code path in the widget. There
+  is no way to execute QML on this machine, and the failure mode of getting it
+  subtly wrong is articles silently disappearing, which nobody notices until
+  they have already lost track of something. It wants a session where it can
+  actually be run.
+
+- **Audio enclosures to MPRIS -- half done, and the honest half is the
+  remaining one.** Parsing and playback exist: feeds expose `audioUrl`, and
+  "p" hands it to a configurable player. What does NOT exist is the stated
+  goal, which was for podcasts to appear in the DMS media widget. That widget
+  lists MPRIS players, and whether an episode shows up depends entirely on the
+  player: mpv does not publish MPRIS without the separate mpv-mpris plugin,
+  which is not installed here; VLC does natively.
+
+  Making it true regardless of player means the widget registering *itself* as
+  an MPRIS player -- owning playback, transport controls, position and
+  metadata. That is a much larger feature than "play this enclosure", and
+  worth deciding on rather than drifting into.
 
 ## Done, unreleased
 
@@ -51,6 +57,16 @@ one of these is *shipped but unproven* until the owner has lived with it.
 - **OPML export**, **feed autodiscovery**, **images in exported notes**,
   **per-source snooze** (`z` / `Shift+Z`), **mark-read-on-scroll**,
   **rule-based notifications**, and **sibling merging** in the extractor.
+- **Categories / folders** from Miniflux and Google Reader, with a cycling
+  filter chip hidden on backends that cannot supply them. Worth knowing: the
+  `categories` capability on Google Reader had been `true` and meaningless for
+  some time -- set because the subscription list returns them, with nothing
+  wired at item level. A capability flag that lies is worse than one that says
+  no, since the caller has no way to find out.
+- **Miniflux full-text fast path**, behind the `fullText` capability, which
+  also already existed and was false everywhere. Strictly an optimisation:
+  every failure falls through to local extraction, and the server's HTML goes
+  through the same extractor so both routes emit identical markdown.
 
 ## Three things this list got wrong
 
