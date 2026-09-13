@@ -363,131 +363,121 @@ PluginSettings {
     }
 
     // ─── Miniflux Connection (miniflux mode only) ───
-
-    StyledRect {
+    // Whole section is gated on sourceMode, so the `visible:` that used to
+    // sit on every single child here now sits once, on the section itself --
+    // DankCollapsibleSection is a plain Column child at this level, so it
+    // still needs its own `width: parent.width` (Layout.fillWidth does
+    // nothing inside the outer plain Column PluginSettings reparents into).
+    DankCollapsibleSection {
         width: parent.width
-        height: 1
-        color: root.roleColours.outlineVariant
         visible: sourceModeSetting.value === "miniflux"
-    }
+        title: "Miniflux Connection"
+        expanded: false
 
-    StyledText {
-        width: parent.width
-        text: "Miniflux Connection"
-        font.pixelSize: Theme.fontSizeMedium
-        font.weight: Font.Medium
-        color: root.roleColours.surfaceText
-        visible: sourceModeSetting.value === "miniflux"
-    }
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
 
-    Column {
-        width: parent.width
-        spacing: Theme.spacingXS
-        visible: sourceModeSetting.value === "miniflux"
-
-        StyledText {
-            text: "Server URL"
-            font.pixelSize: Theme.fontSizeSmall
-            color: root.roleColours.surfaceVariantText
-        }
-
-        DankTextField {
-            id: minifluxUrlField
-            width: parent.width
-            placeholderText: "https://miniflux.example.com"
-            text: root.loadValue("minifluxUrl", "")
-            onTextChanged: root.saveValue("minifluxUrl", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(minifluxUrlField);
+            StyledText {
+                text: "Server URL"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
             }
-        }
-    }
 
-    Column {
-        width: parent.width
-        spacing: Theme.spacingXS
-        visible: sourceModeSetting.value === "miniflux"
-
-        StyledText {
-            text: "API Token"
-            font.pixelSize: Theme.fontSizeSmall
-            color: root.roleColours.surfaceVariantText
-        }
-
-        // The token is never logged and never appears in a toast -- it is
-        // only ever read back into a curl -H argv element.
-        DankTextField {
-            id: minifluxTokenField
-            width: parent.width
-            placeholderText: "Your Miniflux API token"
-            text: root.loadValue("minifluxToken", "")
-            onTextChanged: root.saveValue("minifluxToken", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(minifluxTokenField);
-            }
-        }
-    }
-
-    ToggleSetting {
-        visible: sourceModeSetting.value === "miniflux"
-        settingKey: "syncReadOnOpen"
-        label: "Mark as read on open"
-        description: "Mark entries as read on the server when you open them"
-        defaultValue: true
-    }
-
-    ToggleSetting {
-        visible: sourceModeSetting.value === "miniflux"
-        settingKey: "showStarred"
-        label: "Show starred entries"
-        description: "Show only starred/bookmarked entries instead of unread entries"
-        defaultValue: false
-    }
-
-    Row {
-        visible: sourceModeSetting.value === "miniflux"
-        spacing: Theme.spacingM
-
-        DankButton {
-            text: "Test Connection"
-            iconName: "wifi_tethering"
-            onClicked: {
-                var url = minifluxUrlField.text.trim().replace(/\/$/, "");
-                var token = minifluxTokenField.text.trim();
-                if (!url || !token) {
-                    if (typeof ToastService !== "undefined")
-                        ToastService.showError("Enter URL and token first");
-                    return;
+            DankTextField {
+                id: minifluxUrlField
+                width: parent.width
+                placeholderText: "https://miniflux.example.com"
+                text: root.loadValue("minifluxUrl", "")
+                onTextChanged: root.saveValue("minifluxUrl", text)
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus) root.ensureItemVisible(minifluxUrlField);
                 }
-                Proc.runCommand(null,
-                    ["curl", "-sS", "--fail",
-                     "--connect-timeout", "5", "--max-time", "25",
-                     "--proto", "=http,https",
-                     "--proto-redir", "=http,https",
-                     "--max-redirs", "5",
-                     "--max-filesize", "5000000",
-                     "-H", "X-Auth-Token: " + token,
-                     url + "/v1/me"],
-                    function(output, exitCode) {
-                        if (exitCode === 0 && output && output.indexOf('"id"') !== -1) {
-                            if (typeof ToastService !== "undefined")
-                                ToastService.showInfo("Miniflux connection successful!");
-                            root.fetchMinifluxFeeds();
-                        } else {
-                            // Never include the URL/token in this message --
-                            // describe the failure only (same rule as above).
-                            if (typeof ToastService !== "undefined")
-                                ToastService.showError("Connection failed: check URL and token");
-                        }
-                    }, undefined, 30000
-                );
             }
         }
 
-        DankButton {
-            text: "Force Refresh"
-            iconName: "refresh"
-            onClicked: root.saveValue("lastRefreshRequest", Date.now())
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
+
+            StyledText {
+                text: "API Token"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
+
+            // The token is never logged and never appears in a toast -- it is
+            // only ever read back into a curl -H argv element.
+            DankTextField {
+                id: minifluxTokenField
+                width: parent.width
+                placeholderText: "Your Miniflux API token"
+                text: root.loadValue("minifluxToken", "")
+                onTextChanged: root.saveValue("minifluxToken", text)
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus) root.ensureItemVisible(minifluxTokenField);
+                }
+            }
+        }
+
+        ToggleSetting {
+            settingKey: "syncReadOnOpen"
+            label: "Mark as read on open"
+            description: "Mark entries as read on the server when you open them"
+            defaultValue: true
+        }
+
+        ToggleSetting {
+            settingKey: "showStarred"
+            label: "Show starred entries"
+            description: "Show only starred/bookmarked entries instead of unread entries"
+            defaultValue: false
+        }
+
+        Row {
+            spacing: Theme.spacingM
+
+            DankButton {
+                text: "Test Connection"
+                iconName: "wifi_tethering"
+                onClicked: {
+                    var url = minifluxUrlField.text.trim().replace(/\/$/, "");
+                    var token = minifluxTokenField.text.trim();
+                    if (!url || !token) {
+                        if (typeof ToastService !== "undefined")
+                            ToastService.showError("Enter URL and token first");
+                        return;
+                    }
+                    Proc.runCommand(null,
+                        ["curl", "-sS", "--fail",
+                         "--connect-timeout", "5", "--max-time", "25",
+                         "--proto", "=http,https",
+                         "--proto-redir", "=http,https",
+                         "--max-redirs", "5",
+                         "--max-filesize", "5000000",
+                         "-H", "X-Auth-Token: " + token,
+                         url + "/v1/me"],
+                        function(output, exitCode) {
+                            if (exitCode === 0 && output && output.indexOf('"id"') !== -1) {
+                                if (typeof ToastService !== "undefined")
+                                    ToastService.showInfo("Miniflux connection successful!");
+                                root.fetchMinifluxFeeds();
+                            } else {
+                                // Never include the URL/token in this message --
+                                // describe the failure only (same rule as above).
+                                if (typeof ToastService !== "undefined")
+                                    ToastService.showError("Connection failed: check URL and token");
+                            }
+                        }, undefined, 30000
+                    );
+                }
+            }
+
+            DankButton {
+                text: "Force Refresh"
+                iconName: "refresh"
+                onClicked: root.saveValue("lastRefreshRequest", Date.now())
+            }
         }
     }
 
@@ -495,128 +485,114 @@ PluginSettings {
     // Kept keyed on the mode string rather than a capability, deliberately:
     // a credential form is inherently backend-specific (Miniflux takes a
     // token, Google Reader takes a username and password), so there is
-    // nothing generic to ask a capability flag here.
-
-    StyledRect {
+    // nothing generic to ask a capability flag here. A separate section from
+    // Miniflux Connection above rather than one merged section: sourceMode
+    // makes the two mutually exclusive, so nothing is gained by combining
+    // them, and keeping them apart avoids a section whose title would have
+    // to describe two different credential forms at once.
+    DankCollapsibleSection {
         width: parent.width
-        height: 1
-        color: root.roleColours.outlineVariant
         visible: sourceModeSetting.value === "greader"
-    }
+        title: "Google Reader Connection"
+        expanded: false
 
-    StyledText {
-        width: parent.width
-        text: "Google Reader Connection"
-        font.pixelSize: Theme.fontSizeMedium
-        font.weight: Font.Medium
-        color: root.roleColours.surfaceText
-        visible: sourceModeSetting.value === "greader"
-    }
+            StyledText {
+                text: "Server URL"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
 
-    Column {
-        width: parent.width
-        spacing: Theme.spacingXS
-        visible: sourceModeSetting.value === "greader"
-
-        StyledText {
-            text: "Server URL"
-            font.pixelSize: Theme.fontSizeSmall
-            color: root.roleColours.surfaceVariantText
-        }
-
-        DankTextField {
-            id: greaderUrlField
-            width: parent.width
-            placeholderText: "https://miniflux.example.com"
-            text: root.loadValue("greaderUrl", "")
-            onTextChanged: root.saveValue("greaderUrl", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(greaderUrlField);
+            DankTextField {
+                id: greaderUrlField
+                width: parent.width
+                placeholderText: "https://miniflux.example.com"
+                text: root.loadValue("greaderUrl", "")
+                onTextChanged: root.saveValue("greaderUrl", text)
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus) root.ensureItemVisible(greaderUrlField);
+                }
             }
         }
-    }
 
-    Column {
-        width: parent.width
-        spacing: Theme.spacingXS
-        visible: sourceModeSetting.value === "greader"
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
 
-        StyledText {
-            text: "Username"
-            font.pixelSize: Theme.fontSizeSmall
-            color: root.roleColours.surfaceVariantText
-        }
+            StyledText {
+                text: "Username"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
 
-        // On Miniflux this is NOT the web login: Google Reader integration
-        // credentials are a separate username/password set under
-        // Settings -> Integrations. Entering the web username here gets a
-        // bare 401 from ClientLogin with nothing to explain why.
-        StyledText {
-            width: parent.width
-            text: "Separate from your web login -- set under Settings → Integrations on Miniflux."
-            font.pixelSize: Theme.fontSizeSmall - 2
-            color: root.roleColours.surfaceVariantText
-            wrapMode: Text.WordWrap
-        }
+            // On Miniflux this is NOT the web login: Google Reader integration
+            // credentials are a separate username/password set under
+            // Settings -> Integrations. Entering the web username here gets a
+            // bare 401 from ClientLogin with nothing to explain why.
+            StyledText {
+                width: parent.width
+                text: "Separate from your web login -- set under Settings → Integrations on Miniflux."
+                font.pixelSize: Theme.fontSizeSmall - 2
+                color: root.roleColours.surfaceVariantText
+                wrapMode: Text.WordWrap
+            }
 
-        DankTextField {
-            id: greaderUsernameField
-            width: parent.width
-            placeholderText: "Google Reader integration username"
-            text: root.loadValue("greaderUsername", "")
-            onTextChanged: root.saveValue("greaderUsername", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(greaderUsernameField);
+            DankTextField {
+                id: greaderUsernameField
+                width: parent.width
+                placeholderText: "Google Reader integration username"
+                text: root.loadValue("greaderUsername", "")
+                onTextChanged: root.saveValue("greaderUsername", text)
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus) root.ensureItemVisible(greaderUsernameField);
+                }
             }
         }
-    }
 
-    Column {
-        width: parent.width
-        spacing: Theme.spacingXS
-        visible: sourceModeSetting.value === "greader"
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
 
-        StyledText {
-            text: "Password"
-            font.pixelSize: Theme.fontSizeSmall
-            color: root.roleColours.surfaceVariantText
-        }
+            StyledText {
+                text: "Password"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
 
-        StyledText {
-            width: parent.width
-            text: "Also separate from your web password -- same Settings → Integrations page on Miniflux."
-            font.pixelSize: Theme.fontSizeSmall - 2
-            color: root.roleColours.surfaceVariantText
-            wrapMode: Text.WordWrap
-        }
+            StyledText {
+                width: parent.width
+                text: "Also separate from your web password -- same Settings → Integrations page on Miniflux."
+                font.pixelSize: Theme.fontSizeSmall - 2
+                color: root.roleColours.surfaceVariantText
+                wrapMode: Text.WordWrap
+            }
 
-        // Never logged and never appears in a toast -- it is only ever read
-        // back into a curl --data-urlencode argv element (see
-        // testGreaderConnection below), matching the token's own handling.
-        DankTextField {
-            id: greaderPasswordField
-            width: parent.width
-            placeholderText: "Google Reader integration password"
-            text: root.loadValue("greaderPassword", "")
-            onTextChanged: root.saveValue("greaderPassword", text)
-            onFocusStateChanged: hasFocus => {
-                if (hasFocus) root.ensureItemVisible(greaderPasswordField);
+            // Never logged and never appears in a toast -- it is only ever read
+            // back into a curl --data-urlencode argv element (see
+            // testGreaderConnection below), matching the token's own handling.
+            DankTextField {
+                id: greaderPasswordField
+                width: parent.width
+                placeholderText: "Google Reader integration password"
+                text: root.loadValue("greaderPassword", "")
+                onTextChanged: root.saveValue("greaderPassword", text)
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus) root.ensureItemVisible(greaderPasswordField);
+                }
             }
         }
-    }
 
-    Row {
-        visible: sourceModeSetting.value === "greader"
-        spacing: Theme.spacingM
+        Row {
+            spacing: Theme.spacingM
 
-        DankButton {
-            text: "Test Connection"
-            iconName: "wifi_tethering"
-            onClicked: root.testGreaderConnection(
-                greaderUrlField.text.trim().replace(/\/$/, ""),
-                greaderUsernameField.text.trim(),
-                greaderPasswordField.text.trim()
-            )
+            DankButton {
+                text: "Test Connection"
+                iconName: "wifi_tethering"
+                onClicked: root.testGreaderConnection(
+                    greaderUrlField.text.trim().replace(/\/$/, ""),
+                    greaderUsernameField.text.trim(),
+                    greaderPasswordField.text.trim()
+                )
+            }
         }
     }
 
@@ -625,41 +601,38 @@ PluginSettings {
     // first and falls back to the global plugin-wide store; savePluginData
     // writes to the instance config only. So these are per-instance for an
     // instanced widget and global otherwise -- the same as every other
-    // setting in this file.
-
-    StyledRect {
+    // setting in this file. Not gated: unlike Miniflux/Google Reader above,
+    // export is independent of sourceMode, so this section always shows
+    // (its own fields stay individually gated on the export folder / preset,
+    // per the comments below).
+    DankCollapsibleSection {
         width: parent.width
-        height: 1
-        color: root.roleColours.outlineVariant
-    }
+        title: "Notes Export"
+        // Left as content rather than folded into `description` -- it's
+        // three sentences explaining an opt-in gate (no folder = no export
+        // button), not a one-line summary, so squashing it into the
+        // description property would either truncate or look cramped.
+        expanded: false
 
-    StyledText {
-        width: parent.width
-        text: "Notes Export"
-        font.pixelSize: Theme.fontSizeMedium
-        font.weight: Font.Medium
-        color: root.roleColours.surfaceText
-    }
+        StyledText {
+            Layout.fillWidth: true
+            text: "Send an article to a local notes folder and, optionally, open it in an editor of your choice afterward. Leave the folder empty to disable this entirely -- no export button or shortcut appears until one is set."
+            font.pixelSize: Theme.fontSizeSmall
+            color: root.roleColours.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
 
-    StyledText {
-        width: parent.width
-        text: "Send an article to a local notes folder and, optionally, open it in an editor of your choice afterward. Leave the folder empty to disable this entirely -- no export button or shortcut appears until one is set."
-        font.pixelSize: Theme.fontSizeSmall
-        color: root.roleColours.surfaceVariantText
-        wrapMode: Text.WordWrap
-    }
-
-    // Stage 4d: editors used to each need their own hardcoded branch (see
-    // ExportProvider.js's design doc). Now there's one open-command template
-    // with `{path}` substituted, and "one more editor" is one more row in
-    // EXPORT_OPEN_PRESETS rather than a new code path. Picking a preset below
-    // fills the Command field; it stays editable afterward, and editing it
-    // does not change which preset is shown selected here -- so tweaking a
-    // preset's flags does not silently look like "Custom" was chosen instead.
-    Column {
-        id: exportPresetColumn
-        width: parent.width
-        spacing: Theme.spacingS
+        // Stage 4d: editors used to each need their own hardcoded branch (see
+        // ExportProvider.js's design doc). Now there's one open-command template
+        // with `{path}` substituted, and "one more editor" is one more row in
+        // EXPORT_OPEN_PRESETS rather than a new code path. Picking a preset below
+        // fills the Command field; it stays editable afterward, and editing it
+        // does not change which preset is shown selected here -- so tweaking a
+        // preset's flags does not silently look like "Custom" was chosen instead.
+        Column {
+            id: exportPresetColumn
+            Layout.fillWidth: true
+            spacing: Theme.spacingS
 
         readonly property var presets: ExportProvider.EXPORT_OPEN_PRESETS
         // resolveExportConfig() tells "never saved" apart from "saved as
@@ -704,7 +677,7 @@ PluginSettings {
     }
 
     Column {
-        width: parent.width
+        Layout.fillWidth: true
         spacing: Theme.spacingXS
 
         StyledText {
@@ -739,7 +712,7 @@ PluginSettings {
     // the Google Reader/Miniflux credential fields above, not a capability
     // check).
     Column {
-        width: parent.width
+        Layout.fillWidth: true
         spacing: Theme.spacingXS
         visible: exportPresetColumn.presetId === "obsidian"
 
@@ -770,7 +743,7 @@ PluginSettings {
     }
 
     Column {
-        width: parent.width
+        Layout.fillWidth: true
         spacing: Theme.spacingXS
 
         StyledText {
@@ -800,7 +773,7 @@ PluginSettings {
     }
 
     Column {
-        width: parent.width
+        Layout.fillWidth: true
         spacing: Theme.spacingXS
 
         StyledText {
@@ -830,7 +803,7 @@ PluginSettings {
     }
 
     Column {
-        width: parent.width
+        Layout.fillWidth: true
         spacing: Theme.spacingXS
 
         StyledText {
@@ -895,7 +868,7 @@ PluginSettings {
     }
 
     Column {
-        width: parent.width
+        Layout.fillWidth: true
         spacing: Theme.spacingXS
         visible: exportRootField.text.trim() !== "" && exportImagesSetting.value
 

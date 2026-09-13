@@ -45,21 +45,33 @@ Feed Management, Appearance, Reader, AI Summaries, Interest Ranking, Colour
 Theme, Notification Rules. **Feed Management starts expanded; the rest
 collapsed** — that is what the panel is usually opened for.
 
-## 2. Per-feed refresh intervals
+## 2. Per-feed refresh intervals — DONE (needs settings UI)
 
-The one item refused so far, and the reason is worth keeping: it means
-skipping descriptors in `fetchAllFeeds`, but `finalizeFetch` rebuilds
-`allItems` from whatever came back that cycle — so a skipped feed's articles
-would vanish from the list. Doing it safely needs items retained for skipped
-feeds and merged back in, which is a real change to the most important code
-path in the widget, and the failure mode of getting it subtly wrong is
-articles quietly disappearing.
+Implemented in `e490027`. The logic that blocked it for so long is handled:
 
-Shape to aim for: a per-feed `intervalMinutes` on the feed object, a
-`feedLastFetch` map in the state tier, descriptors filtered by what is due, and
-retained items merged in `finalizeFetch` for every feed that was skipped.
-Server-backed backends have one logical stream and no per-feed concept — the
-setting must hide rather than mislead there.
+- Skipped feeds' articles are restored before the dedupe from a retention pool,
+  so a feed that was not due keeps what it had.
+- `descriptors.length === 0` no longer means one thing. Every feed disabled →
+  clear the list (honest). Every feed merely inside its interval → leave it
+  alone (previously this emptied the widget).
+- Skipped feeds carry their previous status forward instead of a "loading" row
+  nothing resolves.
+- The decision is `ReaderState.isFeedDue(feed, lastFetchMap, nowMs)`, tested,
+  and deliberately biased: every malformed or missing input answers *due*,
+  including a clock that has moved backwards. Fetching too often costs a
+  request; fetching too rarely loses content.
+- Opt-in — no `intervalMinutes` means the global cycle, unchanged.
+- Stamped on attempt, not success, so a failing feed backs off too.
+
+**Still to do: the settings UI.** The feed rows in `DankRssWidgetSettings.qml`
+need a per-feed interval field writing `intervalMinutes` onto the feed object.
+Until that exists the feature is reachable only by hand-editing settings.json.
+It should be hidden for server-backed backends, which have one logical stream
+and no per-feed concept.
+
+This also fixed the digest pool, which had never worked: it was captured after
+the maxItems slice, so it was identical to `allItems` and the digest still
+could not see past the display cap.
 
 ## 3. MPRIS ownership for podcasts
 
