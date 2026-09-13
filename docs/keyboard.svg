@@ -56,6 +56,10 @@
     <rect x="37" y="541" width="56" height="24" rx="4" ry="4" fill="#424a53"/>
     <text x="65" y="560" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" text-anchor="middle">Space</text>
     <text x="134" y="560" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Toggle selection</text>
+    <rect x="34" y="580" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
+    <rect x="37" y="583" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
+    <text x="51" y="602" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">p</text>
+    <text x="134" y="602" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Play audio enclosure (podcasts)</text>
     <text x="500" y="96" fill="#6cb6ff" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="1.6">SEARCH, REFRESH, HELP</text>
     <rect x="500" y="104" width="400" height="1" fill="#30363d"/>
     <rect x="500" y="118" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
