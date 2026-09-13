@@ -85,3 +85,99 @@ Kept deliberately. Each was plausible, written down in good faith, and false.
 The pattern is worth naming: every one of these was a belief about the code
 that survived because nothing measured it. The extractor's oracle is the
 reason the third was caught, and the reason the other two took longer.
+
+## Post-v3 candidates, from researching other readers
+
+Researched 2026-09-13 across GitHub issue trackers, Hacker News and named
+blogs. Evidence quality is recorded per item **because that is the point** --
+"two independent projects have had this open for a decade" is a different
+signal from "someone mentioned it once", and the list is worth nothing if the
+two look the same here.
+
+**Caveat on coverage:** Reddit was unreachable during the research (r/rss,
+r/selfhosted, r/linux all returned nothing retrievable via general web search).
+Duplicate-item complaints, feed spam and paywalled-content frustration are
+plausible but were NOT independently validated. Treat Reddit sentiment as an
+open gap, not as checked-and-absent.
+
+### Worth building
+
+1. **Cross-feed deduplication.** Suppress items that appear near-identically
+   across mirrors, planets and syndication.
+   *Best-evidenced item found.* Miniflux #797 open since 2020 (57 reactions);
+   FreshRSS #948 open **ten years** (55 comments). Two independent codebases,
+   same unresolved complaint. Pure client-side logic, no vendor surface, and
+   fewer rows suits a narrow widget. Medium.
+
+2. **Keyword / regex mute filters, with optional expiry.** Hide items matching
+   a pattern, optionally for a fortnight (mute a spoiler term, let it lapse).
+   NetNewsWire #1864 is the single largest thread the research found --
+   64 reactions, 32 comments -- and users proposed the expiring form
+   themselves. Text filtering costs nothing at any width, and it complements
+   the embeddings ranking rather than competing with it. Small, or medium with
+   expiry.
+
+3. **Feed health transparency.** Say *why* a feed stopped updating -- HTTP
+   status, extraction failure, last success -- rather than going quietly
+   stale. FreshRSS #8429 puts it directly: it is "currently very vague when it
+   encounters issues with feeds". We already surface a failed-feed count that
+   names the errors on click; this is the per-feed, over-time version, and it
+   pairs naturally with per-feed intervals and snooze. Small-medium.
+
+4. **Explainable ranking.** Show which starred articles an item resembles,
+   instead of an opaque score. **`Ranking.explainRank` already exists, tested
+   and unwired** -- it returns exactly those structured facts. The research
+   validates building its UI: NewsBlur's trainer is repeatedly praised for not
+   being a black box, and the NetNewsWire thread on AI (#4665) has users
+   arguing the acceptable version is local, optional and non-mysterious --
+   which describes what is already built here, minus the explanation. Medium.
+
+5. **Remappable keyboard shortcuts.** NetNewsWire #508, 36 reactions. Given
+   how keyboard-first this widget is, a fixed keymap is the obvious complaint
+   waiting to arrive. `KeyMap.js` already isolates the decision, so this is
+   mostly a settings surface. Small-medium.
+
+6. **Backdating guard on sort.** Feeds that bulk-republish scramble a
+   chronological list; FreshRSS #2596 shipped a fix, confirming it is real.
+   Small.
+
+### Inferred, not requested -- treat with suspicion
+
+7. **Opt-in age-out of stale unread items.** Not asked for anywhere. It is a
+   synthesis of two opposing data points: the "unread count as anxiety"
+   critique (a 2023 Dan Q post, and the 2026 reader "Current" built on that
+   thesis), against the Reeder 2024 backlash when unread tracking was *removed*
+   and at least three named bloggers objected. The lesson from that pair is
+   "do not remove unread state", so any version of this must be opt-in and must
+   age items out of the count without deleting them. Medium, and the riskiest
+   item here.
+
+### Deliberately not doing
+
+- **Unified social/RSS/video timelines** (the direction Reeder took) -- needs a
+  card canvas, and was actively disliked by Reeder's own users.
+- **Dashboard-style AI reports** (Inoreader) -- does not compress into a few
+  hundred pixels.
+- **LDAP / Active Directory auth** -- FreshRSS's most-reacted open issue (#1053,
+  44 reactions), and entirely irrelevant to a single-user widget. A reminder
+  that raw reaction counts are not transferable between products.
+- **A read-it-later queue** -- redundant with markdown export, which already
+  serves "keep this" through a file interface rather than another inbox.
+- **A newsletter-to-RSS bridge** -- would mean running hosted infrastructure.
+  Users can already point the widget at Kill the Newsletter's output like any
+  other feed, so there is no product work to do.
+
+### Confirmed strengths, worth saying out loud in the README
+
+Each of these is something users of other readers are actively missing:
+
+- **Google Reader API sync** -- a Mozilla Bugzilla ticket for Thunderbird sync
+  has been open **twenty years** (#308436); Liferea rewrote for it.
+- **Local full-text extraction** -- that same ticket calls full-article caching
+  "a massive gap in the market".
+- **Vim-style keyboard navigation** -- the most consistent praise cluster in the
+  whole research set, four independent 2024-25 posts about Newsboat.
+- **Per-feed refresh intervals** -- Miniflux #412, 47 reactions, still open there.
+- **Local, opt-in AI rather than a cloud upsell** -- the exact axis on which
+  Feedly Leo and Inoreader Intelligence are criticised.
+- **Podcast enclosures without a second tool** -- Newsboat users need podboat.
