@@ -73,17 +73,28 @@ This also fixed the digest pool, which had never worked: it was captured after
 the maxItems slice, so it was identical to `allItems` and the digest still
 could not see past the display cap.
 
-## 3. MPRIS ownership for podcasts
+## 3. MPRIS ownership — NOT POSSIBLE, and that is the finding
 
-Parsing and playback exist (`audioUrl`, `p`). The stated goal — podcasts
-appearing in the DMS media widget — does not, because that widget lists MPRIS
-*players* and mpv does not publish MPRIS without `mpv-mpris` (not installed
-here; VLC does natively).
+Settled by inspection of Quickshell's own type metadata rather than by
+attempting it. `Quickshell.Services.Mpris` exports exactly four types —
+`Mpris`, `MprisPlayer`, `MprisLoopState`, `MprisPlaybackState` — and **every
+one is `isCreatable: false`**. It is a consumer API: a shell can read the
+players on the bus, it cannot instantiate one. `quickshell-core` exposes no
+D-Bus service-export type either; the only D-Bus module is `DBusMenu`, which is
+for menus.
 
-Making it player-independent means the widget registering **itself** as an
-MPRIS player: owning playback, transport controls, position and metadata.
-That is a much larger feature than "play this enclosure". Decide the scope
-before starting.
+So this plugin **cannot register itself as an MPRIS player**. The only route
+would be shipping a separate daemon that owns playback and publishes the
+interface — a different product, not a plugin feature.
+
+What shipped instead is the honest version: `p` hands the episode to a
+configurable player, and the settings panel now has a Podcast Audio section
+that says plainly which players publish MPRIS (VLC, Strawberry, Audacious,
+Rhythmbox natively; mpv only with the separate mpv-mpris plugin) and that
+without one the episode still plays but will not appear in the media widget.
+
+The backlog item as originally written cannot be completed. It should be
+closed with this reasoning rather than left open to be re-attempted.
 
 ## 4. Adversarial review
 

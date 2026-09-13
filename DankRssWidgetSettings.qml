@@ -224,16 +224,22 @@ PluginSettings {
         var url = validated.url;
         var name = nameField.text.trim() || url;
 
+        // 0 means "no per-feed interval" -- ReaderState.isFeedDue treats any
+        // non-positive value as always-due, so an empty or nonsense entry
+        // falls back to the global cycle rather than throttling by accident.
+        var interval = Math.max(0, Math.floor(Number(intervalField.text.trim()) || 0));
+
         var currentFeeds = root.loadValue("feeds", []);
         if (root.editingIndex === -1) {
-            currentFeeds = currentFeeds.concat([{ name: name, url: url, enabled: true, addedAt: Date.now() }]);
+            currentFeeds = currentFeeds.concat([{ name: name, url: url, enabled: true, addedAt: Date.now(), intervalMinutes: interval }]);
         } else {
             var existing = currentFeeds[root.editingIndex] || {};
             currentFeeds[root.editingIndex] = {
                 name: name,
                 url: url,
                 enabled: existing.enabled !== false,
-                addedAt: existing.addedAt
+                addedAt: existing.addedAt,
+                intervalMinutes: interval
             };
             root.editingIndex = -1;
         }
@@ -241,6 +247,7 @@ PluginSettings {
 
         nameField.text = "";
         urlField.text = "";
+        intervalField.text = "";
         return true;
     }
 
@@ -1172,6 +1179,41 @@ PluginSettings {
                 }
             }
 
+            // Per-feed interval lives in the add/edit form rather than on the
+            // feed rows: the rows already carry a status line, a toggle and
+            // four buttons, and a numeric field on each would not survive a
+            // narrow panel. Hidden for server-backed backends, which have one
+            // logical stream and no per-feed polling to schedule -- showing it
+            // there would be a control that silently does nothing.
+            Column {
+                width: parent.width
+                spacing: Theme.spacingXS
+                visible: !root.currentBackend.capabilities.serverState
+
+                StyledText {
+                    text: "Refresh Interval (minutes)"
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: root.roleColours.surfaceVariantText
+                }
+
+                StyledText {
+                    width: parent.width
+                    text: "Leave empty to follow the global refresh interval. A weekly blog does not need the same poll rate as a news wire."
+                    font.pixelSize: Theme.fontSizeSmall - 2
+                    color: root.roleColours.surfaceVariantText
+                    wrapMode: Text.WordWrap
+                }
+
+                DankTextField {
+                    id: intervalField
+                    width: parent.width
+                    placeholderText: "Follows the global interval"
+                    onFocusStateChanged: hasFocus => {
+                        if (hasFocus) root.ensureItemVisible(intervalField);
+                    }
+                }
+            }
+
             Column {
                 width: parent.width
                 spacing: Theme.spacingXS
@@ -1607,6 +1649,7 @@ PluginSettings {
                                     var feed = root.loadValue("feeds", [])[index];
                                     nameField.text = feed.name || "";
                                     urlField.text = feed.url || "";
+                                    intervalField.text = (feed.intervalMinutes > 0) ? String(feed.intervalMinutes) : "";
                                     root.ensureItemVisible(nameField);
                                 }
                             }
@@ -2486,6 +2529,52 @@ PluginSettings {
         }
     }
     } // end Colour Theme DankCollapsibleSection
+
+    // ─── Podcast Audio ───
+    //
+    // This section exists mostly to be honest about a limitation. The backlog
+    // wanted podcast episodes to appear in the DMS media widget; that widget
+    // lists MPRIS players, and Quickshell's MPRIS module is consumption-only
+    // (every type in Quickshell.Services.Mpris is isCreatable: false), so this
+    // plugin cannot register itself as one. Whether an episode shows up there
+    // is therefore entirely a property of the player you choose, and the only
+    // useful thing the settings panel can do is say so.
+
+    DankCollapsibleSection {
+        width: parent.width
+        title: "Podcast Audio"
+        description: "Which player handles an episode when you press p."
+
+        Column {
+            Layout.fillWidth: true
+            spacing: Theme.spacingXS
+
+            StyledText {
+                text: "Player Command"
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
+
+            StyledText {
+                width: parent.width
+                text: "The episode URL is appended as the last argument. For it to also appear in the DMS media widget the player must publish MPRIS: VLC, Strawberry, Audacious and Rhythmbox do natively, and mpv does only with the separate mpv-mpris plugin installed. Without that it still plays, it just will not show up there."
+                font.pixelSize: Theme.fontSizeSmall - 2
+                color: root.roleColours.surfaceVariantText
+                wrapMode: Text.WordWrap
+            }
+
+            DankTextField {
+                id: audioPlayerField
+                width: parent.width
+                placeholderText: "mpv"
+                text: root.loadValue("audioPlayerCommand", "")
+                onTextChanged: root.saveValue("audioPlayerCommand", text)
+                onFocusStateChanged: hasFocus => {
+                    if (hasFocus) root.ensureItemVisible(audioPlayerField);
+                }
+            }
+        }
+    }
 
     // ─── Notification Rules ───
     // Add/list/delete only -- a full rule builder is out of scope (see the

@@ -131,3 +131,105 @@ jobs:
           done
           if [ "$status" = "0" ]; then echo "all .qml files are syntactically valid"; fi
           exit $status
+
+  # ─── Semantic QML checking: the gap that took the widget down ───
+  #
+  # qmlformat above is a SYNTAX check. It parses, and has no opinion about
+  # whether a property exists on the type it is assigned to. On 2026-09-13 a
+  # change assigning lineHeightMode to a TextEdit (a Text-only property)
+  # passed CI and then failed at load: one bad property makes the type
+  # unavailable, which made ReaderWindow unavailable, which stopped the whole
+  # widget from loading. Nothing in CI said a word.
+  #
+  # qmllint catches exactly that. It CANNOT resolve the qs.* namespace --
+  # Quickshell synthesises those types and ships no qmldir, so that will never
+  # work on a runner -- but it resolves plain QtQuick types fine, which is
+  # where that bug lived and where most of this kind live.
+  #
+  # So: run it, and fail only on the message classes that indicate a real type
+  # error. Everything else (unresolved qs.* imports, "unknown grouped property
+  # scope font" on StyledText) is unavoidable noise from types it cannot see,
+  # and treating it as failure would make this job permanently red.
+  qml-types:
+    name: qml-types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install qmllint
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qt6-declarative-dev-tools
+
+      - name: locate qmllint
+        id: find
+        run: |
+          bin=$(command -v qmllint || true)
+          [ -n "$bin" ] || bin=$(ls /usr/lib/qt6/bin/qmllint 2>/dev/null || true)
+          [ -n "$bin" ] || bin=$(find /usr -name 'qmllint*' -type f -perm -u+x 2>/dev/null | head -1)
+          if [ -z "$bin" ]; then
+            echo "::error::qmllint not found after installing qt6-declarative-dev-tools"
+            exit 1
+          fi
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
+          "$bin" --version
+
+      # Same discipline as qml-syntax: prove the checker can fail before
+      # trusting it. That matters more here, because the filter below is a
+      # regex over free-text warnings -- a Qt release rewording a message
+      # would otherwise silently disarm the entire job.
+      - name: prove the checker can fail
+        run: |
+          printf 'import QtQuick\nTextEdit { lineHeightMode: Text.ProportionalHeight }\n' > /tmp/badprop.qml
+          if ! "${{ steps.find.outputs.bin }}" /tmp/badprop.qml 2>&1 | grep -qiE "missing-property|Could not find property"; then
+            echo "::error::qmllint did not flag a known-bad property -- the filter below proves nothing"
+            exit 1
+          fi
+          echo "checker flags a missing property as expected"
+
+      - name: check QML types
+        run: |
+          status=0
+          for f in *.qml tests/qml/*.qml; do
+            [ -e "$f" ] || continue
+            out=$("${{ steps.find.outputs.bin }}" -I . "$f" 2>&1 | grep -iE "missing-property|Could not find property|Cannot assign|Type .* unavailable" || true)
+            if [ -n "$out" ]; then
+              echo "::error file=$f::QML type error"
+              echo "$out"
+              status=1
+            fi
+          done
+          if [ "$status" = "0" ]; then echo "no QML type errors"; fi
+          exit $status
+
+  # ─── Real QML execution ───
+  #
+  # Six smoke tests under an actual headless engine (~2s locally). Catches
+  # what neither the formatter nor the linter can: wiring that resolves and
+  # type-checks but is still wrong -- a signal connected to nothing, a
+  # function that moved out of scope, a DI shape that does not match.
+  #
+  # run.sh finds its own Qt and SKIPS CLEANLY (exit 0) when there is none, so
+  # if the runner's package layout differs this reports green rather than
+  # blocking. Grep the log for "SKIP:" to know whether it really ran.
+  qml-smoke:
+    name: qml-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install the qml runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qt6-declarative-dev-tools qml6-module-qtqml qml6-module-qtquick
+
+      - name: run the QML smoke tests
+        run: |
+          qmlbin=$(command -v qml6 || command -v qml || true)
+          if [ -z "$qmlbin" ]; then
+            echo "::warning::no qml runtime found; tests/qml/run.sh will skip"
+          else
+            export QT_DIR="$(dirname "$(dirname "$(readlink -f "$qmlbin")")")"
+            echo "QT_DIR=$QT_DIR"
+          fi
+          bash tests/qml/run.sh

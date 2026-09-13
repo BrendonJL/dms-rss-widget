@@ -1,13 +1,53 @@
-# Staged CI changes
+# CI
 
-> **Status:** the qml-syntax job below is live in `.github/workflows/tests.yml`
-> (applied in `ebea5c5`). The changelog-path change below is **pending** — it is
-> in `tests.yml.proposed` only. Diff the two before trusting either.
-
-Claude cannot write to `.github/workflows/` — a security hook blocks all
-workflow-file writes. Future changes get staged here for a human to move:
+The live workflow is `.github/workflows/tests.yml`. `tests.yml.proposed` in
+this directory is the version to apply next; Claude cannot write into
+`.github/workflows/`, so changes land here first and a human copies them:
 
     cp docs/ci/tests.yml.proposed .github/workflows/tests.yml
+
+## PENDING — two new jobs, from the pre-v3 CI review
+
+`tests.yml.proposed` adds `qml-types` and `qml-smoke` to the three jobs that
+already exist. Everything else in the file is unchanged.
+
+**`qml-types` is the important one.** It closes the gap that took the widget
+down on 2026-09-13: a change assigning `lineHeightMode` to a `TextEdit` (a
+`Text`-only property) passed CI and then failed at load, because one bad
+property makes the type unavailable, which made `ReaderWindow` unavailable,
+which stopped the plugin loading. `qmlformat` is a *syntax* check and had no
+opinion about it.
+
+`qmllint` does. It cannot resolve the `qs.*` namespace — Quickshell
+synthesises those types and ships no qmldir, so that will never work on a
+runner — but it resolves plain QtQuick types, which is where that bug lived.
+The job greps its output for `missing-property`, `Could not find property`,
+`Cannot assign` and `Type .* unavailable`, and fails only on those. Everything
+else is unavoidable noise from types it cannot see; treating it as failure
+would make the job permanently red and then ignored.
+
+It carries the same self-test discipline as `qml-syntax`: before checking
+anything it feeds qmllint a deliberately bad `TextEdit { lineHeightMode: ... }`
+and fails if that is NOT flagged. The filter is a regex over free-text
+warnings, and a Qt release rewording a message would otherwise disarm the whole
+job silently. Verified locally: the fixture trips, and all nine real `.qml`
+files pass.
+
+**`qml-smoke`** runs `tests/qml/run.sh` — six tests under a real headless
+engine, about two seconds. It catches what neither the formatter nor the
+linter can: wiring that resolves and type-checks and is still wrong. One
+caveat worth knowing — the script has been proven against a Nix Qt, not
+against Ubuntu's `qt6-declarative-dev-tools`, and it **skips cleanly (exit 0)**
+when it cannot find a runtime. So a green tick alone does not prove it ran;
+grep the log for `SKIP:` the first time.
+
+Deliberately NOT added: the extraction oracle. Its value is proven — it has
+caught a `ReferenceError` that 689 unit tests missed, and a silent quality
+drop from 91.1% to 62.6% — but its fixtures are gitignored and not ours to
+redistribute, so CI would have to fetch live from Wikipedia, LWN, the Guardian
+and several personal blogs on every PR. For a single maintainer, a gate that
+fails over a dead link gets disabled, which is worse than not having it. If it
+ever goes in, it belongs on a schedule reporting a number, not on the PR path.
 
 ## APPLIED — the changelog check reads `CHANGELOG.md`
 
