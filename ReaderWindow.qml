@@ -52,6 +52,8 @@ DankFloatingWindow {
     // one" and renders whatever lands on the digest* properties, the same
     // split used for summaryRequested above.
     signal digestRequested
+    // The widget owns the clipboard, as it owns every other side effect here.
+    signal copyRequested(string text)
 
     property string itemId: ""
     property string articleTitle: ""
@@ -198,6 +200,19 @@ DankFloatingWindow {
     visible: false
 
     onClosed: root.visible = false
+
+    // Copies what is on screen -- the digest in digest mode, the article
+    // otherwise. Whole-document rather than a selection, because the body
+    // blocks are Text items and Qt cannot select those; see the comment on
+    // the body repeater for why that trade was forced rather than chosen.
+    function copyBody() {
+        var text = root.digestMode ? root.digestText : root.body;
+        if (!text)
+            return;
+        var header = root.digestMode ? "" : ((root.articleTitle || "") + "\n\n");
+        var footer = (!root.digestMode && root.link) ? ("\n\n" + root.link) : "";
+        root.copyRequested(header + text + footer);
+    }
 
     function dismiss() {
         root.visible = false;
@@ -530,6 +545,10 @@ DankFloatingWindow {
                     root.starRequested(root.itemId);
                 event.accepted = true;
                 break;
+            case KeyMap.Key_C:
+                root.copyBody();
+                event.accepted = true;
+                break;
             case KeyMap.Key_F:
                 // Only meaningful in summary-only mode; elsewhere the article
                 // is already loaded and "f" should stay an ordinary unhandled
@@ -660,6 +679,17 @@ DankFloatingWindow {
                     Accessible.role: Accessible.Button
                     Accessible.name: root.digestLoading ? "Generating digest" : "Regenerate digest"
                     Accessible.onPressAction: root.digestRequested()
+                }
+
+                DankActionButton {
+                    activeFocusOnTab: false
+                    iconName: "content_copy"
+                    iconSize: Theme.iconSize - 4
+                    iconColor: root.roleColours.surfaceText
+                    onClicked: root.copyBody()
+                    Accessible.role: Accessible.Button
+                    Accessible.name: root.digestMode ? "Copy digest" : "Copy article text"
+                    Accessible.onPressAction: root.copyBody()
                 }
 
                 DankActionButton {
@@ -876,16 +906,20 @@ DankFloatingWindow {
                 Repeater {
                     model: root._bodyBlocks
 
-                    // TextEdit rather than Text, solely so the prose can be
-                    // selected and copied. A reading window you cannot quote
-                    // from is a strange kind of reading window.
+                    // Text, not TextEdit, and that is a forced choice worth
+                    // recording: TextEdit would give mouse selection, but it
+                    // has no lineHeight/lineHeightMode at all, and explicit
+                    // line height is the core of this window's typography
+                    // (see the phase 5b design doc). Swapping to TextEdit for
+                    // selection cost the whole measure -- and in fact failed
+                    // outright, since assigning lineHeightMode to a TextEdit
+                    // makes the type unavailable and takes the entire widget
+                    // down with it.
                     //
-                    // readOnly keeps it a display element; selectByMouse and
-                    // the I-beam cursor are the whole point. persistentSelection
-                    // is off so clicking another paragraph clears the last
-                    // one, which is what a page of prose should feel like
-                    // rather than accumulating highlights block by block.
-                    TextEdit {
+                    // Copying is served by "c" / the copy button instead,
+                    // which takes the whole article. Losing per-paragraph
+                    // selection is the lesser cost.
+                    Text {
                         required property string modelData
 
                         readonly property string blockType: root._classifyBlock(modelData)
@@ -893,16 +927,8 @@ DankFloatingWindow {
 
                         Layout.fillWidth: true
                         text: root._displayText(modelData, blockType)
-                        textFormat: TextEdit.MarkdownText
-                        wrapMode: TextEdit.WordWrap
-                        readOnly: true
-                        selectByMouse: true
-                        persistentSelection: false
-                        // Keys must keep reaching contentScope: without this a
-                        // TextEdit with focus swallows j/k/Escape and the
-                        // window stops responding to its own bindings.
-                        activeFocusOnPress: true
-                        Keys.forwardTo: [contentScope]
+                        textFormat: Text.MarkdownText
+                        wrapMode: Text.WordWrap
                         color: root.roleColours.surfaceText
                         // Code is the one block that genuinely needs the
                         // monospace family regardless of what the reader

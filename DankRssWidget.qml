@@ -1138,6 +1138,23 @@ DesktopPluginComponent {
             root.failedFeedSummary);
     }
 
+    // Quickshell exposes no clipboard type and DMS's ClipboardService only
+    // re-copies entries that are already in its history, so neither can take
+    // arbitrary text. wl-copy can, it is present on this system, and "--"
+    // plus argv (never a shell string) keeps an article body that happens to
+    // contain quotes or a leading dash from being read as options.
+    //
+    // execDetached rather than runCommand: wl-copy deliberately stays alive to
+    // serve the selection, and runCommand would kill it on timeout -- taking
+    // the clipboard contents with it.
+    function copyToClipboard(text) {
+        if (!text)
+            return;
+        Quickshell.execDetached(["wl-copy", "--", text]);
+        if (typeof ToastService !== "undefined")
+            ToastService.showInfo("Copied to clipboard");
+    }
+
     function unsnoozeAll() {
         var count = 0;
         for (var k in root.snoozeMap) {
@@ -2672,6 +2689,7 @@ DesktopPluginComponent {
         summaryAvailable: root.aiReady
         onSummaryRequested: itemId => root.requestSummary(itemId)
         onDigestRequested: root.generateDigest()
+        onCopyRequested: text => root.copyToClipboard(text)
 
         // Closing this window cannot hand Wayland keyboard focus back to the
         // widget. forceActiveFocus() only sets Qt's own internal focus item,

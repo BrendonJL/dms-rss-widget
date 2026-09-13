@@ -55,6 +55,10 @@ var Key_Z = 0x5a;
 // only a summary. Not routed through resolveKey -- there is no list-side
 // meaning for it.
 var Key_F = 0x46;
+// Reader-window-only: "c" copies the article (or digest) to the clipboard.
+// Whole-document, because the reader renders Text blocks, which Qt cannot
+// select -- see ReaderWindow.qml for why that trade was forced.
+var Key_C = 0x43;
 // "p" plays the cursor row's audio enclosure, if it has one. A row action:
 // it plays THIS episode. Freed up when the reader's next/previous moved to
 // Shift+J / Shift+K.
@@ -288,6 +292,7 @@ if (typeof module !== "undefined" && module.exports) {
         Key_Z: Key_Z,
         Key_P: Key_P,
         Key_F: Key_F,
+        Key_C: Key_C,
         Key_Space: Key_Space,
         Key_Slash: Key_Slash,
         Key_Question: Key_Question,

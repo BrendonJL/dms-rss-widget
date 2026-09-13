@@ -87,6 +87,39 @@ mutation-checked by reverting the fix and confirming the test fails:
 
 ## Practical notes
 
+**`qmlformat` is a syntax check, not a type check — and the difference took the
+widget down.** Changing a body block from `Text` to `TextEdit` to make it
+selectable parsed perfectly and passed CI, then failed at load with *"Cannot
+assign to non-existent property lineHeightMode"* — `TextEdit` has no
+`lineHeight`. One bad property made the type unavailable, which made
+`ReaderWindow` unavailable, which made the whole widget refuse to load.
+
+`qmllint` catches exactly this, and it is worth running locally even though it
+cannot resolve the `qs.*` namespace. It resolves plain QtQuick types fine, so
+every property assignment on `Text`, `Rectangle`, `Timer`, `ListView` and
+friends is checked:
+
+    NIX=/nix/store/<qtdeclarative>/
+    for f in *.qml; do
+      $NIX/bin/qmllint -I $NIX/lib/qt-6/qml -I . "$f" 2>&1 \
+        | grep -iE "missing-property|Could not find property|Cannot assign|Type .* unavailable"
+    done
+
+Filter the output: warnings about `qs.Common`/`qs.Widgets` imports and
+"unknown grouped property scope font" on `StyledText` are unavoidable noise
+from types it cannot see. What matters is `missing-property` on a type it
+*can* see. Verified by reintroducing the bug on a scratch copy and confirming
+qmllint flagged it.
+
+**Quickshell has no clipboard type**, and DMS's `ClipboardService` only
+re-copies entries already in its history — neither takes arbitrary text. Use
+`Quickshell.execDetached(["wl-copy", "--", text])`: argv rather than a shell
+string so article text containing quotes or a leading dash is safe, and
+`execDetached` rather than `runCommand` because wl-copy deliberately stays
+alive to serve the selection and a timeout kill would take the clipboard
+contents with it.
+
+
 - `Quickshell.execDetached` for anything long-lived (an editor). `Proc.runCommand`
   applies a default timeout and kills what it spawned, which is right for a
   command that returns output and wrong for a process the widget has no further
