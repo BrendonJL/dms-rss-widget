@@ -530,6 +530,15 @@ DankFloatingWindow {
                     root.starRequested(root.itemId);
                 event.accepted = true;
                 break;
+            case KeyMap.Key_F:
+                // Only meaningful in summary-only mode; elsewhere the article
+                // is already loaded and "f" should stay an ordinary unhandled
+                // key rather than silently doing nothing visible.
+                if (!root.digestMode && root.summaryOnly && root.link !== "") {
+                    root.loadFullText();
+                    event.accepted = true;
+                }
+                break;
             case KeyMap.Key_I:
                 // Accepted only when the affordance exists, so "i" stays an
                 // ordinary unhandled key on an unconfigured widget rather
@@ -855,7 +864,7 @@ DankFloatingWindow {
                         id: loadFullButton
                         anchors.horizontalCenter: parent.horizontalCenter
                         y: Theme.spacingM
-                        text: "Load full article"
+                        text: "Load full article  (f)"
                         iconName: "download"
                         onClicked: root.loadFullText()
                         Accessible.role: Accessible.Button
@@ -867,7 +876,16 @@ DankFloatingWindow {
                 Repeater {
                     model: root._bodyBlocks
 
-                    Text {
+                    // TextEdit rather than Text, solely so the prose can be
+                    // selected and copied. A reading window you cannot quote
+                    // from is a strange kind of reading window.
+                    //
+                    // readOnly keeps it a display element; selectByMouse and
+                    // the I-beam cursor are the whole point. persistentSelection
+                    // is off so clicking another paragraph clears the last
+                    // one, which is what a page of prose should feel like
+                    // rather than accumulating highlights block by block.
+                    TextEdit {
                         required property string modelData
 
                         readonly property string blockType: root._classifyBlock(modelData)
@@ -875,8 +893,16 @@ DankFloatingWindow {
 
                         Layout.fillWidth: true
                         text: root._displayText(modelData, blockType)
-                        textFormat: Text.MarkdownText
-                        wrapMode: Text.WordWrap
+                        textFormat: TextEdit.MarkdownText
+                        wrapMode: TextEdit.WordWrap
+                        readOnly: true
+                        selectByMouse: true
+                        persistentSelection: false
+                        // Keys must keep reaching contentScope: without this a
+                        // TextEdit with focus swallows j/k/Escape and the
+                        // window stops responding to its own bindings.
+                        activeFocusOnPress: true
+                        Keys.forwardTo: [contentScope]
                         color: root.roleColours.surfaceText
                         // Code is the one block that genuinely needs the
                         // monospace family regardless of what the reader

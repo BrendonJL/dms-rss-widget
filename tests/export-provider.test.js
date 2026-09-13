@@ -926,3 +926,31 @@ test("the source contains no literal control characters", () => {
     var bad = new RegExp("[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f]").exec(src);
     assert.equal(bad, null, "use an escape such as \\u0000, never a raw control byte");
 });
+
+// ─── buildImageFetchRequest must create its own directory ───
+//
+// Regression cover for a shipped bug. curl refuses to write into a directory
+// that does not exist and exits 23; the attachments folder never exists on a
+// first export, so every image failed, no folder appeared, and the note kept
+// its remote URLs. The symptom was indistinguishable from the feature being
+// switched off, which is why it survived a manual test pass.
+
+describe("buildImageFetchRequest directory creation", () => {
+    const EP = require("../ExportProvider.js");
+
+    test("passes --create-dirs so a first export can write its attachments folder", () => {
+        const req = EP.buildImageFetchRequest("https://ex.com/a.jpg", "attachments/note-0.jpg");
+        assert.ok(req.argv.indexOf("--create-dirs") !== -1,
+            "--create-dirs missing: every first-time image fetch will exit 23");
+    });
+
+    test("--create-dirs comes before -o, which is what curl requires", () => {
+        const req = EP.buildImageFetchRequest("https://ex.com/a.jpg", "attachments/note-0.jpg");
+        assert.ok(req.argv.indexOf("--create-dirs") < req.argv.indexOf("-o"));
+    });
+
+    test("still writes to the destination it was given", () => {
+        const req = EP.buildImageFetchRequest("https://ex.com/a.jpg", "attachments/note-0.jpg");
+        assert.equal(req.argv[req.argv.indexOf("-o") + 1], "attachments/note-0.jpg");
+    });
+});

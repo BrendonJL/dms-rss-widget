@@ -1790,9 +1790,18 @@ PluginSettings {
                     var path = opmlExportPathField.text.trim();
                     if (!path) {
                         if (typeof ToastService !== "undefined")
-                            ToastService.showError("Enter a destination path first");
+                            ToastService.showError("Enter a destination path or folder first");
                         return;
                     }
+                    // A folder is the obvious thing to type here, and typing
+                    // one used to fail with "could not access" -- which reads
+                    // as a permissions problem rather than "you gave me a
+                    // directory". Anything with no file extension in its last
+                    // segment is treated as a folder and gets a filename.
+                    var last = path.replace(/\/+$/, "").split("/").pop();
+                    if (path.charAt(path.length - 1) === "/" || last.indexOf(".") < 0)
+                        path = path.replace(/\/+$/, "") + "/dank-rss-feeds.opml";
+
                     var xml = FeedParser.buildOpml(root.loadValue("feeds", []), { dateCreated: new Date().toUTCString() });
                     var view = opmlExportFileViewComponent.createObject(root, { path: path });
                     view.setText(xml);
@@ -2379,6 +2388,16 @@ PluginSettings {
                 // pressed again before the probe returns.
                 Proc.runCommand(null, req.argv,
                     function(out, code) {
+                        // A nonzero exit with no body is a dead socket, not a
+                        // bad response. Parsing "" then reporting "Parse
+                        // failed" told the user their JSON was malformed when
+                        // in fact nothing had answered at all.
+                        if (code !== 0 && !out) {
+                            if (typeof ToastService !== "undefined")
+                                ToastService.showError("Could not reach " + root.effectiveAiBaseUrl(),
+                                    code === 124 ? "The request timed out." : "Is the runtime running?");
+                            return;
+                        }
                         var result = req.parse(out || "");
                         if (!result || !result.reachable) {
                             // AiProvider now sends --fail-with-body, so a

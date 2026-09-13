@@ -51,6 +51,10 @@ var Key_D = 0x44;
 // snoozed feed, and is the only way back: a snoozed feed's items are filtered
 // out of the list, so there is no row left to toggle.
 var Key_Z = 0x5a;
+// Reader-window-only: "f" loads the full article when the reader is showing
+// only a summary. Not routed through resolveKey -- there is no list-side
+// meaning for it.
+var Key_F = 0x46;
 // "p" plays the cursor row's audio enclosure, if it has one. A row action:
 // it plays THIS episode. Freed up when the reader's next/previous moved to
 // Shift+J / Shift+K.
@@ -283,6 +287,7 @@ if (typeof module !== "undefined" && module.exports) {
         Key_D: Key_D,
         Key_Z: Key_Z,
         Key_P: Key_P,
+        Key_F: Key_F,
         Key_Space: Key_Space,
         Key_Slash: Key_Slash,
         Key_Question: Key_Question,

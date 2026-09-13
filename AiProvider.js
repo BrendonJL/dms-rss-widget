@@ -241,16 +241,65 @@ function summarisePrompt(article) {
     return "Title: " + title + "\n\n" + description;
 }
 
+// The prompt has a HARD character budget, and that is the whole design.
+//
+// Measured on this machine 2026-09-13: llama3.2:3b advertises a 131072-token
+// context, but ollama allocates 4096 at RUNTIME (`/api/ps` reports
+// context_length: 4096). Anything beyond that is silently truncated -- no
+// error, no warning, just a digest that quietly ignores most of its input.
+// Thirty articles with full descriptions already came to roughly 5000 tokens,
+// so the digest was being cut off before it ever reached the model's answer.
+// The symptom was a digest that looked like it was cherry-picking a handful
+// of feeds. It was not choosing; it never saw the rest.
+//
+// So: titles are the load-bearing part of a digest and are always kept.
+// Descriptions are truncated hard, and dropped entirely once the budget runs
+// out, because twenty headlines beat five headlines with paragraphs attached.
+// Roughly four characters per token puts this comfortably inside 4096 with
+// room for the reply.
+var DIGEST_CHAR_BUDGET = 9000;
+var DIGEST_DESC_CHARS = 140;
+
 function digestPrompt(items) {
-    var lines = [];
-    for (var i = 0; i < items.length; i++) {
-        var item = items[i] || {};
-        var line = (i + 1) + ". " + (item.title || "");
-        if (item.description)
-            line += " -- " + item.description;
-        lines.push(line);
+    // Two passes, because coverage beats detail for this job.
+    //
+    // A greedy single pass gives the first few articles their descriptions and
+    // then runs out of budget, so a 300-item day becomes a detailed digest of
+    // the first forty and silence about the rest -- precisely the "it is
+    // missing most of my feeds" complaint this budget exists to fix. Titles
+    // for everything first; descriptions only with what is left over.
+    var titles = [];
+    var used = 0;
+    var i;
+
+    for (i = 0; i < items.length; i++) {
+        var t = ((items[i] || {}).title || "").trim();
+        if (!t)
+            continue;
+        var line = (titles.length + 1) + ". " + t;
+        if (used + line.length + 1 > DIGEST_CHAR_BUDGET)
+            break;
+        titles.push({ line: line, description: ((items[i] || {}).description || "").trim() });
+        used += line.length + 1;
     }
-    return lines.join("\n");
+
+    for (i = 0; i < titles.length; i++) {
+        var desc = titles[i].description;
+        if (!desc)
+            continue;
+        if (desc.length > DIGEST_DESC_CHARS)
+            desc = desc.slice(0, DIGEST_DESC_CHARS).replace(/\s+\S*$/, "") + "…";
+        var addition = " -- " + desc;
+        if (used + addition.length > DIGEST_CHAR_BUDGET)
+            break;
+        titles[i].line += addition;
+        used += addition.length;
+    }
+
+    var out = [];
+    for (i = 0; i < titles.length; i++)
+        out.push(titles[i].line);
+    return out.join("\n");
 }
 
 function chatCompletionsBody(model, systemPrompt, userPrompt) {
@@ -402,10 +451,33 @@ function resolveBaseUrl(preset, explicitUrl) {
     return entry ? entry.baseUrl : "";
 }
 
+// The embedding model actually in force, given a preset and whatever the user
+// typed. Exactly the same shape as resolveBaseUrl, and it exists for exactly
+// the same reason: the settings panel resolved a preset default for DISPLAY
+// while the widget read the raw stored value, which was never written because
+// the user never had to type it. The widget then saw "", decided it could not
+// embed, and disabled interest ranking silently.
+//
+// One resolver, exported, used by both sides. Two places deciding what "empty"
+// means is how they disagree.
+//
+// Named resolvePresetEmbedModel, NOT resolveEmbedModel: an internal
+// resolveEmbedModel(config, options) already exists above with a different
+// signature, and a second declaration of that name silently replaces it via
+// hoisting -- which breaks canEmbed() with no error anywhere.
+function resolvePresetEmbedModel(preset, explicitModel) {
+    var typed = typeof explicitModel === "string" ? explicitModel.trim() : "";
+    if (typed)
+        return typed;
+    var entry = PRESETS[typeof preset === "string" ? preset : ""];
+    return (entry && entry.embedModel) ? entry.embedModel : "";
+}
+
 if (typeof module !== "undefined" && module.exports) {
     module.exports = {
         createAiProvider: createAiProvider,
         resolveBaseUrl: resolveBaseUrl,
+        resolvePresetEmbedModel: resolvePresetEmbedModel,
         PRESETS: PRESETS
     };
 }

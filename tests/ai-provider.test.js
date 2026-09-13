@@ -797,3 +797,132 @@ describe("resolveBaseUrl", () => {
         assert.equal(p.isConfigured(), true);
     });
 });
+
+// ─── resolveEmbedModel ───
+//
+// Second instance of a bug this project has now shipped twice: a default that
+// only exists if an event fired, or only in the half of the app that renders
+// the settings form. The settings panel resolved a preset's embedding model
+// for display; the widget read the raw stored value, which was never written
+// because the user never had to type it. The widget concluded it could not
+// embed and disabled interest ranking with no message at all.
+
+describe("resolveEmbedModel", () => {
+    const { resolvePresetEmbedModel, PRESETS } = require("../AiProvider.js");
+
+    test("falls back to the preset's embedding model when nothing was typed", () => {
+        assert.equal(resolvePresetEmbedModel("ollama", ""), PRESETS.ollama.embedModel);
+        assert.equal(resolvePresetEmbedModel("ollama", undefined), PRESETS.ollama.embedModel);
+        assert.equal(resolvePresetEmbedModel("ollama", null), PRESETS.ollama.embedModel);
+    });
+
+    test("a typed model always wins over the preset", () => {
+        assert.equal(resolvePresetEmbedModel("ollama", "mxbai-embed-large"), "mxbai-embed-large");
+    });
+
+    test("whitespace counts as empty", () => {
+        assert.equal(resolvePresetEmbedModel("ollama", "   "), PRESETS.ollama.embedModel);
+    });
+
+    test("surrounding whitespace is trimmed from a real value", () => {
+        assert.equal(resolvePresetEmbedModel("ollama", "  nomic-embed-text  "), "nomic-embed-text");
+    });
+
+    test("a preset with no embedding model resolves to empty rather than guessing", () => {
+        assert.equal(resolvePresetEmbedModel("custom", ""), "");
+    });
+
+    test("unknown or missing presets resolve to empty rather than throwing", () => {
+        assert.equal(resolvePresetEmbedModel("nonesuch", ""), "");
+        assert.equal(resolvePresetEmbedModel(undefined, undefined), "");
+        assert.equal(resolvePresetEmbedModel(null, null), "");
+    });
+
+    test("the resolved default is enough to make a provider able to embed", () => {
+        const { createAiProvider } = require("../AiProvider.js");
+        const p = createAiProvider({
+            baseUrl: "http://localhost:11434/v1",
+            model: "llama3.2:3b",
+            embedModel: resolvePresetEmbedModel("ollama", "")
+        });
+        assert.equal(p.canEmbed(), true, "this is the exact config that silently disabled ranking");
+    });
+});
+
+// ─── digest prompt budget ───
+//
+// Regression cover for a silent truncation. Measured 2026-09-13: llama3.2:3b
+// advertises a 131072-token context, but ollama allocates 4096 at RUNTIME
+// (/api/ps reports context_length: 4096). Thirty articles with full
+// descriptions came to roughly 5000 tokens, so the digest was being cut off
+// before the model ever answered -- no error, just a summary that appeared to
+// ignore most of the user's feeds.
+//
+// Coverage beats detail here: a digest that names every story briefly is more
+// use than one that describes the first forty and never mentions the rest.
+
+describe("digest prompt budget", () => {
+    const { createAiProvider } = require("../AiProvider.js");
+    const provider = createAiProvider({ baseUrl: "http://localhost:11434/v1", model: "m" });
+
+    function promptFor(items) {
+        const req = provider.digestRequest(items);
+        return JSON.parse(req.argv[req.argv.indexOf("-d") + 1]).messages[1].content;
+    }
+    const make = (n, descLen) => Array.from({ length: n }, (_, i) => ({
+        title: "Headline number " + i,
+        description: "D".repeat(descLen)
+    }));
+
+    test("a realistic day stays well inside a 4096-token allocation", () => {
+        const chars = promptFor(make(30, 600)).length;
+        assert.ok(chars <= 9000, "prompt was " + chars + " chars; ollama truncates past ~4096 tokens");
+    });
+
+    test("the budget holds no matter how many items are thrown at it", () => {
+        [100, 300, 1000].forEach(function (n) {
+            assert.ok(promptFor(make(n, 600)).length <= 9000, n + " items exceeded the budget");
+        });
+    });
+
+    test("titles are never sacrificed to make room for a description", () => {
+        const lines = promptFor(make(100, 600)).split("\n");
+        assert.equal(lines.length, 100, "every headline should survive at this size");
+    });
+
+    test("descriptions are the thing that gets dropped, not headlines", () => {
+        const lines = promptFor(make(300, 600)).split("\n");
+        assert.ok(lines.length > 100, "should still cover well over 100 stories, got " + lines.length);
+        // Not zero: whatever budget survives after every headline is placed
+        // still buys a few descriptions, which is the right use of it. The
+        // invariant is that coverage dominates, not that detail vanishes.
+        const withDesc = lines.filter(l => l.includes(" -- ")).length;
+        assert.ok(withDesc < lines.length * 0.2,
+            "descriptions should be a small minority at this volume, got " + withDesc + " of " + lines.length);
+    });
+
+    test("short days keep their descriptions", () => {
+        const lines = promptFor(make(10, 200)).split("\n");
+        assert.equal(lines.length, 10);
+        assert.ok(lines.every(l => l.includes(" -- ")), "there is budget to spare here");
+    });
+
+    test("long descriptions are truncated rather than dropped outright", () => {
+        const line = promptFor([{ title: "T", description: "word ".repeat(400) }]).split("\n")[0];
+        assert.ok(line.includes(" -- "));
+        assert.ok(line.length < 400, "description should be cut down, got " + line.length);
+        assert.ok(line.endsWith("…"), "truncation should be visible, not silent");
+    });
+
+    test("items with no title are skipped and do not leave gaps in the numbering", () => {
+        const lines = promptFor([{ title: "A" }, { title: "" }, { title: "B" }]).split("\n");
+        assert.equal(lines.length, 2);
+        assert.ok(lines[0].startsWith("1. "));
+        assert.ok(lines[1].startsWith("2. "), "numbering must stay contiguous, got: " + lines[1]);
+    });
+
+    test("empty and malformed input do not throw", () => {
+        assert.equal(provider.digestRequest([]), null);
+        assert.doesNotThrow(() => promptFor([null, undefined, {}]));
+    });
+});

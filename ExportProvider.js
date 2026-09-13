@@ -691,6 +691,14 @@ function buildImageFetchRequest(imageUrl, destPath) {
             "--max-redirs", "5",
             "--max-filesize", String(IMAGE_FETCH_MAX_BYTES),
             "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0",
+            // --create-dirs, or nothing works at all: curl refuses to write
+            // into a directory that does not exist, and the attachments
+            // folder never does on a first export. Without it every image
+            // fetch exits 23 ("client returned ERROR on write"), no folder
+            // appears, and the note keeps its remote URLs -- which looks
+            // exactly like the feature being off rather than broken. Nobody
+            // creates this directory on the QML side; curl does it here.
+            "--create-dirs",
             "-o", String(destPath),
             String(imageUrl)
         ],

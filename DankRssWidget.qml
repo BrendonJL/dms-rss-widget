@@ -159,7 +159,10 @@ DesktopPluginComponent {
     // quietly producing an arbitrary order.
     property bool rankingEnabled: pluginData.rankingEnabled ?? false
     property int rankingWeight: pluginData.rankingWeight ?? 50
-    property string aiEmbedModel: pluginData.aiEmbedModel ?? ""
+    // Resolved through the same function the settings panel uses, so a user
+    // who never typed an embedding model still gets the preset's default --
+    // which is exactly the case that silently disabled ranking.
+    property string aiEmbedModel: AiProvider.resolvePresetEmbedModel(root.aiPreset, pluginData.aiEmbedModel ?? "")
 
     // Vectors are held in memory and deliberately NOT persisted. A single
     // embedding is a few hundred floats; a few hundred items of them is
@@ -174,6 +177,14 @@ DesktopPluginComponent {
     property var rankedOrder: []
 
     readonly property bool rankingConfigured: root.rankingEnabled && root.aiEnabled && root.aiProvider.canEmbed({ model: root.aiEmbedModel })
+
+    // Settings changes must re-rank, not wait for the next refresh. Turning
+    // ranking on and seeing nothing happen for thirty minutes reads as broken.
+    onRankingConfiguredChanged: root.refreshRanking()
+    onRankingWeightChanged: {
+        if (root.rankingConfigured && root.rankedOrder.length > 0)
+            root.applyRanking();
+    }
     property string attachmentDir: pluginData.attachmentDir ?? "attachments"
 
     // --- AI summaries (stage 3b) ---
@@ -564,6 +575,16 @@ DesktopPluginComponent {
         return n;
     }
 
+    readonly property string failedFeedSummary: {
+        var names = [];
+        for (var i = 0; i < root.feedStatuses.length; i++) {
+            var st = root.feedStatuses[i];
+            if (st.state === "error" || st.state === "timeout")
+                names.push((st.name || st.url) + " — " + (st.lastError || "failed"));
+        }
+        return names.join("\n");
+    }
+
     readonly property int activeFeedCount: ReaderState.activeFeeds(root.feeds).length
 
     property color resolvedBorderColor: {
@@ -798,7 +819,11 @@ DesktopPluginComponent {
     function refreshRanking() {
         if (!root.rankingConfigured) {
             root.rankedOrder = [];
-            root.rankingReason = "";
+            // Only explain when the user has actually asked for ranking.
+            // Off-and-silent is correct; on-and-silent is the bug.
+            root.rankingReason = root.rankingEnabled
+                ? (root.aiEnabled ? "Set an embedding model in settings to rank by interest." : "Enable AI in settings to rank by interest.")
+                : "";
             return;
         }
         if (root.rankingBusy)
@@ -901,12 +926,17 @@ DesktopPluginComponent {
     // the only AI feature here that is about the feed rather than one entry.
     property int digestGeneration: 0
     readonly property int digestWindowMs: 24 * 60 * 60 * 1000
+    // Well above any sane maxItems, well below anything that would strain a
+    // local model's context.
+    readonly property int digestPoolCap: 300
+    property var digestPool: []
 
     function recentItemsForDigest() {
         var cutoff = Date.now() - root.digestWindowMs;
+        var pool = (root.digestPool && root.digestPool.length > 0) ? root.digestPool : root.allItems;
         var out = [];
-        for (var i = 0; i < root.allItems.length; i++) {
-            var it = root.allItems[i];
+        for (var i = 0; i < pool.length; i++) {
+            var it = pool[i];
             // timestamp 0 means the feed gave no usable date. Included rather
             // than dropped: an undated item is far more likely to be a feed
             // with sloppy dates than a genuinely ancient article, and
@@ -1095,6 +1125,17 @@ DesktopPluginComponent {
         var at = cats.indexOf(root.categoryFilter);
         root.categoryFilter = (at < 0) ? cats[0] : ((at + 1 >= cats.length) ? "" : cats[at + 1]);
         root.applyFilter();
+    }
+
+    // Names the failing feeds. A toast rather than a panel: this is a thing
+    // you glance at and then go fix in settings, not something to read in a
+    // widget three inches wide.
+    function showFeedErrors() {
+        if (root.failedFeedCount === 0 || typeof ToastService === "undefined")
+            return;
+        ToastService.showWarning(
+            root.failedFeedCount === 1 ? "1 feed failed to fetch" : root.failedFeedCount + " feeds failed to fetch",
+            root.failedFeedSummary);
     }
 
     function unsnoozeAll() {
@@ -2404,6 +2445,19 @@ DesktopPluginComponent {
             items = items.slice(0, root.maxItems);
         }
 
+        // The digest reads from here, NOT from allItems.
+        //
+        // allItems is capped at maxItems -- a *display* limit, typically 20 or
+        // 30. Running the digest off it meant "the last 24 hours" was really
+        // "the newest 30 articles", so with thirty feeds configured it silently
+        // covered roughly one item per feed and looked like it was cherry
+        // picking. It was not; it could not see the rest.
+        //
+        // Capped separately and much higher, because the constraint here is
+        // the model's context rather than the widget's height, and a digest
+        // over several hundred titles is still one cheap call.
+        root.digestPool = items.slice(0, root.digestPoolCap);
+
         root.allItems = items;
         root.pruneSummaryCache(items);
         var prunedSnoozes = ReaderState.pruneSnoozes(root.snoozeMap, Date.now());
@@ -2704,19 +2758,47 @@ DesktopPluginComponent {
                         Layout.fillWidth: true
                     }
 
-                    // Failed-feed indicator; per-feed detail lives in settings.
-                    DankIcon {
+                    // Failed-feed indicator. It used to be inert: it told you
+                    // something was wrong and offered no way to find out what,
+                    // which for anyone who does not already know the detail
+                    // lives in settings is just an anxiety light. It now names
+                    // the feeds and their errors on click.
+                    Rectangle {
                         visible: root.failedFeedCount > 0
-                        name: "error_outline"
-                        size: 14
-                        color: root.roleColours.error
-                    }
+                        implicitWidth: failedRow.implicitWidth + Theme.spacingXS * 2
+                        implicitHeight: 20
+                        radius: Theme.cornerRadius
+                        color: failedArea.containsMouse ? root.tint(root.roleColours.error, 0.18) : "transparent"
 
-                    StyledText {
-                        visible: root.failedFeedCount > 0
-                        text: root.failedFeedCount
-                        font.pixelSize: root.fontSize - 2
-                        color: root.roleColours.error
+                        Accessible.role: Accessible.Button
+                        Accessible.name: root.failedFeedCount === 1 ? "1 feed failed, show why" : (root.failedFeedCount + " feeds failed, show why")
+                        Accessible.onPressAction: root.showFeedErrors()
+
+                        RowLayout {
+                            id: failedRow
+                            anchors.centerIn: parent
+                            spacing: Theme.spacingXXS
+
+                            DankIcon {
+                                name: "error_outline"
+                                size: 14
+                                color: root.roleColours.error
+                            }
+
+                            StyledText {
+                                text: root.failedFeedCount
+                                font.pixelSize: root.fontSize - 2
+                                color: root.roleColours.error
+                            }
+                        }
+
+                        MouseArea {
+                            id: failedArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.showFeedErrors()
+                        }
                     }
 
                     DankSpinner {
@@ -2791,6 +2873,25 @@ DesktopPluginComponent {
                     Accessible.name: root.searchActive ? "Close search" : "Search"
                     Accessible.onPressAction: root.toggleSearch()
                 }
+            }
+
+            // Why ranking is not doing anything, when it is switched on and
+            // is not doing anything.
+            //
+            // This existed as a property with six distinct messages and was
+            // rendered nowhere, which is the worst of both: the code knew
+            // exactly why it had declined to rank and told nobody. The
+            // backlog's requirement was "a visible reason"; a reason that is
+            // not visible does not meet it, and the symptom -- switching
+            // ranking on and observing no change whatsoever -- is
+            // indistinguishable from the feature being broken.
+            StyledText {
+                Layout.fillWidth: true
+                visible: root.rankingEnabled && root.rankingReason !== ""
+                text: root.rankingReason
+                font.pixelSize: root.fontSize - 2
+                color: root.roleColours.surfaceVariantText
+                wrapMode: Text.WordWrap
             }
 
             // --- Actions bar: filter + mark all (normal mode) ---
@@ -3382,7 +3483,11 @@ DesktopPluginComponent {
                                         text: model.source || ""
                                         font.pixelSize: root.fontSize
                                         font.weight: Font.Medium
-                                        color: itemDelegate.isRead ? root.roleColours.surfaceVariantText : root.roleColours.primary
+                                        // Source is secondary information, so
+                                        // it takes the muted text colour. The
+                                        // title carries primary -- it is what
+                                        // you are scanning for.
+                                        color: root.roleColours.surfaceVariantText
                                         Layout.maximumWidth: 120
                                         elide: Text.ElideRight
                                     }
@@ -3398,7 +3503,7 @@ DesktopPluginComponent {
                                         text: model.title || ""
                                         font.pixelSize: root.fontSize
                                         font.weight: Font.Medium
-                                        color: itemDelegate.isRead ? root.roleColours.surfaceVariantText : root.roleColours.surfaceText
+                                        color: itemDelegate.isRead ? root.roleColours.surfaceVariantText : root.roleColours.primary
                                         Layout.fillWidth: true
                                         elide: Text.ElideRight
                                         maximumLineCount: 1
