@@ -11,6 +11,84 @@ their pictures; to find feeds, snooze them, schedule them individually and
 filter them by folder; and to be legible to someone who cannot distinguish red
 from green. None of that is on by default.
 
+**New: accessible names on every control.** Nothing in the widget had an
+`Accessible.name` before; the icon-only buttons — bookmark, mark-read, the
+selection checkbox, move and delete — were unreadable to a screen reader, and
+their only labels were hover-revealed and hidden below a certain width. Sixty-four
+bindings now name them, with names that track state where the control has state.
+Known to be present; not yet driven with a real screen reader.
+
+**New: colour themes, including your own.** Deuteranopia, protanopia and
+tritanopia palettes, plus Nord, Gruvbox, Catppuccin Mocha, Dracula and
+Solarized, and a Custom option exposing primary, error and success. Every
+colour in the widget resolves through a local palette rather than reading the
+theme directly, and "System" is a byte-identical pass-through, so nothing moves
+unless you ask.
+
+The plugin never writes to the shared theme — it cannot, that object belongs to
+the whole shell. And one thing is measured rather than claimed: Solarized's
+error and success sit 43 apart under simulated deuteranopia against a threshold
+of 50, so it is offered but reported as unsafe for that condition. The test
+computes that from the simulated colours rather than letting a palette declare
+itself safe.
+
+**New: per-feed refresh intervals.** A news wire and a weekly blog no longer
+share a poll rate. Set it in the add or edit feed form; leave it empty to
+follow the global interval. The awkward part was never the scheduling — it was
+that skipping a feed's request means it contributes nothing to the next
+rebuild, so its articles would vanish. They are restored from a retention pool
+instead, and "no feeds are due" is now distinguished from "no feeds are
+enabled", which previously shared an outcome.
+
+**New: categories and folders.** Miniflux and Google Reader both return them
+and the widget used to flatten them away. A chip in the filter row cycles
+through folders and wraps back to all; it is hidden entirely on backends that
+cannot supply them, rather than shown empty.
+
+**New: Miniflux full-text as a fast path.** Where the backend offers
+server-side extraction, export asks it first — one local API call instead of a
+round trip to the article's own site. Strictly an optimisation: every failure
+falls through to local extraction, and the server's HTML goes through the same
+extractor, so both routes produce identical markdown.
+
+**New: podcast enclosures.** Feeds that carry audio expose it, and `p` hands
+the episode to a configurable player. Worth stating plainly: whether it also
+appears in the DMS media widget depends entirely on the player, because that
+widget lists MPRIS players and Quickshell's MPRIS API is read-only — this
+plugin cannot register itself as one. VLC, Strawberry, Audacious and Rhythmbox
+publish MPRIS natively; mpv does so only with the separate mpv-mpris plugin.
+
+**New: the reader can be read from.** `c` or a toolbar button copies the
+article — title, body and link — or the digest. Per-paragraph selection is
+deliberately not offered: the only Qt type that supports it has no line-height
+control at all, and that would cost the reader's typography entirely.
+
+**New: collapsible settings.** Ten sections fold away. Feed Management
+deliberately does not — it is a thousand lines across seven blocks and is the
+section the panel is usually opened for.
+
+**Fixed: a stale fetch could overwrite the wrong article.** The reader's
+generation counter was bumped only when a full-text fetch started, which does
+not happen when an article opens summary-only or has no link. Open one article
+with a fetch in flight, move to another by either route, and the first
+article's text landed in the second one's body — under its title, its star and
+its export action.
+
+**Fixed: OPML import bypassed URL validation entirely.** A hand-typed feed
+goes through validation; an imported one went straight into the list, and every
+enabled feed's address becomes a command argument on every refresh. The check
+now happens where the file is parsed. Separately, every outbound request now
+ends option parsing before its URL, so an address beginning with a dash cannot
+be read as a flag.
+
+**Fixed: links inside article text opened unchecked.** The article's own link
+had always been validated; links inside the rendered body had not, which was an
+inconsistency rather than a decision — that text comes from the feed.
+
+**Fixed: exporting a selection spawned a process per article and per image.**
+Thirty articles with pictures meant over a hundred at once, inside the shell's
+own process. Four at a time now.
+
 **New: a digest of the last 24 hours.** `d` opens one AI summary of everything
 published across every feed in the last day, rendered in the reading window.
 Cursor-independent like `r`, because it asks about the whole list rather than
