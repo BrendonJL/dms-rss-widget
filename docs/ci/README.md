@@ -6,32 +6,29 @@ this directory is the version to apply next; Claude cannot write into
 
     cp docs/ci/tests.yml.proposed .github/workflows/tests.yml
 
-## PENDING — two new jobs, from the pre-v3 CI review
+## PENDING — one new job, from the pre-v3 CI review
 
-`tests.yml.proposed` adds `qml-types` and `qml-smoke` to the three jobs that
-already exist. Everything else in the file is unchanged.
+`tests.yml.proposed` adds **`qml-smoke`** to the three jobs that already exist.
+Everything else is unchanged.
 
-**`qml-types` is the important one.** It closes the gap that took the widget
-down on 2026-09-13: a change assigning `lineHeightMode` to a `TextEdit` (a
-`Text`-only property) passed CI and then failed at load, because one bad
-property makes the type unavailable, which made `ReaderWindow` unavailable,
-which stopped the plugin loading. `qmlformat` is a *syntax* check and had no
-opinion about it.
+**A qmllint job was attempted and abandoned — for the third time.** The reason
+is worth keeping so nobody tries a fourth. Ubuntu's `qt6-declarative-dev-tools`
+ships the binary without a usable QML module tree, so qmllint cannot resolve
+QtQuick, and on some versions cannot load its own builtins. Everything it
+reports afterwards is a cascade from that: 120 false positives across this
+repo, including `Qt.rgba` and `Qt.openUrlExternally` reading as missing
+properties. Installing `qml6-module-qtquick` and friends did not fix it.
 
-`qmllint` does. It cannot resolve the `qs.*` namespace — Quickshell
-synthesises those types and ships no qmldir, so that will never work on a
-runner — but it resolves plain QtQuick types, which is where that bug lived.
-The job greps its output for `missing-property`, `Could not find property`,
-`Cannot assign` and `Type .* unavailable`, and fails only on those. Everything
-else is unavoidable noise from types it cannot see; treating it as failure
-would make the job permanently red and then ignored.
+The last attempt carried a self-test — feed qmllint a deliberately bad property
+and fail if it is NOT flagged. It was not flagged. **The self-test worked
+exactly as designed and proved the checker is useless there**, which is the
+honest outcome. A permanently red job is worse than no job: a check nobody can
+act on is a check everybody learns to ignore.
 
-It carries the same self-test discipline as `qml-syntax`: before checking
-anything it feeds qmllint a deliberately bad `TextEdit { lineHeightMode: ... }`
-and fails if that is NOT flagged. The filter is a regex over free-text
-warnings, and a Qt release rewording a message would otherwise disarm the whole
-job silently. Verified locally: the fixture trips, and all nine real `.qml`
-files pass.
+qmllint DOES work locally, where a full Qt exists, and has already caught a real
+bug there — `lineHeightMode` on a `TextEdit`, which stopped the whole widget
+loading. Run it before pushing QML; the invocation and its filter are in
+`docs/wiki/Development.md`.
 
 **`qml-smoke`** runs `tests/qml/run.sh` — six tests under a real headless
 engine, about two seconds. It catches what neither the formatter nor the
