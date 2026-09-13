@@ -1018,3 +1018,36 @@ describe("withLeadImage", () => {
         assert.equal(EP.withLeadImage(md, { title: "T" }, map), md);
     });
 });
+
+// ─── clearing the attachment folder means "beside the notes" ───
+//
+// The default is a folder the user never chose, so images landing in a
+// subfolder read as the setting being ignored. Clearing the field has to be a
+// real choice rather than falling back to the default, otherwise the setting
+// has a value that cannot be selected.
+
+describe("attachmentDir edge cases", () => {
+    const EP = require("../ExportProvider.js");
+
+    test("omitted entirely uses the default folder", () => {
+        assert.equal(EP.attachmentPath("My Note", "https://x/a.jpg", 0, {}), "attachments/My-Note-0.jpg");
+        assert.equal(EP.attachmentPath("My Note", "https://x/a.jpg", 0), "attachments/My-Note-0.jpg");
+    });
+
+    test("cleared to empty puts images beside the notes, with no stray slash", () => {
+        assert.equal(EP.attachmentPath("My Note", "https://x/a.jpg", 0, { attachmentDir: "" }), "My-Note-0.jpg");
+    });
+
+    test("whitespace-only counts as cleared", () => {
+        assert.equal(EP.attachmentPath("My Note", "https://x/a.jpg", 0, { attachmentDir: "   " }), "My-Note-0.jpg");
+    });
+
+    test("an explicit folder is honoured", () => {
+        assert.equal(EP.attachmentPath("My Note", "https://x/a.jpg", 0, { attachmentDir: "images" }), "images/My-Note-0.jpg");
+    });
+
+    test("traversal in the folder name is still refused", () => {
+        const p = EP.attachmentPath("My Note", "https://x/a.jpg", 0, { attachmentDir: "../../etc" });
+        assert.ok(p.indexOf("..") === -1, "escaped the export root: " + p);
+    });
+});

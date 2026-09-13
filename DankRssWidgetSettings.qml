@@ -907,7 +907,11 @@ PluginSettings {
 
         StyledText {
             width: parent.width
-            text: "Relative to the notes folder above."
+            // Spelled out because the default is a folder the user never
+            // chose: images landing in a subfolder they did not ask for reads
+            // as the setting being ignored, even though a subfolder is the
+            // tidier answer and what most vaults expect.
+            text: "Relative to the notes folder above. Defaults to \"attachments\"; clear it to keep images beside the notes instead."
             font.pixelSize: Theme.fontSizeSmall - 2
             color: root.roleColours.surfaceVariantText
             wrapMode: Text.WordWrap

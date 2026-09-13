@@ -657,8 +657,13 @@ function attachmentPath(noteBasename, imageUrl, index, options) {
     // attachmentDir is local config, not feed content (like filenameTemplate
     // elsewhere in this file) -- trimmed of stray slashes so joining below
     // never doubles a separator, but not sanitised as attacker input.
-    var dir = String(options.attachmentDir || "attachments").replace(/^[\/\\]+|[\/\\]+$/g, "");
-    if (!dir) dir = "attachments";
+    // An EMPTY attachmentDir means "beside the notes", not "use the default".
+    // The default only applies when the option was never supplied at all --
+    // clearing the field is a deliberate choice and has to be honoured, or the
+    // setting has a value the user cannot select.
+    var raw = (options.attachmentDir === undefined || options.attachmentDir === null)
+        ? "attachments" : String(options.attachmentDir);
+    var dir = raw.replace(/^[\/\\]+|[\/\\]+$/g, "").trim();
 
     var ext = extensionFromImageUrl(imageUrl);
 
@@ -678,7 +683,7 @@ function attachmentPath(noteBasename, imageUrl, index, options) {
     var suffix = "-" + String(index) + "." + ext;
     var base = clampUtf8Bytes(safeBase, 255 - suffix.length) + suffix;
 
-    var relPath = dir + "/" + base;
+    var relPath = dir ? (dir + "/" + base) : base;
 
     // Rule-1-style defensive re-check (see isRelPathContained above): dir and
     // base are both built safely above, so this should be unreachable, but
