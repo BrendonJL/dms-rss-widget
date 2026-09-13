@@ -259,6 +259,14 @@ DesktopPluginComponent {
     // signature.
     property var backendSession: ({})
     property string filterMode: "all"  // "all", "unread" or "bookmarked"
+
+    // Category filter. "" means every category, which is also the only state
+    // reachable on a backend that cannot supply them -- the chip is hidden
+    // rather than shown empty, so the feature is absent instead of broken on
+    // the standard RSS backend, which has no such concept.
+    property string categoryFilter: ""
+    readonly property bool categoriesSupported: root.backend.capabilities.categories === true
+    readonly property var availableCategories: root.categoriesSupported ? Backends.knownCategories(root.allItems) : []
     property string searchQuery: ""
     property bool searchActive: false   // whether the search field is revealed
     property int timeTick: 0           // bumped to re-evaluate relative-time bindings
@@ -1073,6 +1081,20 @@ DesktopPluginComponent {
         Quickshell.execDetached(argv);
         if (typeof ToastService !== "undefined")
             ToastService.showInfo("Playing " + (article.title || "episode"));
+    }
+
+    // Steps "all folders" -> each category -> back to all. Wrapping matters:
+    // with no way back the chip would be a one-way trip into a filter the
+    // user has to guess how to leave.
+    function cycleCategory() {
+        var cats = root.availableCategories;
+        if (cats.length === 0) {
+            root.categoryFilter = "";
+            return;
+        }
+        var at = cats.indexOf(root.categoryFilter);
+        root.categoryFilter = (at < 0) ? cats[0] : ((at + 1 >= cats.length) ? "" : cats[at + 1]);
+        root.applyFilter();
     }
 
     function unsnoozeAll() {
@@ -2479,6 +2501,26 @@ DesktopPluginComponent {
             bookmarkMap: root.bookmarkMap
         });
 
+        // Only honoured while the chip that sets it is actually on screen.
+        // Otherwise switching to a backend with no categories -- or a folder
+        // simply going away between refreshes -- would keep filtering against
+        // something the user can no longer see or clear, and the list would
+        // silently empty with no visible cause.
+        if (root.categoryFilter !== "" && root.availableCategories.indexOf(root.categoryFilter) < 0)
+            root.categoryFilter = "";
+
+        if (root.categoryFilter !== "") {
+            var wanted = root.categoryFilter;
+            visible = visible.filter(function (it) {
+                var cats = (it && it.categories) || [];
+                for (var c = 0; c < cats.length; c++) {
+                    if (cats[c] === wanted)
+                        return true;
+                }
+                return false;
+            });
+        }
+
         // Snoozed sources drop out here rather than at fetch time, so their
         // items still arrive, still count as seen, and reappear intact the
         // moment the snooze lapses -- no gap in history to explain later.
@@ -2810,6 +2852,46 @@ DesktopPluginComponent {
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.filterMode = parent.modelData.key
                         }
+                    }
+                }
+
+                // One chip that cycles categories, rather than one chip per
+                // category: this row has to stay readable in a widget a few
+                // hundred pixels wide, and a Miniflux account with a dozen
+                // folders would push everything else off the end. Hidden
+                // entirely unless the backend supplies categories AND there is
+                // more than nothing to choose between.
+                Rectangle {
+                    readonly property bool active: root.categoryFilter !== ""
+                    visible: root.availableCategories.length > 0
+
+                    Layout.preferredWidth: categoryLabel.implicitWidth + Theme.spacingS
+                    height: 22
+                    radius: Theme.cornerRadius
+                    color: active ? root.tint(root.roleColours.primary, 0.18) : (categoryArea.containsMouse ? root.tint(root.roleColours.primary, 0.08) : "transparent")
+
+                    Accessible.role: Accessible.Button
+                    Accessible.checked: active
+                    Accessible.name: root.categoryFilter === "" ? "Filter by category" : ("Category: " + root.categoryFilter + ", tap to change")
+                    Accessible.onPressAction: root.cycleCategory()
+
+                    StyledText {
+                        id: categoryLabel
+                        anchors.centerIn: parent
+                        text: root.categoryFilter === "" ? "All folders" : root.categoryFilter
+                        font.pixelSize: root.fontSize - 2
+                        font.weight: parent.active ? Font.Medium : Font.Normal
+                        color: parent.active ? root.roleColours.primary : root.roleColours.surfaceVariantText
+                        elide: Text.ElideRight
+                        Layout.maximumWidth: 110
+                    }
+
+                    MouseArea {
+                        id: categoryArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.cycleCategory()
                     }
                 }
 
