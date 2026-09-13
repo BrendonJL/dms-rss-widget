@@ -572,6 +572,16 @@ function parseOpml(xml) {
         var rawName = titleAttr ? titleAttr[1] : (textAttr ? textAttr[1] : url);
         var name = decodeXmlEntities(rawName);
 
+        // Gated here, at the parse boundary, exactly as imageUrl and audioUrl
+        // already are. An OPML file is attacker-influenced input like any other
+        // feed content, and unlike a hand-typed feed it never passes through
+        // validateFeedUrl -- the import path pushes straight into the feed
+        // list, and every enabled feed's url then becomes a curl argument on
+        // every refresh, unattended. A value shaped like a curl flag has no
+        // business getting that far.
+        if (!isSafeUrl(url))
+            continue;
+
         feeds.push({ name: name, url: url });
     }
     return feeds;
@@ -834,6 +844,7 @@ function buildDiscoveryRequest(siteUrl) {
             "--max-redirs", "5",
             "--max-filesize", "5000000",
             "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0",
+            "--",
             String(siteUrl)
         ],
         timeoutMs: null,

@@ -224,6 +224,18 @@ DankFloatingWindow {
         if (!article)
             return;
 
+        // Invalidate any in-flight full-text fetch FIRST, before any early
+        // return below can skip it.
+        //
+        // This counter used to be bumped only by loadFullText(), which
+        // openArticle() does not reach when the article opens summary-only or
+        // has no link at all. Leaving article A's fetch in flight while B is
+        // on screen meant A's extracted text landed in B's body -- under B's
+        // title, B's star and B's export action -- with nothing to indicate
+        // it. Bumping here makes every open invalidate the last one,
+        // regardless of which path this function takes afterwards.
+        root._fetchGeneration++;
+
         root.summaryOnly = summaryOnly === true;
 
         // A digest cannot linger behind an article -- same reasoning as the
@@ -281,6 +293,10 @@ DankFloatingWindow {
     // it only asks via digestRequested() and displays whatever the widget
     // sets on digestText/digestLoading/digestError afterwards.
     function openDigest(itemCount) {
+        // Same reasoning as openArticle: a full-text fetch still in flight
+        // must not land while the digest is on screen.
+        root._fetchGeneration++;
+
         root.digestMode = true;
         root.digestItemCount = itemCount || 0;
         root.digestText = "";
@@ -317,6 +333,12 @@ DankFloatingWindow {
         if (!article || !article.link || root.loading)
             return;
 
+        // Identity as well as generation, matching what requestSummary()
+        // already does. The counter answers "was this superseded"; the id
+        // answers "is this still the article on screen". They are not the
+        // same question, and the summary path learned that the hard way.
+        var forItemId = root.itemId;
+
         root.summaryOnly = false;
         root.usedFallback = false;
         root.fallbackReason = "";
@@ -330,7 +352,7 @@ DankFloatingWindow {
         Proc.runCommand(null, req.argv, function (out, code) {
             // A newer openArticle() call superseded this fetch -- its own
             // result (or lack of a link at all) already owns the display.
-            if (generation !== root._fetchGeneration)
+            if (generation !== root._fetchGeneration || root.itemId !== forItemId)
                 return;
 
             root.loading = false;
@@ -351,6 +373,19 @@ DankFloatingWindow {
             }
             root.body = HtmlExtract.normalizeForReader(summary, root.articleTitle);
         }, undefined, req.timeoutMs || undefined);
+    }
+
+    // Shared by every link inside rendered body text.
+    function _openBodyLink(link) {
+        if (!link)
+            return;
+        if (!FeedParser.isSafeUrl(link)) {
+            if (typeof ToastService !== "undefined")
+                ToastService.showWarning("Blocked unsafe link from feed", link);
+            return;
+        }
+        if (!Qt.openUrlExternally(link) && typeof ToastService !== "undefined")
+            ToastService.showError("Could not open link", link);
     }
 
     function _openExternal() {
@@ -939,7 +974,13 @@ DankFloatingWindow {
                         font.italic: metrics.italic
                         lineHeight: metrics.lineHeight
                         lineHeightMode: Text.ProportionalHeight
-                        onLinkActivated: link => Qt.openUrlExternally(link)
+                        // Gated like _openExternal above, and for the same
+                        // reason: this markdown came from the feed or from a
+                        // page the extractor fetched, so a link in it is
+                        // attacker-controlled. The item's own link has always
+                        // been checked here; the body's links were not, which
+                        // was an inconsistency rather than a decision.
+                        onLinkActivated: link => root._openBodyLink(link)
                     }
                 }
             }

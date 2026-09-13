@@ -122,7 +122,7 @@ function aiCurlArgv(method, url, apiKey, body, timeoutMs) {
         if (body)
             args.push("-d", body);
     }
-    args.push(url);
+    args.push("--", url);
     return args;
 }
 

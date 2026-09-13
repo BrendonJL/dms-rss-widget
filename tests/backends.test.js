@@ -81,6 +81,7 @@ describe("StandardBackend.fetchRequests", () => {
             "--max-redirs", "5",
             "--max-filesize", "5000000",
             "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0",
+            "--",
             "https://example.com/feed.xml"
         ]);
     });
@@ -233,6 +234,7 @@ describe("MinifluxBackend.fetchRequests", () => {
             "--max-filesize", "5000000",
             "-X", "GET",
             "-H", "X-Auth-Token: SECRET_TOKEN_VALUE",
+            "--",
             "https://miniflux.example.com/v1/entries?status=unread&limit=20&order=published_at&direction=desc"
         ]);
     });
@@ -328,6 +330,7 @@ describe("MinifluxBackend mark read/unread", () => {
             "-H", "X-Auth-Token: SECRET_TOKEN_VALUE",
             "-H", "Content-Type: application/json",
             "-d", JSON.stringify({ entry_ids: [1, 2, 3], status: "read" }),
+            "--",
             "https://miniflux.example.com/v1/entries"
         ]);
     });
@@ -374,6 +377,7 @@ describe("MinifluxBackend.toggleStarRequest", () => {
             "-X", "PUT",
             "-H", "X-Auth-Token: SECRET_TOKEN_VALUE",
             "-H", "Content-Type: application/json",
+            "--",
             "https://miniflux.example.com/v1/entries/42/bookmark"
         ]);
         assert.ok(req.argv.indexOf("-d") === -1, "no -d flag when there's no body");
@@ -588,6 +592,7 @@ describe("MinifluxBackend.fullTextRequest", () => {
             "--max-filesize", "5000000",
             "-X", "GET",
             "-H", "X-Auth-Token: SECRET_TOKEN_VALUE",
+            "--",
             "https://miniflux.example.com/v1/entries/42/fetch-content"
         ]);
     });

@@ -533,6 +533,7 @@ function buildArticleFetchRequest(url) {
             "--max-redirs", "5",
             "--max-filesize", String(ARTICLE_FETCH_MAX_BYTES),
             "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0",
+            "--",
             String(url)
         ],
         timeoutMs: null
@@ -732,6 +733,7 @@ function buildImageFetchRequest(imageUrl, destPath) {
             // creates this directory on the QML side; curl does it here.
             "--create-dirs",
             "-o", String(destPath),
+            "--",
             String(imageUrl)
         ],
         timeoutMs: null,

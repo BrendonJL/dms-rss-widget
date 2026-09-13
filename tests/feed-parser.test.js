@@ -1653,3 +1653,63 @@ describe("audioUrl on parsed items", () => {
         assert.equal(items[0].audioUrl, "");
     });
 });
+
+// ─── OPML import is attacker-influenced input ───
+//
+// A hand-typed feed passes through validateFeedUrl in the settings panel; an
+// imported one never did — the import button pushed straight into the feed
+// list. Every enabled feed's url then becomes a curl argument on every
+// refresh, unattended. So the gate belongs at the parse boundary, where
+// imageUrl and audioUrl already are.
+
+describe("parseOpml URL safety", () => {
+    test("keeps ordinary http(s) feeds", () => {
+        const out = FeedParser.parseOpml('<opml><body><outline text="A" xmlUrl="https://e.com/f.xml"/></body></opml>');
+        assert.deepEqual(out, [{ name: "A", url: "https://e.com/f.xml" }]);
+    });
+
+    test("drops file:, javascript: and data: entries", () => {
+        const out = FeedParser.parseOpml(
+            '<opml><body>' +
+            '<outline text="O" xmlUrl="https://e.com/ok.xml"/>' +
+            '<outline text="F" xmlUrl="file:///etc/passwd"/>' +
+            '<outline text="J" xmlUrl="javascript:alert(1)"/>' +
+            '<outline text="D" xmlUrl="data:text/xml,&lt;rss/&gt;"/>' +
+            '</body></opml>');
+        assert.deepEqual(out.map(f => f.name), ["O"]);
+    });
+
+    test("drops entries shaped like a curl flag", () => {
+        // Without the gate these reach argv. The "--" separator in the request
+        // builders is the second line of defence; this is the first.
+        const out = FeedParser.parseOpml(
+            '<opml><body>' +
+            '<outline text="Dash" xmlUrl="-o/tmp/pwned"/>' +
+            '<outline text="Proto" xmlUrl="--proto=@/etc/passwd"/>' +
+            '<outline text="Good" xmlUrl="https://e.com/f.xml"/>' +
+            '</body></opml>');
+        assert.deepEqual(out.map(f => f.name), ["Good"]);
+    });
+
+    test("an OPML of nothing but unsafe entries imports nothing, without throwing", () => {
+        const out = FeedParser.parseOpml('<opml><body><outline text="F" xmlUrl="file:///x"/></body></opml>');
+        assert.deepEqual(out, []);
+    });
+
+    test("still round-trips what buildOpml writes", () => {
+        const feeds = [{ name: "Tom & Jerry", url: "https://e.com/a.xml?x=1&y=2" }];
+        assert.deepEqual(FeedParser.parseOpml(FeedParser.buildOpml(feeds)), feeds);
+    });
+});
+
+// ─── every outbound request ends option parsing before the URL ───
+
+describe("curl argv hardening", () => {
+    test("discovery puts -- immediately before the site URL", () => {
+        const argv = FeedParser.buildDiscoveryRequest("https://e.com").argv;
+        const i = argv.indexOf("--");
+        assert.ok(i > 0, "no -- separator");
+        assert.equal(i, argv.length - 2, "-- must be immediately before the URL");
+        assert.equal(argv[argv.length - 1], "https://e.com");
+    });
+});

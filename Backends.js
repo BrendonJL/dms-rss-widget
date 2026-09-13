@@ -56,7 +56,7 @@ function minifluxCurlArgv(method, minifluxUrl, endpoint, token, body) {
         if (body)
             args.push("-d", body);
     }
-    args.push(url);
+    args.push("--", url);
     return args;
 }
 
@@ -156,6 +156,12 @@ function buildStandardFetchRequest(feed, FeedParser) {
             "--max-redirs", "5",
             "--max-filesize", "5000000",
             "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0",
+            // "--" ends option parsing: without it a URL beginning with a
+            // dash is read by curl as a flag rather than an address. Feed
+            // content is attacker-influenced, and isSafeUrl is the primary
+            // gate -- this is the belt to its braces, and costs one argv
+            // element.
+            "--",
             url
         ],
         timeoutMs: null,
