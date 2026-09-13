@@ -1,7 +1,7 @@
 # Design: Phase 0 — backend provider interface
 
 Date: 2026-09-08
-Status: ready to implement
+Status: implemented (0a and 0b) — shipped in 2.4.0
 Depends on: nothing. Blocks Phase 1 (Google Reader) and Phase 3 (AI).
 
 > **Status:** implemented (0a and 0b, including the addendum below).

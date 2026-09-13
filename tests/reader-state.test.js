@@ -615,6 +615,124 @@ describe("addAllBookmarked", () => {
     });
 });
 
+describe("AI summary cache", () => {
+    test("insert then read back", () => {
+        const r = R.addSummary([], {}, "a", "Summary of a.");
+        assert.deepStrictEqual(r.order, ["a"]);
+        assert.strictEqual(R.getSummary(r.map, "a"), "Summary of a.");
+    });
+
+    test("re-inserting an existing id moves it to newest, replaces text, no duplicate in order", () => {
+        let state = R.addSummary([], {}, "a", "first");
+        state = R.addSummary(state.order, state.map, "b", "second");
+        state = R.addSummary(state.order, state.map, "a", "updated");
+        assert.deepStrictEqual(state.order, ["a", "b"]);
+        assert.strictEqual(R.getSummary(state.map, "a"), "updated");
+        assert.strictEqual(R.getSummary(state.map, "b"), "second");
+    });
+
+    test("cap evicts oldest-first, and the evicted id is gone from map too (not just order)", () => {
+        let state = { order: [], map: {} };
+        state = R.addSummary(state.order, state.map, "a", "sa", 2);
+        state = R.addSummary(state.order, state.map, "b", "sb", 2);
+        state = R.addSummary(state.order, state.map, "c", "sc", 2);
+        assert.deepStrictEqual(state.order, ["c", "b"]);
+        assert.strictEqual(Object.prototype.hasOwnProperty.call(state.map, "a"), false,
+            "evicted id must not linger in the map -- that's exactly the leak that would grow the state file forever");
+        assert.strictEqual(R.getSummary(state.map, "a"), null);
+        assert.strictEqual(Object.keys(state.map).length, 2);
+    });
+
+    test("default cap is DEFAULT_SUMMARY_CAP", () => {
+        assert.strictEqual(R.DEFAULT_SUMMARY_CAP, 100);
+        let state = { order: [], map: {} };
+        for (let i = 0; i < 150; i++) {
+            state = R.addSummary(state.order, state.map, "id" + i, "s" + i);
+        }
+        assert.strictEqual(state.order.length, 100);
+        assert.strictEqual(Object.keys(state.map).length, 100);
+        assert.strictEqual(R.getSummary(state.map, "id0"), null, "oldest evicted");
+        assert.strictEqual(R.getSummary(state.map, "id149"), "s149");
+    });
+
+    test('"" is a real cached value, distinct from absent', () => {
+        const r = R.addSummary([], {}, "empty", "");
+        assert.strictEqual(R.getSummary(r.map, "empty"), "");
+        assert.strictEqual(R.hasSummary(r.map, "empty"), true);
+        assert.strictEqual(R.getSummary(r.map, "unknown"), null);
+        assert.strictEqual(R.hasSummary(r.map, "unknown"), false);
+    });
+
+    test("addSummary never throws on garbage input and does not corrupt the structure", () => {
+        assert.doesNotThrow(() => R.addSummary(null, null, "a", "text"));
+        assert.doesNotThrow(() => R.addSummary(undefined, undefined, "a", "text"));
+
+        let r = R.addSummary(null, null, "a", "text");
+        assert.deepStrictEqual(r.order, ["a"]);
+        assert.strictEqual(r.map.a, "text");
+
+        // non-string id
+        r = R.addSummary(["a"], { a: "x" }, 42, "text");
+        assert.deepStrictEqual(r.order, ["a"]);
+        assert.deepStrictEqual(r.map, { a: "x" });
+
+        // non-string text
+        r = R.addSummary(["a"], { a: "x" }, "b", { not: "a string" });
+        assert.deepStrictEqual(r.order, ["a"]);
+        assert.deepStrictEqual(r.map, { a: "x" });
+
+        // empty id
+        r = R.addSummary(["a"], { a: "x" }, "", "text");
+        assert.deepStrictEqual(r.order, ["a"]);
+        assert.deepStrictEqual(r.map, { a: "x" });
+
+        assert.doesNotThrow(() => R.getSummary(null, "a"));
+        assert.strictEqual(R.getSummary(null, "a"), null);
+        assert.strictEqual(R.getSummary({ a: "x" }, null), null);
+        assert.strictEqual(R.hasSummary(null, "a"), false);
+
+        assert.doesNotThrow(() => R.pruneSummaries(null, null, null));
+        assert.deepStrictEqual(R.pruneSummaries(null, null, null), { order: [], map: {} });
+    });
+
+    test("pruneSummaries drops ids absent from the items list and keeps the rest", () => {
+        let state = { order: [], map: {} };
+        state = R.addSummary(state.order, state.map, "a", "sa");
+        state = R.addSummary(state.order, state.map, "b", "sb");
+        state = R.addSummary(state.order, state.map, "c", "sc");
+        const items = [{ id: "a" }, { id: "c" }];
+        const pruned = R.pruneSummaries(state.order, state.map, items);
+        // state.order is newest-first ["c", "b", "a"]; pruning "b" preserves
+        // the remaining relative order.
+        assert.deepStrictEqual(pruned.order, ["c", "a"]);
+        assert.deepStrictEqual(pruned.map, { a: "sa", c: "sc" });
+    });
+
+    // Summaries key off the stable id, not object identity -- equivalent to
+    // the "bookmark state survives items being reparsed into new objects"
+    // test above.
+    test("a summary survives its item being reparsed into a brand-new object", () => {
+        const r = R.addSummary([], {}, "g:abc", "Cached summary.");
+        const refetched = [{ id: "g:abc", title: "Rebuilt object" }];
+        assert.strictEqual(R.hasSummary(r.map, refetched[0].id), true);
+        assert.strictEqual(R.getSummary(r.map, refetched[0].id), "Cached summary.");
+        // and it survives a prune against the refetched dataset too
+        const pruned = R.pruneSummaries(r.order, r.map, refetched);
+        assert.strictEqual(R.getSummary(pruned.map, "g:abc"), "Cached summary.");
+    });
+
+    // addSummary is the only writer and keeps the no-duplicates invariant
+    // itself, so a duplicate can only come from a corrupted or hand-edited
+    // state file. boundIdList -- which read and bookmark history use --
+    // self-heals that, and a cache that stayed corrupt where the other lists
+    // recover would be a surprising asymmetry.
+    test("addSummary heals pre-existing duplicates in order, like boundIdList", () => {
+        const r = R.addSummary(["a", "b", "a"], { a: "sa", b: "sb" }, "c", "sc");
+        assert.deepStrictEqual(r.order, ["c", "a", "b"]);
+        assert.deepStrictEqual(Object.keys(r.map).sort(), ["a", "b", "c"]);
+    });
+});
+
 describe("reconcileServerStatus", () => {
     test("server marks an id read that's currently absent -> added, readChanged true", () => {
         const result = R.reconcileServerStatus([], [], [{ id: "m:1", status: "read", starred: false }]);
@@ -677,5 +795,498 @@ describe("reconcileServerStatus", () => {
         const result = R.reconcileServerStatus(null, undefined, [{ id: "m:1", status: "read", starred: true }]);
         assert.deepStrictEqual(result.readOrder, ["m:1"]);
         assert.deepStrictEqual(result.bookmarkOrder, ["m:1"]);
+    });
+});
+
+// ─── Summary cache: the persisted-state rebuild path ───
+//
+// DankRssWidget.loadReaderState() does not trust a persisted {order, map}
+// wholesale -- a state file written by an older build (or hand-edited) can
+// carry an order longer than the current cap, ids with no matching entry, or
+// non-string junk. It replays the order through addSummary() instead, walking
+// it BACKWARDS so that prepend-semantics reproduce the original order. These
+// tests pin that round-trip, because getting the direction wrong silently
+// reverses everyone's cache on the next restart rather than failing loudly.
+
+describe("sortItems", () => {
+    const items = [
+        { id: "a", timestamp: 100, source: "LWN", sourceUrl: "https://a" },
+        { id: "b", timestamp: 200, source: "Ars", sourceUrl: "https://b" },
+        { id: "c", timestamp: 150, source: "LWN", sourceUrl: "https://a" }
+    ];
+
+    test("newest mode sorts descending by timestamp", () => {
+        const out = R.sortItems(items, "newest");
+        assert.deepStrictEqual(out.map(i => i.id), ["b", "c", "a"]);
+    });
+
+    test("oldest mode sorts ascending by timestamp", () => {
+        const out = R.sortItems(items, "oldest");
+        assert.deepStrictEqual(out.map(i => i.id), ["a", "c", "b"]);
+    });
+
+    test("unrecognised mode falls back to newest", () => {
+        const out = R.sortItems(items, "bogus");
+        assert.deepStrictEqual(out.map(i => i.id), ["b", "c", "a"]);
+    });
+
+    test("does not mutate the input array or its items", () => {
+        const original = items.map(i => Object.assign({}, i));
+        R.sortItems(items, "oldest");
+        assert.deepStrictEqual(items, original, "input array/items must be untouched");
+    });
+
+    test("ties on timestamp break deterministically by id, not reshuffle", () => {
+        const tied = [
+            { id: "z", timestamp: 100 },
+            { id: "a", timestamp: 100 },
+            { id: "m", timestamp: 100 }
+        ];
+        const first = R.sortItems(tied, "newest").map(i => i.id);
+        const second = R.sortItems(tied, "newest").map(i => i.id);
+        assert.deepStrictEqual(first, second, "repeated sorts of the same tied input must be stable");
+        assert.deepStrictEqual(first, ["a", "m", "z"]);
+    });
+
+    test("empty and null input do not throw", () => {
+        assert.deepStrictEqual(R.sortItems([], "newest"), []);
+        assert.deepStrictEqual(R.sortItems(null, "newest"), []);
+        assert.deepStrictEqual(R.sortItems(undefined, "oldest"), []);
+    });
+
+    test("byFeed groups by feed order, newest-first within a feed, honouring maxPerFeed", () => {
+        const feedItems = [
+            { id: "a1", timestamp: 10, source: "A", sourceUrl: "urlA" },
+            { id: "a2", timestamp: 30, source: "A", sourceUrl: "urlA" },
+            { id: "a3", timestamp: 20, source: "A", sourceUrl: "urlA" },
+            { id: "b1", timestamp: 999, source: "B", sourceUrl: "urlB" }
+        ];
+        const orderMap = { urlB: 0, urlA: 1 };
+        const out = R.sortItems(feedItems, "byFeed", 2, orderMap);
+        assert.deepStrictEqual(out.map(i => i.id), ["b1", "a2", "a3"],
+            "B is configured first; A is capped to its 2 newest (a2, a3), a1 dropped");
+    });
+
+    test("byFeed with no orderMap still ties deterministically by id", () => {
+        const feedItems = [
+            { id: "x", timestamp: 5, source: "S", sourceUrl: "s" },
+            { id: "y", timestamp: 5, source: "S", sourceUrl: "s" }
+        ];
+        const out = R.sortItems(feedItems, "byFeed", 10);
+        assert.deepStrictEqual(out.map(i => i.id), ["x", "y"]);
+    });
+});
+
+describe("per-source snooze", () => {
+    test("snoozeSource adds a deadline for the source", () => {
+        const out = R.snoozeSource({}, "https://a", 1000);
+        assert.deepStrictEqual(out, { "https://a": 1000 });
+    });
+
+    test("snoozeSource does not mutate the input map", () => {
+        const input = { "https://a": 500 };
+        const out = R.snoozeSource(input, "https://b", 1000);
+        assert.deepStrictEqual(input, { "https://a": 500 });
+        assert.deepStrictEqual(out, { "https://a": 500, "https://b": 1000 });
+    });
+
+    test("snoozeSource ignores invalid inputs", () => {
+        assert.deepStrictEqual(R.snoozeSource({ a: 1 }, "", 1000), { a: 1 });
+        assert.deepStrictEqual(R.snoozeSource({ a: 1 }, "b", "not a number"), { a: 1 });
+        assert.deepStrictEqual(R.snoozeSource(null, "b", 1000), { b: 1000 });
+    });
+
+    test("unsnoozeSource removes just that source", () => {
+        const out = R.unsnoozeSource({ a: 1, b: 2 }, "a");
+        assert.deepStrictEqual(out, { b: 2 });
+    });
+
+    test("unsnoozeSource does not mutate the input map", () => {
+        const input = { a: 1, b: 2 };
+        R.unsnoozeSource(input, "a");
+        assert.deepStrictEqual(input, { a: 1, b: 2 });
+    });
+
+    test("unsnoozeSource on an unknown source is a no-op", () => {
+        assert.deepStrictEqual(R.unsnoozeSource({ a: 1 }, "zzz"), { a: 1 });
+    });
+
+    test("isSourceSnoozed is true strictly before the deadline", () => {
+        assert.strictEqual(R.isSourceSnoozed({ a: 1000 }, "a", 999), true);
+    });
+
+    test("isSourceSnoozed is false exactly at the deadline (boundary)", () => {
+        assert.strictEqual(R.isSourceSnoozed({ a: 1000 }, "a", 1000), false);
+    });
+
+    test("isSourceSnoozed is false one ms past the deadline", () => {
+        assert.strictEqual(R.isSourceSnoozed({ a: 1000 }, "a", 1001), false);
+    });
+
+    test("isSourceSnoozed is false for an un-snoozed or unknown source", () => {
+        assert.strictEqual(R.isSourceSnoozed({}, "a", 0), false);
+        assert.strictEqual(R.isSourceSnoozed(null, "a", 0), false);
+        assert.strictEqual(R.isSourceSnoozed({ a: 1000 }, "", 0), false);
+    });
+
+    test("pruneSnoozes drops expired entries, keeps active ones", () => {
+        const out = R.pruneSnoozes({ a: 100, b: 500, c: 1000 }, 500);
+        assert.deepStrictEqual(out, { c: 1000 }, "b is exactly-at-deadline, so expired too");
+    });
+
+    test("pruneSnoozes does not mutate the input map", () => {
+        const input = { a: 100, b: 1000 };
+        R.pruneSnoozes(input, 500);
+        assert.deepStrictEqual(input, { a: 100, b: 1000 });
+    });
+
+    test("pruneSnoozes handles null/empty safely", () => {
+        assert.deepStrictEqual(R.pruneSnoozes(null, 100), {});
+        assert.deepStrictEqual(R.pruneSnoozes({}, 100), {});
+    });
+
+    test("filterSnoozed drops items whose source is currently snoozed", () => {
+        const items = [
+            { id: "1", sourceUrl: "a" },
+            { id: "2", sourceUrl: "b" },
+            { id: "3", sourceUrl: "a" }
+        ];
+        const out = R.filterSnoozed(items, { a: 1000 }, 500);
+        assert.deepStrictEqual(out.map(i => i.id), ["2"]);
+    });
+
+    test("filterSnoozed does not mutate the input array or map", () => {
+        const items = [{ id: "1", sourceUrl: "a" }];
+        const snoozeMap = { a: 1000 };
+        R.filterSnoozed(items, snoozeMap, 500);
+        assert.deepStrictEqual(items, [{ id: "1", sourceUrl: "a" }]);
+        assert.deepStrictEqual(snoozeMap, { a: 1000 });
+    });
+
+    test("filterSnoozed handles empty/null input safely", () => {
+        assert.deepStrictEqual(R.filterSnoozed(null, {}, 0), []);
+        assert.deepStrictEqual(R.filterSnoozed([], { a: 1 }, 0), []);
+        assert.deepStrictEqual(R.filterSnoozed([{ id: "1" }], null, 0), [{ id: "1" }]);
+    });
+});
+
+describe("evaluateRules — rule-based notifications", () => {
+    const items = [
+        { id: "1", title: "Linux kernel 7.2", description: "", source: "LWN", sourceUrl: "https://lwn" },
+        { id: "2", title: "Rust 2.0", description: "", source: "Ars", sourceUrl: "https://ars" },
+        { id: "3", title: "Weather", description: "", source: "BBC", sourceUrl: "https://bbc" }
+    ];
+
+    test("first run records matches but announces nothing (mirrors evaluateSeen)", () => {
+        const r = R.evaluateRules(items, [{ query: "linux" }], []);
+        assert.deepStrictEqual(r.matched, [], "first run must not spam the backlog");
+        assert.deepStrictEqual(r.ids, ["1"]);
+    });
+
+    test("second run announces only newly-matching, not-yet-notified ids", () => {
+        const first = R.evaluateRules(items, [{ query: "linux" }], []);
+        const second = R.evaluateRules(items, [{ query: "linux" }], first.ids);
+        assert.deepStrictEqual(second.matched, []);
+        assert.deepStrictEqual(second.ids, []);
+    });
+
+    test("a genuinely new matching item after the first run IS announced", () => {
+        const first = R.evaluateRules(items, [{ query: "linux" }], []);
+        const withNew = items.concat([{ id: "4", title: "Linux news", source: "LWN", sourceUrl: "https://lwn" }]);
+        const second = R.evaluateRules(withNew, [{ query: "linux" }], first.ids);
+        assert.deepStrictEqual(second.ids, ["4"]);
+        assert.strictEqual(second.matched.length, 1);
+        assert.strictEqual(second.matched[0].id, "4");
+    });
+
+    test("does not re-notify an id already in alreadyNotifiedIds", () => {
+        const r = R.evaluateRules(items, [{ query: "linux" }], ["1"]);
+        assert.deepStrictEqual(r.matched, []);
+        assert.deepStrictEqual(r.ids, []);
+    });
+
+    test("an outage (items missing) then recovery does not phantom-notify", () => {
+        const first = R.evaluateRules(items, [{ query: "" }], []); // matches everything
+        const outage = R.evaluateRules([items[0]], [{ query: "" }], first.ids);
+        assert.deepStrictEqual(outage.matched, [], "outage shrinking the set must not announce");
+        const recovered = R.evaluateRules(items, [{ query: "" }], outage.ids.concat(first.ids));
+        assert.deepStrictEqual(recovered.matched, [], "recovery must not re-announce known items");
+    });
+
+    test("query syntax reuses the search matcher (multi-term AND, case-insensitive)", () => {
+        const r = R.evaluateRules(items, [{ query: "RUST 2.0" }], []);
+        assert.deepStrictEqual(r.ids, ["2"]);
+    });
+
+    test("sources restricts a rule to specific feed urls", () => {
+        const r = R.evaluateRules(items, [{ query: "", sources: ["https://bbc"] }], []);
+        assert.deepStrictEqual(r.ids, ["3"]);
+    });
+
+    test("an item matching no rule is ignored", () => {
+        const r = R.evaluateRules(items, [{ query: "zzz-no-match" }], []);
+        assert.deepStrictEqual(r.ids, []);
+    });
+
+    test("multiple rules: an item matching any one rule is included once", () => {
+        const r = R.evaluateRules(items, [{ query: "linux" }, { query: "rust" }], []);
+        assert.deepStrictEqual(r.ids.sort(), ["1", "2"]);
+    });
+
+    test("empty/null items or rules do not throw", () => {
+        assert.deepStrictEqual(R.evaluateRules(null, [{ query: "a" }], []), { matched: [], ids: [] });
+        assert.deepStrictEqual(R.evaluateRules(items, null, []), { matched: [], ids: [] });
+        assert.deepStrictEqual(R.evaluateRules([], [], []), { matched: [], ids: [] });
+    });
+
+    test("does not mutate items or rules input", () => {
+        const itemsCopy = items.map(i => Object.assign({}, i));
+        const rules = [{ query: "linux", sources: ["https://lwn"] }];
+        const rulesCopy = JSON.parse(JSON.stringify(rules));
+        R.evaluateRules(items, rules, ["1"]);
+        assert.deepStrictEqual(items, itemsCopy);
+        assert.deepStrictEqual(rules, rulesCopy);
+    });
+});
+
+describe("itemsScrolledPast — mark-read-on-scroll", () => {
+    const ordered = ["a", "b", "c", "d", "e"];
+
+    test("empty ordered list returns nothing", () => {
+        assert.deepStrictEqual(R.itemsScrolledPast(["a"], null, []), []);
+        assert.deepStrictEqual(R.itemsScrolledPast(["a"], null, null), []);
+    });
+
+    test("single-item list, first call: nothing scrolled past yet", () => {
+        assert.deepStrictEqual(R.itemsScrolledPast(["only"], null, ["only"]), []);
+    });
+
+    test("first call (no previousTopId) never marks anything, even mid-list", () => {
+        assert.deepStrictEqual(R.itemsScrolledPast(["c"], null, ordered), []);
+        assert.deepStrictEqual(R.itemsScrolledPast(["c"], "", ordered), []);
+    });
+
+    test("scrolling down from a to c marks a and b as scrolled past", () => {
+        assert.deepStrictEqual(R.itemsScrolledPast(["c"], "a", ordered), ["a", "b"]);
+    });
+
+    test("staying at the same top marks nothing", () => {
+        assert.deepStrictEqual(R.itemsScrolledPast(["b"], "b", ordered), []);
+    });
+
+    test("scrolling backwards (up) marks nothing", () => {
+        assert.deepStrictEqual(R.itemsScrolledPast(["a"], "c", ordered), []);
+    });
+
+    test("fast fling to the bottom and back to start marks nothing", () => {
+        // Simulates a caller that only invokes this on a settled position:
+        // the intermediate "at the bottom" position is never passed in, so
+        // the only call this test makes is the final settle back near start.
+        assert.deepStrictEqual(R.itemsScrolledPast(["a"], "a", ordered), []);
+    });
+
+    test("previousTopId no longer present (list changed under the cursor) marks nothing", () => {
+        assert.deepStrictEqual(R.itemsScrolledPast(["c"], "ghost", ordered), []);
+    });
+
+    test("new top id not present in orderedIds marks nothing", () => {
+        assert.deepStrictEqual(R.itemsScrolledPast(["ghost"], "a", ordered), []);
+    });
+
+    test("empty visibleIds marks nothing", () => {
+        assert.deepStrictEqual(R.itemsScrolledPast([], "a", ordered), []);
+        assert.deepStrictEqual(R.itemsScrolledPast(null, "a", ordered), []);
+    });
+
+    test("scrolling to the very end marks everything except the new top", () => {
+        assert.deepStrictEqual(R.itemsScrolledPast(["e"], "a", ordered), ["a", "b", "c", "d"]);
+    });
+
+    test("does not mutate orderedIds or visibleIds", () => {
+        const orderedCopy = ordered.slice();
+        const visible = ["c"];
+        const visibleCopy = visible.slice();
+        R.itemsScrolledPast(visible, "a", ordered);
+        assert.deepStrictEqual(ordered, orderedCopy);
+        assert.deepStrictEqual(visible, visibleCopy);
+    });
+});
+
+describe("summary cache rebuild from persisted state", () => {
+    function rebuild(persisted, cap) {
+        var out = { order: [], map: {} };
+        for (var i = persisted.order.length - 1; i >= 0; i--) {
+            var id = persisted.order[i];
+            if (typeof id === "string" && typeof persisted.map[id] === "string")
+                out = R.addSummary(out.order, out.map, id, persisted.map[id], cap);
+        }
+        return out;
+    }
+
+    test("a clean round-trip preserves order and text exactly", () => {
+        var built = { order: [], map: {} };
+        built = R.addSummary(built.order, built.map, "a", "text a");
+        built = R.addSummary(built.order, built.map, "b", "text b");
+        built = R.addSummary(built.order, built.map, "c", "text c");
+
+        var back = rebuild({ order: built.order, map: built.map });
+
+        assert.deepEqual(back.order, built.order);
+        assert.deepEqual(back.map, built.map);
+        assert.equal(R.getSummary(back.map, "c"), "text c");
+    });
+
+    test("newest-first order survives the rebuild rather than reversing", () => {
+        var built = { order: [], map: {} };
+        built = R.addSummary(built.order, built.map, "old", "o");
+        built = R.addSummary(built.order, built.map, "new", "n");
+        assert.equal(built.order[0], "new");
+
+        var back = rebuild({ order: built.order, map: built.map });
+        assert.equal(back.order[0], "new", "newest must still be first after a restart");
+    });
+
+    test("entries with no matching map text are dropped, not rebuilt as undefined", () => {
+        var back = rebuild({ order: ["a", "ghost", "b"], map: { a: "text a", b: "text b" } });
+        assert.deepEqual(back.order, ["a", "b"]);
+        assert.equal(R.getSummary(back.map, "ghost"), null);
+    });
+
+    test("non-string ids in a corrupted order are skipped", () => {
+        var back = rebuild({ order: ["a", null, 7, { id: "x" }, "b"], map: { a: "text a", b: "text b" } });
+        assert.deepEqual(back.order, ["a", "b"]);
+    });
+
+    test("an over-long persisted order is re-bounded to the current cap", () => {
+        var order = [];
+        var map = {};
+        for (var i = 0; i < 150; i++) {
+            order.push("id" + i);
+            map["id" + i] = "summary " + i;
+        }
+
+        var back = rebuild({ order: order, map: map }, 100);
+
+        assert.equal(back.order.length, 100);
+        // Replayed backwards, so the head of the persisted order is inserted
+        // last and must survive; the tail is what falls off the cap.
+        assert.equal(R.getSummary(back.map, "id0"), "summary 0");
+        assert.equal(R.getSummary(back.map, "id149"), null);
+    });
+
+    test("an empty persisted cache rebuilds to an empty cache, not a throw", () => {
+        var back = rebuild({ order: [], map: {} });
+        assert.deepEqual(back.order, []);
+        assert.deepEqual(back.map, {});
+    });
+});
+
+// ─── pruneSummaries: an empty dataset is not permission to delete ───
+//
+// Regression cover for a real, destructive bug. The widget called this from
+// applyFilter(), which also runs immediately after allItems is emptied — every
+// feed disabled, the last feed deleted, a sourceMode switch. "Prune against an
+// empty dataset" then meant "delete every summary", and the result was
+// persisted. Each entry costs a model run, so that is unrecoverable; a stale
+// entry merely occupies a cap slot. The asymmetry justifies the guard.
+
+describe("pruneSummaries with an empty dataset", () => {
+    function seeded() {
+        var c = { order: [], map: {} };
+        c = R.addSummary(c.order, c.map, "a", "summary a");
+        c = R.addSummary(c.order, c.map, "b", "summary b");
+        return c;
+    }
+
+    test("an empty items array changes nothing", () => {
+        const c = seeded();
+        const out = R.pruneSummaries(c.order, c.map, []);
+        assert.deepEqual(out.order.slice().sort(), ["a", "b"]);
+        assert.equal(R.getSummary(out.map, "a"), "summary a");
+        assert.equal(R.getSummary(out.map, "b"), "summary b");
+    });
+
+    test("null and undefined items change nothing", () => {
+        const c = seeded();
+        for (const empty of [null, undefined]) {
+            const out = R.pruneSummaries(c.order, c.map, empty);
+            assert.equal(out.order.length, 2, String(empty));
+            assert.equal(R.getSummary(out.map, "a"), "summary a");
+        }
+    });
+
+    test("it still returns copies, never the caller's own objects", () => {
+        const c = seeded();
+        const out = R.pruneSummaries(c.order, c.map, []);
+        assert.notEqual(out.order, c.order, "order must be a new array");
+        assert.notEqual(out.map, c.map, "map must be a new object");
+        out.order.push("mutated");
+        out.map.c = "injected";
+        assert.equal(c.order.length, 2, "caller's order must be untouched");
+        assert.equal(R.getSummary(c.map, "c"), null, "caller's map must be untouched");
+    });
+
+    test("a non-empty dataset still prunes what is genuinely gone", () => {
+        const c = seeded();
+        const out = R.pruneSummaries(c.order, c.map, [{ id: "a" }]);
+        assert.deepEqual(out.order, ["a"]);
+        assert.equal(R.getSummary(out.map, "b"), null);
+    });
+});
+
+// ─── isFeedDue ───
+//
+// The stakes here are asymmetric and the tests are written around that. A feed
+// judged not-due produces no request, so its articles must be carried over
+// from the previous cycle; getting it wrong in the "not due" direction means
+// articles quietly disappear. Fetching slightly too often costs one request.
+// So every malformed, missing or nonsensical input must answer TRUE.
+
+describe("isFeedDue", () => {
+    const NOW = 1_000_000_000;
+    const MIN = 60000;
+
+    test("a feed with no interval is always due -- the global cycle governs it", () => {
+        assert.equal(R.isFeedDue({ url: "u" }, { u: NOW }, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 0 }, { u: NOW }, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: null }, { u: NOW }, NOW), true);
+    });
+
+    test("never fetched before is due", () => {
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, {}, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, { u: 0 }, NOW), true);
+    });
+
+    test("inside its interval is not due", () => {
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, { u: NOW - 29 * MIN }, NOW), false);
+    });
+
+    test("exactly at the interval is due -- the boundary is inclusive", () => {
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, { u: NOW - 30 * MIN }, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, { u: NOW - 30 * MIN + 1 }, NOW), false);
+    });
+
+    test("a clock that moved backwards does not freeze every feed", () => {
+        // Suspend or an NTP correction can leave a stamp in the future. Left
+        // unguarded, every feed would look freshly fetched until real time
+        // caught up.
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, { u: NOW + 5 * MIN }, NOW), true);
+    });
+
+    test("malformed everything still answers due, never blocked", () => {
+        assert.equal(R.isFeedDue(null, {}, NOW), true);
+        assert.equal(R.isFeedDue({}, {}, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: "abc" }, { u: NOW }, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: -5 }, { u: NOW }, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: NaN }, { u: NOW }, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, null, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, { u: "junk" }, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, { u: NOW }, "junk"), true);
+    });
+
+    test("two feeds with different intervals are judged independently", () => {
+        const map = { fast: NOW - 10 * MIN, slow: NOW - 10 * MIN };
+        assert.equal(R.isFeedDue({ url: "fast", intervalMinutes: 5 }, map, NOW), true);
+        assert.equal(R.isFeedDue({ url: "slow", intervalMinutes: 60 }, map, NOW), false);
     });
 });

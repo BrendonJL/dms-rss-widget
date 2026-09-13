@@ -454,6 +454,165 @@ function addAllBookmarked(bookmarkOrder, ids, cap) {
     return addAllRead(bookmarkOrder, ids, cap);
 }
 
+
+// --- AI summary cache -------------------------------------------------------
+//
+// Summaries cost ~5s of GPU time each (measured: qwen3:8b on an RTX 2070
+// Super, two sentences from a ~120-word article), so asking twice for the same
+// article must never cost twice. The cache survives restarts: an article does
+// not change, so a summary of it does not go stale.
+//
+// Bounded like readOrder/bookmarkOrder, but at a much lower cap. Those store
+// ids; this stores paragraphs, and the whole state file is rewritten on every
+// change. 100 entries of a few hundred characters is tens of KB per write,
+// which is a different order of cost from a list of ids.
+var DEFAULT_SUMMARY_CAP = 100;
+
+// Newest first, deduped, capped -- the same shape as boundIdList, but carrying
+// a value per id. Returns { order, map }, both replaced rather than mutated so
+// a QML property assignment fires its change notification.
+function addSummary(order, map, id, text, cap) {
+    var limit = (typeof cap === "number" && cap > 0) ? cap : DEFAULT_SUMMARY_CAP;
+    if (typeof id !== "string" || id.length === 0 || typeof text !== "string") {
+        return { order: (order || []).slice(), map: shallowCopy(map) };
+    }
+
+    // `seen` guards against duplicates already present in `order`, not just
+    // against the id being inserted. addSummary is the only writer and keeps
+    // the invariant itself, so a duplicate can only arrive from a corrupted or
+    // hand-edited state file -- and boundIdList, which read and bookmark
+    // history use, self-heals exactly that case. A cache that stayed corrupt
+    // where the other lists recover would be a surprising asymmetry.
+    var nextOrder = [id];
+    var seen = {};
+    seen[id] = true;
+    var src = order || [];
+    for (var i = 0; i < src.length && nextOrder.length < limit; i++) {
+        var candidate = src[i];
+        if (typeof candidate === "string" && candidate.length > 0 && !seen[candidate]) {
+            seen[candidate] = true;
+            nextOrder.push(candidate);
+        }
+    }
+
+    // Rebuild the map from the bounded order, so an entry evicted from the
+    // list cannot linger in the map and grow the state file forever. Doing it
+    // the other way round -- deleting keys as they fall off -- is the same
+    // thing with one more chance to leak.
+    var nextMap = {};
+    var prev = map || {};
+    for (var j = 0; j < nextOrder.length; j++) {
+        var key = nextOrder[j];
+        nextMap[key] = (key === id) ? text : prev[key];
+        if (typeof nextMap[key] !== "string") {
+            nextMap[key] = "";
+        }
+    }
+    return { order: nextOrder, map: nextMap };
+}
+
+function shallowCopy(obj) {
+    var out = {};
+    var src = obj || {};
+    for (var k in src) {
+        if (typeof src[k] === "string") {
+            out[k] = src[k];
+        }
+    }
+    return out;
+}
+
+// "" is a real cached value (a model can legitimately return nothing), so
+// callers must distinguish absent from empty. null means absent.
+function getSummary(map, id) {
+    if (!map || typeof id !== "string") {
+        return null;
+    }
+    return (typeof map[id] === "string") ? map[id] : null;
+}
+
+function hasSummary(map, id) {
+    return getSummary(map, id) !== null;
+}
+
+// Drop cached summaries for ids no longer in the dataset, mirroring
+// pruneSelected. Called on refresh so the cache tracks what the user can
+// actually see rather than growing until it hits the cap.
+//
+// An EMPTY item list means "no information", never "delete everything". The
+// caller reaches this with an empty dataset in perfectly ordinary situations
+// -- every feed disabled, the last feed deleted, a backend switch clearing
+// the list before the new one lands -- and treating that as proof the
+// summaries are unreachable would bin the lot, persistently. Unlike the id
+// lists this sits beside, each entry here cost a real model run, so the
+// asymmetry is deliberate: keeping a stale summary wastes a cache slot the
+// cap already bounds, while dropping a live one is unrecoverable.
+function shallowCopyMap(map) {
+    var out = {};
+    var src = map || {};
+    for (var k in src) {
+        if (Object.prototype.hasOwnProperty.call(src, k))
+            out[k] = src[k];
+    }
+    return out;
+}
+
+// Whether a feed is due for a fetch, given its own interval.
+//
+// Opt-in: a feed with no positive intervalMinutes is ALWAYS due and keeps the
+// global refresh cycle, so this changes nothing for anyone who does not
+// configure it. Only an explicit interval throttles.
+//
+// nowMs is supplied by the caller; this module never reads a clock.
+//
+// The stakes are higher than they look. A feed judged not-due produces no
+// request, so its articles have to be carried over from the previous cycle --
+// get this wrong in the "not due" direction and articles quietly disappear
+// from the list, which nobody notices until they have already lost something.
+// Hence: anything malformed, missing or nonsensical answers TRUE. Fetching
+// slightly too often is a wasted request; fetching too rarely loses content.
+function isFeedDue(feed, lastFetchMap, nowMs) {
+    if (!feed || !feed.url)
+        return true;
+
+    var minutes = Number(feed.intervalMinutes);
+    if (!isFinite(minutes) || minutes <= 0)
+        return true;
+
+    var map = lastFetchMap || {};
+    var last = Number(map[feed.url]);
+    if (!isFinite(last) || last <= 0)
+        return true;
+
+    var now = Number(nowMs);
+    if (!isFinite(now))
+        return true;
+
+    // A clock that moved backwards (suspend, NTP correction) would otherwise
+    // make every feed look freshly fetched for as long as the skew lasts.
+    if (last > now)
+        return true;
+
+    return (now - last) >= (minutes * 60000);
+}
+
+function pruneSummaries(order, map, items) {
+    if (!items || items.length === 0)
+        return { order: (order || []).slice(), map: shallowCopyMap(map) };
+
+    var present = buildIdMap((items || []).map(function (i) { return i ? i.id : ""; }));
+    var nextOrder = [];
+    var nextMap = {};
+    var src = order || [];
+    for (var i = 0; i < src.length; i++) {
+        var id = src[i];
+        if (present[id] && typeof (map || {})[id] === "string") {
+            nextOrder.push(id);
+            nextMap[id] = map[id];
+        }
+    }
+    return { order: nextOrder, map: nextMap };
+}
 // --- Miniflux server-status reconciliation ----------------------------------
 //
 // Called ONLY right after a successful Miniflux fetch, so the server's view
@@ -532,6 +691,292 @@ function reconcileServerStatus(readOrder, bookmarkOrder, serverEntries, cap) {
     };
 }
 
+// --- Sorting -----------------------------------------------------------------
+//
+// DankRssWidget.finalizeFetch() used to do this sort inline; it is pulled in
+// here so it is testable and so the three sort modes share one deterministic
+// tie-break. Equal timestamps are common (a feed publishing a batch at the
+// same second, or a feed with second-granularity dates), and without a
+// tie-break Array.prototype.sort's behaviour on "equal" elements is whatever
+// the two most recent fetches happened to collect them in -- which reshuffles
+// the list on every refresh even though nothing actually changed. Falling
+// back to `id` (stable, unique, already required elsewhere in this file)
+// fixes the order without needing a second sort key from the feed itself.
+function compareTimestampThenId(a, b, descending) {
+    var at = (a && typeof a.timestamp === "number") ? a.timestamp : 0;
+    var bt = (b && typeof b.timestamp === "number") ? b.timestamp : 0;
+    if (at !== bt) {
+        return descending ? (bt - at) : (at - bt);
+    }
+    var aid = (a && a.id) || "";
+    var bid = (b && b.id) || "";
+    if (aid < bid) return -1;
+    if (aid > bid) return 1;
+    return 0;
+}
+
+// Sort a NEW array (input is never mutated -- QML reassigns `allItems` from
+// the return value so its change notification fires). `mode` is "newest" |
+// "oldest" | "byFeed". `maxPerFeed` only applies to "byFeed". `orderMap`
+// (from feedOrderMap) is optional and only used by "byFeed" grouping; without
+// it, items still get a deterministic (though not settings-ordered) grouping
+// via the id tie-break below.
+function sortItems(items, mode, maxPerFeed, orderMap) {
+    var list = (items || []).slice();
+
+    if (mode === "oldest") {
+        list.sort(function (a, b) { return compareTimestampThenId(a, b, false); });
+        return list;
+    }
+
+    if (mode === "byFeed") {
+        // Newest-first within each feed, then apply the per-feed cap, exactly
+        // as the pre-existing inline QML logic did.
+        list.sort(function (a, b) { return compareTimestampThenId(a, b, true); });
+        var limit = (typeof maxPerFeed === "number" && maxPerFeed > 0) ? maxPerFeed : Infinity;
+        var counts = {};
+        var capped = [];
+        for (var i = 0; i < list.length; i++) {
+            var src = (list[i] && list[i].source) || "";
+            counts[src] = (counts[src] || 0) + 1;
+            if (counts[src] <= limit) {
+                capped.push(list[i]);
+            }
+        }
+        // Then group in configured feed order; compareByFeedOrder's own
+        // tie-break is timestamp only, so add the id tie-break on top of it
+        // here rather than changing that (frozen, already-tested) function.
+        var om = orderMap || {};
+        capped.sort(function (a, b) {
+            var byFeed = compareByFeedOrder(a, b, om);
+            if (byFeed !== 0) {
+                return byFeed;
+            }
+            var aid = (a && a.id) || "";
+            var bid = (b && b.id) || "";
+            if (aid < bid) return -1;
+            if (aid > bid) return 1;
+            return 0;
+        });
+        return capped;
+    }
+
+    // "newest" -- default, and the fallback for an unrecognised mode.
+    list.sort(function (a, b) { return compareTimestampThenId(a, b, true); });
+    return list;
+}
+
+// --- Per-source snooze -------------------------------------------------------
+//
+// Snoozing hides a noisy feed's items until a deadline without disabling the
+// feed (fetching/counters keep working). Stored as { sourceUrl: untilMs },
+// a plain number map rather than an id list, since there's no ordering or
+// dedupe concern -- one deadline per source, latest write wins.
+
+function shallowCopyNumbers(obj) {
+    var out = {};
+    var src = obj || {};
+    for (var k in src) {
+        if (typeof src[k] === "number") {
+            out[k] = src[k];
+        }
+    }
+    return out;
+}
+
+function snoozeSource(snoozeMap, sourceUrl, untilMs) {
+    var out = shallowCopyNumbers(snoozeMap);
+    if (typeof sourceUrl !== "string" || sourceUrl.length === 0 || typeof untilMs !== "number") {
+        return out;
+    }
+    out[sourceUrl] = untilMs;
+    return out;
+}
+
+function unsnoozeSource(snoozeMap, sourceUrl) {
+    var out = shallowCopyNumbers(snoozeMap);
+    if (typeof sourceUrl === "string" && sourceUrl.length > 0) {
+        delete out[sourceUrl];
+    }
+    return out;
+}
+
+// Deadline is exclusive: `untilMs === nowMs` means the snooze has just
+// expired, not that it's still active for one more instant. Mirrors how a
+// countdown timer reading "0" means done, not "still running".
+function isSourceSnoozed(snoozeMap, sourceUrl, nowMs) {
+    if (!snoozeMap || typeof sourceUrl !== "string" || sourceUrl.length === 0) {
+        return false;
+    }
+    var until = snoozeMap[sourceUrl];
+    if (typeof until !== "number") {
+        return false;
+    }
+    return until > (nowMs || 0);
+}
+
+// Drop expired entries so the persisted snooze map cannot grow forever --
+// same motivation as pruneSummaries/pruneSelected, just on a different shape.
+function pruneSnoozes(snoozeMap, nowMs) {
+    var out = {};
+    var src = snoozeMap || {};
+    var now = nowMs || 0;
+    for (var k in src) {
+        if (typeof src[k] === "number" && src[k] > now) {
+            out[k] = src[k];
+        }
+    }
+    return out;
+}
+
+function filterSnoozed(items, snoozeMap, nowMs) {
+    var out = [];
+    if (!items || items.length === undefined) {
+        return out;
+    }
+    for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        var src = item ? item.sourceUrl : "";
+        if (!isSourceSnoozed(snoozeMap, src, nowMs)) {
+            out.push(item);
+        }
+    }
+    return out;
+}
+
+// --- Rule-based notifications ------------------------------------------------
+//
+// Reuses matchesQuery/tokenizeQuery (the same matcher the search box uses)
+// so a rule's `query` field takes the exact syntax a user already knows from
+// searching, rather than a second, subtly-different mini-language.
+
+function ruleMatchesItem(item, rule) {
+    if (!rule) {
+        return false;
+    }
+    if (rule.sources && rule.sources.length !== undefined && rule.sources.length > 0) {
+        var srcMap = buildIdMap(rule.sources);
+        var itemSrc = item ? item.sourceUrl : "";
+        if (!itemSrc || !srcMap[itemSrc]) {
+            return false;
+        }
+    }
+    return matchesQuery(item, rule.query);
+}
+
+// { matched: [items to actually announce], ids: [ids to record as notified] }
+//
+// Anti-spam rule, deliberately mirroring evaluateSeen: when `alreadyNotifiedIds`
+// is empty this is the first evaluation ever (or the persisted list was lost),
+// so every currently-matching item is recorded as notified but NONE of them
+// are put in `matched` -- otherwise turning on a broad rule against an
+// existing backlog would fire a toast per historical article. Ids are still
+// returned on a first run so the caller can persist them and avoid the same
+// "outage looks like new items" bug evaluateSeen guards against.
+function evaluateRules(items, rules, alreadyNotifiedIds) {
+    var matched = [];
+    var ids = [];
+    if (!items || items.length === undefined || !rules || rules.length === undefined) {
+        return { matched: matched, ids: ids };
+    }
+    var firstRun = !alreadyNotifiedIds || alreadyNotifiedIds.length === 0;
+    var notifiedMap = buildIdMap(alreadyNotifiedIds);
+    var emitted = {};
+
+    for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        var id = item ? item.id : "";
+        if (typeof id !== "string" || id.length === 0 || notifiedMap[id] || emitted[id]) {
+            continue;
+        }
+        for (var r = 0; r < rules.length; r++) {
+            if (ruleMatchesItem(item, rules[r])) {
+                emitted[id] = true;
+                ids.push(id);
+                if (!firstRun) {
+                    matched.push(item);
+                }
+                break;
+            }
+        }
+    }
+
+    return { matched: matched, ids: ids };
+}
+
+// --- Mark-read-on-scroll bookkeeping -----------------------------------------
+//
+// The scroll event itself is QML's; this is just "given where the viewport's
+// top item was last time and where it is now, which ids did the user
+// actually scroll past". `orderedIds` is the full displayed order (top to
+// bottom); `previousTopId` is the id that was topmost the last time this was
+// called (null/absent on the first call); `visibleIds` is whatever is
+// currently in the viewport, of which only the first entry (the new top) is
+// used.
+//
+// Semantics chosen: mark read everything from the OLD top up to (not
+// including) the NEW top, i.e. items that scrolled fully off the top of the
+// viewport going downward. Nothing is marked read on an upward scroll, and
+// nothing is marked read if either anchor id can't be located (list changed
+// under the cursor -- a refresh reordered or evicted items).
+//
+// Rejected alternative: marking every currently-visible id read as soon as it
+// is rendered. That fails the stated failure mode directly -- a user who
+// flings the list to the bottom and back up would have every item in between
+// marked read despite never having them settle in view. Requiring an actual
+// forward displacement between two calls (which the caller should only make
+// on a settled/debounced scroll position, not every frame) avoids that.
+// Rejected alternative #2: also marking read on an upward scroll -- rejected
+// because scrolling up to re-read something is the opposite of "done with
+// this", and would perversely re-mark items the user is revisiting.
+function indexOfId(orderedIds, id) {
+    if (!orderedIds || !id) {
+        return -1;
+    }
+    for (var i = 0; i < orderedIds.length; i++) {
+        if (orderedIds[i] === id) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+function itemsScrolledPast(visibleIds, previousTopId, orderedIds) {
+    var out = [];
+    if (!orderedIds || orderedIds.length === undefined || orderedIds.length === 0) {
+        return out;
+    }
+    var newTopId = (visibleIds && visibleIds.length !== undefined && visibleIds.length > 0)
+        ? visibleIds[0] : null;
+    if (typeof newTopId !== "string" || newTopId.length === 0) {
+        return out;
+    }
+    var newIdx = indexOfId(orderedIds, newTopId);
+    if (newIdx === -1) {
+        return out;
+    }
+    if (typeof previousTopId !== "string" || previousTopId.length === 0) {
+        // No prior anchor recorded yet (first call) -- nothing to have
+        // scrolled past.
+        return out;
+    }
+    var prevIdx = indexOfId(orderedIds, previousTopId);
+    if (prevIdx === -1) {
+        // The anchor fell out of the list (refresh changed what's shown).
+        // We have no reliable notion of "past" any more, so do nothing
+        // rather than guess.
+        return out;
+    }
+    if (newIdx <= prevIdx) {
+        // Same position or scrolled upward -- see rejected alternative #2.
+        return out;
+    }
+    for (var i = prevIdx; i < newIdx; i++) {
+        out.push(orderedIds[i]);
+    }
+    return out;
+}
+
 // The feeds that a fetch cycle should actually request.
 function activeFeeds(feeds) {
     var out = [];
@@ -569,6 +1014,12 @@ if (typeof module !== "undefined" && module.exports) {
         matchesQuery: matchesQuery,
         filterItems: filterItems,
         classifyFetch: classifyFetch,
+        addSummary: addSummary,
+        getSummary: getSummary,
+        hasSummary: hasSummary,
+        pruneSummaries: pruneSummaries,
+        isFeedDue: isFeedDue,
+        DEFAULT_SUMMARY_CAP: DEFAULT_SUMMARY_CAP,
         curlExitMessage: curlExitMessage,
         isFeedEnabled: isFeedEnabled,
         activeFeeds: activeFeeds,
@@ -580,6 +1031,14 @@ if (typeof module !== "undefined" && module.exports) {
         countSelectedIn: countSelectedIn,
         pruneSelected: pruneSelected,
         addAllBookmarked: addAllBookmarked,
-        reconcileServerStatus: reconcileServerStatus
+        reconcileServerStatus: reconcileServerStatus,
+        sortItems: sortItems,
+        snoozeSource: snoozeSource,
+        unsnoozeSource: unsnoozeSource,
+        isSourceSnoozed: isSourceSnoozed,
+        pruneSnoozes: pruneSnoozes,
+        filterSnoozed: filterSnoozed,
+        evaluateRules: evaluateRules,
+        itemsScrolledPast: itemsScrolledPast
     };
 }

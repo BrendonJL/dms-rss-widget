@@ -170,7 +170,8 @@ function buildGreaderItem(raw, config, FeedParser) {
             timestamp: timestamp,
             source: (raw.origin && raw.origin.title) || "",
             sourceUrl: (raw.origin && raw.origin.htmlUrl) || (config && config.greaderUrl) || "",
-            imageUrl: pickGreaderImage(raw, contentHtml, FeedParser)
+            imageUrl: pickGreaderImage(raw, contentHtml, FeedParser),
+            categories: extractGreaderLabels(categories)
         },
         status: {
             id: id,
@@ -195,6 +196,33 @@ function categoriesHaveState(categories, name) {
             return true;
     }
     return false;
+}
+
+// The SAME `categories` array items/contents hands back for read/starred
+// state (categoriesHaveState above) also carries folder/label membership,
+// as "user/-/label/<name>" or "user/<uid>/label/<name>" -- the label
+// equivalent of the state tag's two id forms. This mirrors the *pattern*
+// probing already confirmed for the state tags in this file, but the label
+// form itself was NOT independently re-probed against a live server for
+// this change (the design doc only probed subscription/list for
+// categories, not the per-item label tag inside items/contents) -- treat
+// this as inferred from the documented Google Reader API shape, not
+// measured, until it is checked against a live response.
+function extractGreaderLabels(categories) {
+    var marker = "/label/";
+    var labels = [];
+    for (var i = 0; i < categories.length; i++) {
+        var cat = categories[i];
+        if (typeof cat !== "string")
+            continue;
+        var idx = cat.indexOf(marker);
+        if (idx === -1)
+            continue;
+        var name = cat.slice(idx + marker.length);
+        if (name.length > 0)
+            labels.push(name);
+    }
+    return labels;
 }
 
 function parseGreaderItems(rawItems, config, FeedParser) {
@@ -450,10 +478,15 @@ function createGoogleReaderBackend(deps) {
     return {
         id: "greader",
 
-        // subscribe: true because /accounts/ClientLogin + quickadd exist;
-        // categories: true because subscription/list returns them. Neither
-        // needs UI yet -- these flags just stop the UI asking which backend
-        // it has.
+        // subscribe: true because /accounts/ClientLogin + quickadd exist.
+        // categories: true -- originally set when this flag was purely
+        // aspirational ("subscription/list returns them", no UI needed
+        // yet); buildGreaderItem now actually threads label/folder tags
+        // from the items/contents `categories` array into each item's
+        // `categories` field (see extractGreaderLabels), so the flag is
+        // genuinely earned. fullText: false -- the Google Reader API this
+        // backend speaks has no fetch-content-style extraction endpoint;
+        // local HtmlExtract is this backend's only route to full text.
         capabilities: {
             serverState: true,
             star: true,
@@ -509,6 +542,12 @@ function createGoogleReaderBackend(deps) {
                 ? greaderEditTagRequest(config, session, [id], null, STARRED_TAG)
                 : greaderEditTagRequest(config, session, [id], STARRED_TAG, null);
         },
+
+        // No fetch-content equivalent in this protocol -- always a no-op,
+        // matching capabilities.fullText: false. Present (rather than
+        // omitted) so a positional caller across backends never binds the
+        // wrong argument.
+        fullTextRequest: function (config, id) { return null; },
 
         // Server wins on fetch reconciliation, same as Miniflux -- delegates
         // straight to the existing, already-tested ReaderState function.

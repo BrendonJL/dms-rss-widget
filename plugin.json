@@ -2,7 +2,7 @@
   "id": "dankRssWidget",
   "name": "Dank RSS Widget",
   "description": "Desktop widget for RSS/Atom feeds with keyboard navigation, plus Miniflux and Google Reader (FreshRSS, TT-RSS, Inoreader) sync with bidirectional read/unread and starred state",
-  "version": "2.4.0",
+  "version": "3.0.0",
   "author": "BrendonJL, Xn4m3d, Alessandro Ianne",
   "type": "desktop",
   "capabilities": [

@@ -17,6 +17,9 @@ const {
     rootElementPrefix,
     stripNamespacePrefix,
     parseOpml,
+    buildOpml,
+    discoverFeeds,
+    buildDiscoveryRequest,
     dedupeItems,
     parseMinifluxEntries
 } = require("../FeedParser.js");
@@ -1300,5 +1303,413 @@ describe("parseMinifluxEntries", () => {
             { id: "m:1", status: "read", starred: true },
             { id: "m:2", status: "unread", starred: false }
         ]);
+    });
+});
+
+// ─── buildOpml ───
+
+describe("buildOpml", () => {
+    test("round-trips a plain feed list through parseOpml", () => {
+        const feeds = [
+            { name: "Example Feed", url: "https://example.com/rss.xml", enabled: true },
+            { name: "Second Feed", url: "http://second.example.com/feed", enabled: false }
+        ];
+        const xml = buildOpml(feeds);
+        const back = parseOpml(xml);
+        assert.deepEqual(back, [
+            { name: "Example Feed", url: "https://example.com/rss.xml" },
+            { name: "Second Feed", url: "http://second.example.com/feed" }
+        ]);
+    });
+
+    test("round-trips a title containing an ampersand", () => {
+        const feeds = [{ name: "Tom & Jerry", url: "https://example.com/feed", enabled: true }];
+        const xml = buildOpml(feeds);
+        assert.match(xml, /text="Tom &amp; Jerry"/);
+        assert.deepEqual(parseOpml(xml), [{ name: "Tom & Jerry", url: "https://example.com/feed" }]);
+    });
+
+    test("round-trips a URL with an already-encoded-looking & query separator", () => {
+        const feeds = [{ name: "Query Feed", url: "https://example.com/feed?a=1&b=2&c=3", enabled: true }];
+        const xml = buildOpml(feeds);
+        assert.match(xml, /xmlUrl="https:\/\/example\.com\/feed\?a=1&amp;b=2&amp;c=3"/);
+        assert.deepEqual(parseOpml(xml), feeds.map(({ name, url }) => ({ name, url })));
+    });
+
+    test("round-trips titles containing double quotes, single quotes, and angle brackets", () => {
+        const feeds = [
+            { name: 'The "Best" Feed', url: "https://example.com/a", enabled: true },
+            { name: "Reader's Digest", url: "https://example.com/b", enabled: true },
+            { name: "5 < 10 & 10 > 5", url: "https://example.com/c", enabled: true }
+        ];
+        const xml = buildOpml(feeds);
+        assert.deepEqual(parseOpml(xml), feeds.map(({ name, url }) => ({ name, url })));
+    });
+
+    test("falls back to url as name when name is missing", () => {
+        const xml = buildOpml([{ url: "https://example.com/feed", enabled: true }]);
+        assert.deepEqual(parseOpml(xml), [{ name: "https://example.com/feed", url: "https://example.com/feed" }]);
+    });
+
+    test("empty array produces a valid, empty OPML document", () => {
+        const xml = buildOpml([]);
+        assert.match(xml, /<opml version="2.0">/);
+        assert.match(xml, /<body>\s*<\/body>/);
+        assert.deepEqual(parseOpml(xml), []);
+    });
+
+    test("null/undefined input does not throw and produces empty OPML", () => {
+        assert.doesNotThrow(() => buildOpml(null));
+        assert.doesNotThrow(() => buildOpml(undefined));
+        assert.deepEqual(parseOpml(buildOpml(null)), []);
+    });
+
+    test("garbage entries (missing url, non-objects, null) are skipped without throwing", () => {
+        const feeds = [
+            null,
+            {},
+            { name: "no url here" },
+            "just a string",
+            { name: "Valid", url: "https://example.com/ok", enabled: true }
+        ];
+        const xml = buildOpml(feeds);
+        assert.deepEqual(parseOpml(xml), [{ name: "Valid", url: "https://example.com/ok" }]);
+    });
+
+    test("default title is used when options is omitted", () => {
+        const xml = buildOpml([]);
+        assert.match(xml, /<title>Dank RSS Widget Feeds<\/title>/);
+    });
+
+    test("options.title overrides the default", () => {
+        const xml = buildOpml([], { title: "My Backup" });
+        assert.match(xml, /<title>My Backup<\/title>/);
+    });
+
+    test("options.dateCreated is embedded verbatim and is injectable, not clock-read", () => {
+        const xml = buildOpml([], { dateCreated: "Fri, 01 Jan 2026 00:00:00 GMT" });
+        assert.match(xml, /<dateCreated>Fri, 01 Jan 2026 00:00:00 GMT<\/dateCreated>/);
+
+        // Calling twice with no dateCreated must be byte-identical -- nothing
+        // in here may read the clock.
+        const a = buildOpml([{ name: "X", url: "https://x.com" }]);
+        const b = buildOpml([{ name: "X", url: "https://x.com" }]);
+        assert.equal(a, b);
+        assert.doesNotMatch(a, /dateCreated/);
+    });
+
+    test("enabled is ignored -- a disabled feed is still exported", () => {
+        const xml = buildOpml([{ name: "Disabled", url: "https://example.com/x", enabled: false }]);
+        assert.deepEqual(parseOpml(xml), [{ name: "Disabled", url: "https://example.com/x" }]);
+    });
+});
+
+// ─── discoverFeeds ───
+
+describe("discoverFeeds", () => {
+    test("finds an RSS link with double-quoted attributes", () => {
+        const html = '<html><head><link rel="alternate" type="application/rss+xml" href="/feed.xml" title="Main Feed"></head><body></body></html>';
+        const result = discoverFeeds(html, "https://example.com/blog/");
+        assert.deepEqual(result, [{ title: "Main Feed", url: "https://example.com/feed.xml", type: "rss" }]);
+    });
+
+    test("handles single-quoted, unquoted, and reordered attributes", () => {
+        const html = "<head><link href='/a.xml' type='application/rss+xml' rel='alternate'></head>";
+        const unquoted = "<head><link rel=alternate type=application/atom+xml href=/b.xml></head>";
+        assert.equal(discoverFeeds(html, "https://example.com").length, 1);
+        assert.equal(discoverFeeds(unquoted, "https://example.com").length, 1);
+        assert.equal(discoverFeeds(unquoted, "https://example.com")[0].type, "atom");
+    });
+
+    test("is case-insensitive on tag name, attribute names, and rel/type values", () => {
+        const html = '<HEAD><LINK REL="ALTERNATE" TYPE="APPLICATION/RSS+XML" HREF="/feed.xml"></HEAD>';
+        const result = discoverFeeds(html, "https://example.com");
+        assert.equal(result.length, 1);
+        assert.equal(result[0].url, "https://example.com/feed.xml");
+    });
+
+    test("handles self-closing link tags", () => {
+        const html = '<head><link rel="alternate" type="application/rss+xml" href="/feed.xml" /></head>';
+        assert.equal(discoverFeeds(html, "https://example.com").length, 1);
+    });
+
+    test("resolves relative hrefs against baseUrl: root-relative, directory-relative, and protocol-relative", () => {
+        const rootRelative = discoverFeeds(
+            '<head><link rel="alternate" type="application/rss+xml" href="/feed.xml"></head>',
+            "https://example.com/some/deep/page.html"
+        );
+        assert.equal(rootRelative[0].url, "https://example.com/feed.xml");
+
+        const dirRelative = discoverFeeds(
+            '<head><link rel="alternate" type="application/rss+xml" href="feed.xml"></head>',
+            "https://example.com/blog/index.html"
+        );
+        assert.equal(dirRelative[0].url, "https://example.com/blog/feed.xml");
+
+        const protocolRelative = discoverFeeds(
+            '<head><link rel="alternate" type="application/rss+xml" href="//cdn.example.com/feed.xml"></head>',
+            "https://example.com/"
+        );
+        assert.equal(protocolRelative[0].url, "https://cdn.example.com/feed.xml");
+    });
+
+    test("rejects unsafe resolved URLs via the existing isSafeUrl allowlist", () => {
+        const html = '<head><link rel="alternate" type="application/rss+xml" href="javascript:alert(1)"></head>';
+        assert.deepEqual(discoverFeeds(html, "https://example.com"), []);
+    });
+
+    test("ignores <link> tags without rel=alternate or with an unsupported type", () => {
+        const html = `<head>
+            <link rel="stylesheet" href="/style.css">
+            <link rel="alternate" type="text/html" href="/page">
+            <link rel="alternate" type="application/rss+xml" href="/feed.xml">
+        </head>`;
+        const result = discoverFeeds(html, "https://example.com");
+        assert.equal(result.length, 1);
+        assert.equal(result[0].url, "https://example.com/feed.xml");
+    });
+
+    test("ignores <link> tags outside <head>", () => {
+        const html = '<head><title>t</title></head><body><link rel="alternate" type="application/rss+xml" href="/feed.xml"></body>';
+        assert.deepEqual(discoverFeeds(html, "https://example.com"), []);
+    });
+
+    test("ranks RSS/Atom above JSON Feed, and comment feeds last regardless of format", () => {
+        const html = `<head>
+            <link rel="alternate" type="application/json" href="/feed.json" title="JSON Feed">
+            <link rel="alternate" type="application/rss+xml" href="/comments/feed" title="Comments Feed">
+            <link rel="alternate" type="application/atom+xml" href="/atom.xml" title="Atom">
+            <link rel="alternate" type="application/rss+xml" href="/feed.xml" title="RSS">
+        </head>`;
+        const result = discoverFeeds(html, "https://example.com");
+        assert.deepEqual(result.map(f => f.type), ["atom", "rss", "json", "rss"]);
+        assert.equal(result[result.length - 1].title, "Comments Feed");
+    });
+
+    test("deduplicates identical resolved URLs", () => {
+        const html = `<head>
+            <link rel="alternate" type="application/rss+xml" href="/feed.xml" title="A">
+            <link rel="alternate" type="application/rss+xml" href="/feed.xml" title="B">
+        </head>`;
+        assert.equal(discoverFeeds(html, "https://example.com").length, 1);
+    });
+
+    test("real-world-shaped HTML with multiple feed links and unrelated <link> tags", () => {
+        const html = `<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Example Blog</title>
+    <link rel="stylesheet" href="/assets/site.css">
+    <link rel="icon" href="/favicon.ico">
+    <link rel="canonical" href="https://example.com/blog/">
+    <link rel="alternate" type="application/rss+xml" title="Example Blog &raquo; Feed" href="https://example.com/feed/">
+    <link rel="alternate" type="application/rss+xml" title="Example Blog &raquo; Comments Feed" href="https://example.com/comments/feed/">
+    <link rel="alternate" type="application/atom+xml" title="Example Blog Atom" href="/feed/atom/">
+    <link rel="preload" href="/assets/font.woff2" as="font">
+</head>
+<body>
+    <p>Welcome</p>
+</body>
+</html>`;
+        const result = discoverFeeds(html, "https://example.com/blog/");
+        assert.equal(result.length, 3);
+        // Both non-comment links are RSS/Atom (tied rank), so document order
+        // wins between them; the comments feed sinks below both regardless.
+        assert.equal(result[0].url, "https://example.com/feed/");
+        assert.equal(result[1].url, "https://example.com/feed/atom/");
+        assert.equal(result[2].url, "https://example.com/comments/feed/");
+    });
+
+    test("empty/null html does not throw", () => {
+        assert.deepEqual(discoverFeeds("", "https://example.com"), []);
+        assert.deepEqual(discoverFeeds(null, "https://example.com"), []);
+    });
+
+    test("missing href is skipped, not thrown", () => {
+        const html = '<head><link rel="alternate" type="application/rss+xml"></head>';
+        assert.deepEqual(discoverFeeds(html, "https://example.com"), []);
+    });
+});
+
+// ─── buildDiscoveryRequest ───
+
+describe("buildDiscoveryRequest", () => {
+    test("returns a curl descriptor with the shared hardening flags, never doing I/O itself", () => {
+        const req = buildDiscoveryRequest("https://example.com/");
+        assert.equal(req.argv[0], "curl");
+        assert.ok(req.argv.includes("--connect-timeout"));
+        assert.ok(req.argv.includes("--max-time"));
+        assert.ok(req.argv.includes("--proto"));
+        assert.equal(req.argv[req.argv.indexOf("--proto") + 1], "=http,https");
+        assert.ok(req.argv.includes("--proto-redir"));
+        assert.equal(req.argv[req.argv.indexOf("--proto-redir") + 1], "=http,https");
+        assert.ok(req.argv.includes("--max-filesize"));
+        assert.ok(req.argv.includes("-L"));
+        assert.ok(req.argv.some(a => typeof a === "string" && a.indexOf("DankRssWidget") !== -1));
+        assert.equal(req.argv[req.argv.length - 1], "https://example.com/");
+        assert.equal(typeof req.parse, "function");
+    });
+
+    test("parse runs discoverFeeds against the fetched body using the original site URL as base", () => {
+        const req = buildDiscoveryRequest("https://example.com/blog/");
+        const html = '<head><link rel="alternate" type="application/rss+xml" href="feed.xml"></head>';
+        assert.deepEqual(req.parse(html), [{ title: "", url: "https://example.com/blog/feed.xml", type: "rss" }]);
+    });
+});
+
+// This file destructures its imports; the audio helpers arrived later, so
+// they are bound here rather than retrofitting the list at the top.
+const FeedParser = require("../FeedParser.js");
+
+// ─── Audio enclosures ───
+//
+// Podcast feeds enclose an audio file; plenty of other feeds enclose a PDF, a
+// torrent or a video. Handing an arbitrary enclosure to a media player turns
+// "play this episode" into "open whatever the feed felt like attaching", so
+// the type gate is the feature, not an optimisation. The same isSafeUrl gate
+// every other URL in this module passes applies here for the usual reason.
+
+describe("extractAudioUrl", () => {
+    test("finds an audio enclosure with url before type", () => {
+        assert.equal(
+            FeedParser.extractAudioUrl('<item><enclosure url="https://ex.com/ep1.mp3" length="1" type="audio/mpeg"/></item>'),
+            "https://ex.com/ep1.mp3");
+    });
+
+    test("finds one with the attributes reversed", () => {
+        assert.equal(
+            FeedParser.extractAudioUrl('<item><enclosure type="audio/mpeg" url="https://ex.com/a.mp3"/></item>'),
+            "https://ex.com/a.mp3");
+    });
+
+    test("accepts single quotes and mixed case", () => {
+        assert.equal(
+            FeedParser.extractAudioUrl("<item><ENCLOSURE URL='https://ex.com/b.ogg' TYPE='AUDIO/OGG'/></item>"),
+            "https://ex.com/b.ogg");
+    });
+
+    test("ignores an image enclosure", () => {
+        assert.equal(FeedParser.extractAudioUrl('<item><enclosure url="https://ex.com/a.jpg" type="image/jpeg"/></item>'), "");
+    });
+
+    test("ignores a video enclosure -- audio only, deliberately", () => {
+        assert.equal(FeedParser.extractAudioUrl('<item><enclosure url="https://ex.com/a.mp4" type="video/mp4"/></item>'), "");
+    });
+
+    test("rejects an unsafe scheme even when the type says audio", () => {
+        assert.equal(FeedParser.extractAudioUrl('<item><enclosure url="file:///etc/passwd" type="audio/mpeg"/></item>'), "");
+        assert.equal(FeedParser.extractAudioUrl('<item><enclosure url="javascript:alert(1)" type="audio/mpeg"/></item>'), "");
+    });
+
+    test("returns empty string, not null, when there is nothing", () => {
+        assert.equal(FeedParser.extractAudioUrl("<item></item>"), "");
+        assert.equal(FeedParser.extractAudioUrl(""), "");
+        assert.equal(FeedParser.extractAudioUrl(null), "");
+    });
+
+    test("picks the audio enclosure when an image one is also present", () => {
+        assert.equal(
+            FeedParser.extractAudioUrl('<item><enclosure url="https://x/a.jpg" type="image/jpeg"/><enclosure url="https://x/a.mp3" type="audio/mpeg"/></item>'),
+            "https://x/a.mp3");
+    });
+});
+
+describe("minifluxEntryAudio", () => {
+    test("picks the audio enclosure from Miniflux's parsed list", () => {
+        assert.equal(FeedParser.minifluxEntryAudio({ enclosures: [
+            { url: "https://x/a.jpg", mime_type: "image/jpeg" },
+            { url: "https://x/a.mp3", mime_type: "audio/mpeg" }
+        ]}), "https://x/a.mp3");
+    });
+
+    test("returns empty for no enclosures, malformed entries, or null", () => {
+        assert.equal(FeedParser.minifluxEntryAudio({ enclosures: [] }), "");
+        assert.equal(FeedParser.minifluxEntryAudio({}), "");
+        assert.equal(FeedParser.minifluxEntryAudio(null), "");
+        assert.equal(FeedParser.minifluxEntryAudio({ enclosures: [null, { mime_type: "audio/mpeg" }] }), "");
+    });
+
+    test("rejects an unsafe url from a server response too", () => {
+        assert.equal(FeedParser.minifluxEntryAudio({ enclosures: [{ url: "file:///x.mp3", mime_type: "audio/mpeg" }] }), "");
+    });
+});
+
+describe("audioUrl on parsed items", () => {
+    test("RSS items carry audioUrl, and it is additive -- every frozen field survives", () => {
+        var items = FeedParser.parseRssFeed(
+            '<rss><channel><item><title>Ep</title><link>https://e.com/1</link><description>d</description>' +
+            '<enclosure url="https://ex.com/ep.mp3" type="audio/mpeg"/></item></channel></rss>', "S", "https://e.com");
+        assert.equal(items.length, 1);
+        assert.equal(items[0].audioUrl, "https://ex.com/ep.mp3");
+        ["id", "title", "link", "description", "timestamp", "dateStr", "source", "sourceUrl", "imageUrl"].forEach(function (f) {
+            assert.ok(f in items[0], "frozen field missing: " + f);
+        });
+    });
+
+    test("an item with no enclosure gets an empty audioUrl rather than undefined", () => {
+        var items = FeedParser.parseRssFeed(
+            '<rss><channel><item><title>T</title><link>https://e.com/2</link></item></channel></rss>', "S", "https://e.com");
+        assert.equal(items[0].audioUrl, "");
+    });
+});
+
+// ─── OPML import is attacker-influenced input ───
+//
+// A hand-typed feed passes through validateFeedUrl in the settings panel; an
+// imported one never did — the import button pushed straight into the feed
+// list. Every enabled feed's url then becomes a curl argument on every
+// refresh, unattended. So the gate belongs at the parse boundary, where
+// imageUrl and audioUrl already are.
+
+describe("parseOpml URL safety", () => {
+    test("keeps ordinary http(s) feeds", () => {
+        const out = FeedParser.parseOpml('<opml><body><outline text="A" xmlUrl="https://e.com/f.xml"/></body></opml>');
+        assert.deepEqual(out, [{ name: "A", url: "https://e.com/f.xml" }]);
+    });
+
+    test("drops file:, javascript: and data: entries", () => {
+        const out = FeedParser.parseOpml(
+            '<opml><body>' +
+            '<outline text="O" xmlUrl="https://e.com/ok.xml"/>' +
+            '<outline text="F" xmlUrl="file:///etc/passwd"/>' +
+            '<outline text="J" xmlUrl="javascript:alert(1)"/>' +
+            '<outline text="D" xmlUrl="data:text/xml,&lt;rss/&gt;"/>' +
+            '</body></opml>');
+        assert.deepEqual(out.map(f => f.name), ["O"]);
+    });
+
+    test("drops entries shaped like a curl flag", () => {
+        // Without the gate these reach argv. The "--" separator in the request
+        // builders is the second line of defence; this is the first.
+        const out = FeedParser.parseOpml(
+            '<opml><body>' +
+            '<outline text="Dash" xmlUrl="-o/tmp/pwned"/>' +
+            '<outline text="Proto" xmlUrl="--proto=@/etc/passwd"/>' +
+            '<outline text="Good" xmlUrl="https://e.com/f.xml"/>' +
+            '</body></opml>');
+        assert.deepEqual(out.map(f => f.name), ["Good"]);
+    });
+
+    test("an OPML of nothing but unsafe entries imports nothing, without throwing", () => {
+        const out = FeedParser.parseOpml('<opml><body><outline text="F" xmlUrl="file:///x"/></body></opml>');
+        assert.deepEqual(out, []);
+    });
+
+    test("still round-trips what buildOpml writes", () => {
+        const feeds = [{ name: "Tom & Jerry", url: "https://e.com/a.xml?x=1&y=2" }];
+        assert.deepEqual(FeedParser.parseOpml(FeedParser.buildOpml(feeds)), feeds);
+    });
+});
+
+// ─── every outbound request ends option parsing before the URL ───
+
+describe("curl argv hardening", () => {
+    test("discovery puts -- immediately before the site URL", () => {
+        const argv = FeedParser.buildDiscoveryRequest("https://e.com").argv;
+        const i = argv.indexOf("--");
+        assert.ok(i > 0, "no -- separator");
+        assert.equal(i, argv.length - 2, "-- must be immediately before the URL");
+        assert.equal(argv[argv.length - 1], "https://e.com");
     });
 });

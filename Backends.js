@@ -56,12 +56,84 @@ function minifluxCurlArgv(method, minifluxUrl, endpoint, token, body) {
         if (body)
             args.push("-d", body);
     }
-    args.push(url);
+    args.push("--", url);
     return args;
 }
 
 function minifluxConfigReady(config) {
     return !!(config && config.minifluxUrl && config.minifluxToken);
+}
+
+// ─── categories helper (shared across backends) ───
+//
+// Returns the sorted set of distinct category strings already present on
+// parsed items' optional `categories` array, so a caller can build a filter
+// UI without walking every item itself. Purely defensive against malformed
+// input: a null/non-array items list, a null/missing item, a non-array or
+// missing `categories` field, and non-string entries within it are all
+// skipped rather than thrown on -- callers hand this whatever a backend's
+// parse() produced, which for the standard backend is items with no
+// `categories` field at all.
+function knownCategories(items) {
+    var seen = {};
+    var out = [];
+    var list = Array.isArray(items) ? items : [];
+
+    for (var i = 0; i < list.length; i++) {
+        var item = list[i];
+        var cats = item && item.categories;
+        // A string has a `.length`, so a length check alone would iterate
+        // its characters instead of skipping it -- Array.isArray is required.
+        if (!Array.isArray(cats))
+            continue;
+
+        for (var j = 0; j < cats.length; j++) {
+            var c = cats[j];
+            if (typeof c !== "string" || c.length === 0)
+                continue;
+            if (!Object.prototype.hasOwnProperty.call(seen, c)) {
+                seen[c] = true;
+                out.push(c);
+            }
+        }
+    }
+
+    out.sort();
+    return out;
+}
+
+// Threads Miniflux's per-entry category onto the items FeedParser.parseMinifluxEntries
+// already built. This lives HERE rather than in FeedParser.js because
+// parseMinifluxEntries's return shape is that module's own contract; merging
+// by id after the fact keeps this additive without touching it.
+//
+// Field used: `entry.feed.category.title`, per Miniflux's documented API
+// schema (a feed's category is an object with `id`/`title`). UNLIKE the rest
+// of this file's Miniflux facts (which were verified against
+// --fail-with-body's real behaviour, curl argv, etc), this specific field
+// has NOT been confirmed against a live Miniflux response as part of this
+// change -- v2.4-miniflux-port.md explicitly scoped categories out ("no
+// category support") when the entry mapping was last verified live. Treat
+// it as documented-but-unmeasured until someone checks it against a real
+// server.
+function attachMinifluxCategories(items, entries) {
+    var byId = {};
+    var list = Array.isArray(entries) ? entries : [];
+
+    for (var i = 0; i < list.length; i++) {
+        var entry = list[i];
+        if (!entry || entry.id === undefined || entry.id === null)
+            continue;
+        var title = entry.feed && entry.feed.category && entry.feed.category.title;
+        byId["m:" + String(entry.id)] = (typeof title === "string" && title.length > 0) ? title : null;
+    }
+
+    for (var j = 0; j < items.length; j++) {
+        var cat = Object.prototype.hasOwnProperty.call(byId, items[j].id) ? byId[items[j].id] : null;
+        items[j].categories = cat ? [cat] : [];
+    }
+
+    return items;
 }
 
 // ─── StandardBackend ───
@@ -84,6 +156,12 @@ function buildStandardFetchRequest(feed, FeedParser) {
             "--max-redirs", "5",
             "--max-filesize", "5000000",
             "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0",
+            // "--" ends option parsing: without it a URL beginning with a
+            // dash is read by curl as a flag rather than an address. Feed
+            // content is attacker-influenced, and isSafeUrl is the primary
+            // gate -- this is the belt to its braces, and costs one argv
+            // element.
+            "--",
             url
         ],
         timeoutMs: null,
@@ -161,6 +239,12 @@ function createStandardBackend(deps) {
         markUnreadRequest: function (config, session, ids) { return null; },
         toggleStarRequest: function (config, session, id, currentlyStarred) { return null; },
 
+        // No server-side extraction exists for plain RSS/Atom -- always a
+        // no-op, matching capabilities.fullText: false. Present (rather than
+        // omitted) so a caller invoking this positionally across backends
+        // never binds the wrong argument, same reasoning as the mark/star
+        // no-ops above.
+        fullTextRequest: function (config, id) { return null; },
 
         // Identity: nothing to reconcile against.
         reconcile: function (localState, serverEntries) {
@@ -191,8 +275,12 @@ function createMinifluxBackend(deps) {
             serverState: true,
             star: true,
             subscribe: false,
-            categories: false,
-            fullText: false
+            // Both now genuinely wired rather than aspirational: categories
+            // flow from entry.feed.category.title (see
+            // attachMinifluxCategories), and fullText is fetchRequest's
+            // fetch-content descriptor below.
+            categories: true,
+            fullText: true
         },
 
         // config: { minifluxUrl, minifluxToken, showStarred, maxItems }.
@@ -233,6 +321,9 @@ function createMinifluxBackend(deps) {
                     var result = (parsed && !error)
                         ? FeedParser.parseMinifluxEntries(parsed, minifluxUrl)
                         : { items: [], serverStatus: [] };
+
+                    if (parsed && !error)
+                        attachMinifluxCategories(result.items, parsed.entries);
 
                     return { items: result.items, serverStatus: result.serverStatus, error: error };
                 }
@@ -276,6 +367,44 @@ function createMinifluxBackend(deps) {
                 argv: minifluxCurlArgv("PUT", config.minifluxUrl, "/v1/entries/" + id + "/bookmark", config.minifluxToken, null),
                 timeoutMs: MINIFLUX_PROC_TIMEOUT_MS,
                 parse: function (stdout) { return null; }
+            };
+        },
+
+        // GET /v1/entries/{id}/fetch-content -- server-side full-text
+        // extraction (BACKLOG.md: "Miniflux full-text as a fast path",
+        // measured 936 -> 8412 chars on a real article). This is an
+        // OPTIMISATION on top of the route fetchRequests already uses, never
+        // the only way to get an entry's body: a caller must fall back to
+        // local HtmlExtract when capabilities.fullText is false (every other
+        // backend) or when this descriptor's parse reports an error.
+        // `id` is the raw numeric Miniflux entry id, matching
+        // markReadRequest/toggleStarRequest's convention (the "m:" prefix
+        // already stripped by the caller).
+        fullTextRequest: function (config, id) {
+            if (!minifluxConfigReady(config) || !id)
+                return null;
+
+            return {
+                argv: minifluxCurlArgv("GET", config.minifluxUrl, "/v1/entries/" + id + "/fetch-content", config.minifluxToken, null),
+                timeoutMs: MINIFLUX_PROC_TIMEOUT_MS,
+                parse: function (stdout) {
+                    var parsed = null;
+                    try {
+                        parsed = JSON.parse(stdout);
+                    } catch (e) {
+                        return { content: null, error: "Parse failed" };
+                    }
+
+                    // { "content": "<p>...</p>" } per Miniflux's documented
+                    // response shape for this endpoint -- like the category
+                    // field above, this has not been re-verified live as
+                    // part of this change; the BACKLOG measurement only
+                    // recorded a character-count delta, not the exact JSON.
+                    if (!parsed || typeof parsed.content !== "string")
+                        return { content: null, error: "Miniflux: malformed fetch-content response" };
+
+                    return { content: parsed.content, error: null };
+                }
             };
         },
 
@@ -340,6 +469,7 @@ if (typeof module !== "undefined" && module.exports) {
     module.exports = {
         createStandardBackend: createStandardBackend,
         createMinifluxBackend: createMinifluxBackend,
-        createBackends: createBackends
+        createBackends: createBackends,
+        knownCategories: knownCategories
     };
 }

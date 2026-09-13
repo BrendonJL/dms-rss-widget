@@ -1,14 +1,15 @@
 # Design: Phase 1 — Google Reader API backend
 
 Date: 2026-09-09
-Status: ready to implement
+Status: implemented (1a, 1b, 1c) — shipped in 2.4.0
 Depends on: Phase 0. **Requires an interface extension** — see below.
 
-> **Status:** 1a and 1b implemented — `GoogleReader.js`, `ChainRunner.js`,
-> `tests/live-greader.js`, and the `session` parameter (now shared by all
-> three backends) all exist. 1c (settings UI: a third source-mode option,
-> URL/username/password fields) is not implemented —
-> `DankRssWidgetSettings.qml` still offers only Standard/Miniflux.
+> **Status:** fully implemented and shipped in 2.4.0. `GoogleReader.js`,
+> `ChainRunner.js`, `tests/live-greader.js`, and the `session` parameter (now
+> shared by all three backends) all exist. 1c (the settings UI) landed in
+> `5baa0b0`: `DankRssWidgetSettings.qml` offers Google Reader as a third source
+> mode with URL/username/password fields and a Test Connection button that
+> runs the real two-step ClientLogin chain.
 
 ## Why this backend is worth the trouble
 

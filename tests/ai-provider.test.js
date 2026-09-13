@@ -44,6 +44,21 @@ describe("PRESETS", () => {
     test("custom preset has an empty baseUrl for the user to fill in", () => {
         assert.equal(PRESETS.custom.baseUrl, "");
     });
+
+    test("ollama preset suggests a default embed model, others leave it for the user", () => {
+        assert.equal(PRESETS.ollama.embedModel, "nomic-embed-text");
+        assert.equal(PRESETS.vllm.embedModel, "");
+        assert.equal(PRESETS.llamacpp.embedModel, "");
+        assert.equal(PRESETS.lmstudio.embedModel, "");
+        assert.equal(PRESETS.custom.embedModel, "");
+    });
+
+    test("existing .label/.baseUrl shape is unchanged -- adding embedModel doesn't break older readers", () => {
+        Object.keys(PRESETS).forEach(function (key) {
+            assert.equal(typeof PRESETS[key].label, "string");
+            assert.equal(typeof PRESETS[key].baseUrl, "string");
+        });
+    });
 });
 
 // ─── isConfigured ───
@@ -272,6 +287,175 @@ describe("digestRequest", () => {
     });
 });
 
+// ─── embedRequest ───
+
+describe("embedRequest", () => {
+    function embedConfig(overrides) {
+        return baseConfig(Object.assign({ embedModel: "nomic-embed-text" }, overrides || {}));
+    }
+
+    test("POST {baseUrl}/embeddings with model + input array, order preserved in the body", () => {
+        var provider = createAiProvider(embedConfig());
+        var req = provider.embedRequest(["first text", "second text"]);
+        assert.ok(req);
+        assert.equal(req.argv[req.argv.length - 1], "http://localhost:11434/v1/embeddings");
+        var xIdx = req.argv.indexOf("-X");
+        assert.equal(req.argv[xIdx + 1], "POST");
+        var body = JSON.parse(req.argv[req.argv.indexOf("-d") + 1]);
+        assert.equal(body.model, "nomic-embed-text");
+        assert.deepEqual(body.input, ["first text", "second text"]);
+    });
+
+    test("returns null when texts is not an array", () => {
+        var provider = createAiProvider(embedConfig());
+        assert.equal(provider.embedRequest(null), null);
+        assert.equal(provider.embedRequest("just a string"), null);
+        assert.equal(provider.embedRequest(undefined), null);
+    });
+
+    test("returns null when texts is empty", () => {
+        var provider = createAiProvider(embedConfig());
+        assert.equal(provider.embedRequest([]), null);
+    });
+
+    test("returns null when there is no embed model configured at all (no config.embedModel, no options.model)", () => {
+        var provider = createAiProvider(baseConfig());
+        assert.equal(provider.embedRequest(["text"]), null);
+    });
+
+    test("does NOT fall back to the chat model -- an unconfigured embedModel is null even though model (chat) is set", () => {
+        var provider = createAiProvider(baseConfig({ model: "qwen2.5-coder:7b" }));
+        assert.equal(provider.embedRequest(["text"]), null);
+    });
+
+    test("options.model overrides config.embedModel for a single call", () => {
+        var provider = createAiProvider(embedConfig({ embedModel: "nomic-embed-text" }));
+        var req = provider.embedRequest(["text"], { model: "mxbai-embed-large" });
+        var body = JSON.parse(req.argv[req.argv.indexOf("-d") + 1]);
+        assert.equal(body.model, "mxbai-embed-large");
+    });
+
+    test("options.model alone is enough even when config.embedModel is unset", () => {
+        var provider = createAiProvider(baseConfig());
+        var req = provider.embedRequest(["text"], { model: "mxbai-embed-large" });
+        assert.ok(req);
+        var body = JSON.parse(req.argv[req.argv.indexOf("-d") + 1]);
+        assert.equal(body.model, "mxbai-embed-large");
+    });
+
+    test("returns null when not configured (no baseUrl) even with an embed model set", () => {
+        var provider = createAiProvider(embedConfig({ baseUrl: "" }));
+        assert.equal(provider.embedRequest(["text"]), null);
+    });
+
+    test("canEmbed() is false with no embed model, true once config.embedModel or options.model is present", () => {
+        var noEmbed = createAiProvider(baseConfig());
+        assert.equal(noEmbed.canEmbed(), false);
+        assert.equal(noEmbed.canEmbed({ model: "mxbai-embed-large" }), true);
+
+        var withEmbed = createAiProvider(embedConfig());
+        assert.equal(withEmbed.canEmbed(), true);
+    });
+
+    test("canEmbed() does not change isConfigured()'s existing meaning (chat-only config)", () => {
+        var provider = createAiProvider(baseConfig());
+        assert.equal(provider.isConfigured(), true);
+        assert.equal(provider.canEmbed(), false);
+    });
+
+    test("parse: well-formed multi-vector response", () => {
+        var provider = createAiProvider(embedConfig());
+        var body = JSON.stringify({
+            data: [
+                { embedding: [0.1, 0.2], index: 0 },
+                { embedding: [0.3, 0.4], index: 1 }
+            ]
+        });
+        var result = provider.embedRequest(["a", "b"]).parse(body);
+        assert.equal(result.error, null);
+        assert.deepEqual(result.vectors, [[0.1, 0.2], [0.3, 0.4]]);
+    });
+
+    test("parse: order preservation when the API returns entries out of order, using .index not array position", () => {
+        var provider = createAiProvider(embedConfig());
+        var body = JSON.stringify({
+            data: [
+                { embedding: [9, 9], index: 2 },
+                { embedding: [1, 1], index: 0 },
+                { embedding: [5, 5], index: 1 }
+            ]
+        });
+        var result = provider.embedRequest(["first", "second", "third"]).parse(body);
+        assert.equal(result.error, null);
+        assert.deepEqual(result.vectors, [[1, 1], [5, 5], [9, 9]]);
+    });
+
+    test("parse: malformed JSON", () => {
+        var provider = createAiProvider(embedConfig());
+        var result = provider.embedRequest(["a"]).parse("{not json");
+        assert.equal(result.vectors, null);
+        assert.equal(typeof result.error, "string");
+    });
+
+    test("parse: error field in the response", () => {
+        var provider = createAiProvider(embedConfig());
+        var body = JSON.stringify({ error: { message: "model 'nomic-embed-text' not found" } });
+        var result = provider.embedRequest(["a"]).parse(body);
+        assert.equal(result.vectors, null);
+        assert.ok(result.error.indexOf("not found") !== -1);
+    });
+
+    test("parse: empty data array", () => {
+        var provider = createAiProvider(embedConfig());
+        var result = provider.embedRequest(["a"]).parse(JSON.stringify({ data: [] }));
+        assert.equal(result.vectors, null);
+        assert.equal(typeof result.error, "string");
+    });
+
+    test("parse: missing data field entirely", () => {
+        var provider = createAiProvider(embedConfig());
+        var result = provider.embedRequest(["a"]).parse(JSON.stringify({ object: "list" }));
+        assert.equal(result.vectors, null);
+        assert.equal(typeof result.error, "string");
+    });
+});
+
+// ─── prepareEmbedText ───
+
+describe("prepareEmbedText", () => {
+    test("joins title and description", () => {
+        var provider = createAiProvider(baseConfig());
+        var text = provider.prepareEmbedText({ title: "A Title", description: "Some description text." });
+        assert.ok(text.indexOf("A Title") !== -1);
+        assert.ok(text.indexOf("Some description text.") !== -1);
+    });
+
+    test("falls back to .content when .description is absent, matching summarisePrompt's convention", () => {
+        var provider = createAiProvider(baseConfig());
+        var text = provider.prepareEmbedText({ title: "T", content: "Body via content field." });
+        assert.ok(text.indexOf("Body via content field.") !== -1);
+    });
+
+    test("caps at the default character limit for a very long article body", () => {
+        var provider = createAiProvider(baseConfig());
+        var longBody = new Array(20001).join("x"); // 20,000 chars
+        var text = provider.prepareEmbedText({ title: "T", description: longBody });
+        assert.ok(text.length <= 2000, "expected the default cap to apply, got length " + text.length);
+    });
+
+    test("cap is overridable via maxChars", () => {
+        var provider = createAiProvider(baseConfig());
+        var longBody = new Array(1000).join("x");
+        var text = provider.prepareEmbedText({ title: "", description: longBody }, 50);
+        assert.equal(text.length, 50);
+    });
+
+    test("handles a missing/null article without throwing", () => {
+        var provider = createAiProvider(baseConfig());
+        assert.equal(provider.prepareEmbedText(null), "\n\n");
+    });
+});
+
 // ─── SECURITY: apiKey never concatenated into a larger string ───
 
 describe("SECURITY: apiKey isolation in argv", () => {
@@ -306,6 +490,11 @@ describe("SECURITY: apiKey isolation in argv", () => {
     test("digestRequest isolates the apiKey", () => {
         var provider = createAiProvider(baseConfig({ apiKey: KEY }));
         assertKeyIsolated(provider.digestRequest(items).argv);
+    });
+
+    test("embedRequest isolates the apiKey", () => {
+        var provider = createAiProvider(baseConfig({ apiKey: KEY, embedModel: "nomic-embed-text" }));
+        assertKeyIsolated(provider.embedRequest(["text"]).argv);
     });
 
     test("a key containing shell metacharacters is still a single opaque argv element", () => {
@@ -398,6 +587,109 @@ describe("LIVE ollama (opt-in, self-skipping)", () => {
         assert.equal(typeof result.text, "string");
         assert.ok(result.text.length > 0, "expected a non-empty summary from the live model");
     });
+
+    // Shape-only: a model's prose is not a fixture, so this never asserts on
+    // wording. It exercises summariseRequest end-to-end against a real,
+    // fast, non-reasoning model and confirms parse() reads message.content
+    // ONLY -- an actual separate message.reasoning field (if the runtime
+    // sends one) must never end up concatenated into result.text.
+    test("summariseRequest against real ollama: result.text is clean, message.reasoning (if any) is not folded in, or skip", { timeout: 20000 }, async (t) => {
+        var ping = await pingOllama();
+        if (!ping.up) {
+            t.skip("no runtime reachable on localhost:11434");
+            return;
+        }
+
+        var provider = createAiProvider({
+            label: "Ollama", baseUrl: "http://localhost:11434/v1",
+            model: "qwen2.5-coder:7b", apiKey: "", timeoutMs: 15000
+        });
+        var article = {
+            title: "Small fixture article",
+            description: "A short paragraph about a cat that sat on a mat, used only to give the model something brief to summarise."
+        };
+        var req = provider.summariseRequest(article);
+        var bodyStr = req.argv[req.argv.indexOf("-d") + 1];
+
+        var stdout = await new Promise(function (resolve, reject) {
+            var httpReq = http.request("http://localhost:11434/v1/chat/completions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                timeout: 15000
+            }, function (res) {
+                var data = "";
+                res.on("data", function (chunk) { data += chunk; });
+                res.on("end", function () { resolve(data); });
+            });
+            httpReq.on("error", reject);
+            httpReq.on("timeout", function () { httpReq.destroy(); reject(new Error("timeout")); });
+            httpReq.write(bodyStr);
+            httpReq.end();
+        });
+
+        var result = req.parse(stdout);
+        assert.equal(result.error, null, "expected no error from a live, reachable, correctly-modeled request");
+        assert.equal(typeof result.text, "string");
+        assert.ok(result.text.length > 0, "expected a non-empty summary from the live model");
+
+        // Independently re-parse the raw response to see what the runtime
+        // actually sent, then check parse()'s output against it directly --
+        // this is what would catch a regression that concatenates reasoning
+        // into content.
+        var raw = JSON.parse(stdout);
+        var message = (raw.choices && raw.choices[0] && raw.choices[0].message) || {};
+        assert.equal(result.text, message.content, "result.text must be exactly message.content, nothing appended");
+        if (typeof message.reasoning === "string" && message.reasoning.length > 0) {
+            assert.equal(result.text.indexOf(message.reasoning), -1,
+                "message.reasoning must never be concatenated into the summary text");
+        }
+    });
+
+    // A real embedding model (nomic-embed-text) may well not be pulled on
+    // this machine even when ollama itself is up and serving a chat model --
+    // unlike the chat tests above, this must ALSO skip cleanly on a
+    // model-not-found error, not just on "nothing is listening".
+    test("embedRequest against a real ollama with nomic-embed-text, or skip if unreachable/model absent", { timeout: 20000 }, async (t) => {
+        var ping = await pingOllama();
+        if (!ping.up) {
+            t.skip("no runtime reachable on localhost:11434");
+            return;
+        }
+
+        var provider = createAiProvider({
+            label: "Ollama", baseUrl: "http://localhost:11434/v1",
+            model: "qwen2.5-coder:7b", embedModel: "nomic-embed-text", apiKey: "", timeoutMs: 15000
+        });
+        var req = provider.embedRequest(["a short local test sentence", "a second one"]);
+        var bodyStr = req.argv[req.argv.indexOf("-d") + 1];
+
+        var stdout = await new Promise(function (resolve, reject) {
+            var httpReq = http.request("http://localhost:11434/v1/embeddings", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                timeout: 15000
+            }, function (res) {
+                var data = "";
+                res.on("data", function (chunk) { data += chunk; });
+                res.on("end", function () { resolve(data); });
+            });
+            httpReq.on("error", reject);
+            httpReq.on("timeout", function () { httpReq.destroy(); reject(new Error("timeout")); });
+            httpReq.write(bodyStr);
+            httpReq.end();
+        });
+
+        var result = req.parse(stdout);
+        if (result.error) {
+            // Most likely "model not found" -- nomic-embed-text isn't
+            // pulled here. That's an environment fact, not a test failure.
+            t.skip("embedding model unavailable: " + result.error);
+            return;
+        }
+        assert.equal(result.vectors.length, 2);
+        assert.ok(Array.isArray(result.vectors[0]) && result.vectors[0].length > 0);
+        assert.ok(Array.isArray(result.vectors[1]) && result.vectors[1].length > 0);
+    });
 });
 
 // The argv tests above assert structure (method, url, body) but would not
@@ -405,7 +697,7 @@ describe("LIVE ollama (opt-in, self-skipping)", () => {
 // regression that has no other tripwire. Assert the set explicitly.
 describe("SECURITY: curl hardening flags", () => {
     var provider = createAiProvider({
-        baseUrl: "http://localhost:11434/v1", model: "m"
+        baseUrl: "http://localhost:11434/v1", model: "m", embedModel: "nomic-embed-text"
     });
 
     function flagPairs(argv) {
@@ -419,7 +711,8 @@ describe("SECURITY: curl hardening flags", () => {
     [
         ["probe", function () { return provider.probeRequest(); }],
         ["summarise", function () { return provider.summariseRequest({ title: "t", description: "d" }); }],
-        ["digest", function () { return provider.digestRequest([{ title: "t", description: "d" }]); }]
+        ["digest", function () { return provider.digestRequest([{ title: "t", description: "d" }]); }],
+        ["embed", function () { return provider.embedRequest(["t"]); }]
     ].forEach(function (pair) {
         test(pair[0] + " carries the hardening flags", () => {
             var f = flagPairs(pair[1]().argv);
@@ -444,5 +737,192 @@ describe("SECURITY: curl hardening flags", () => {
     test("probe uses a short timeout, not the generation-sized default", () => {
         var argv = provider.probeRequest().argv;
         assert.equal(argv[argv.indexOf("--max-time") + 1], "8");
+    });
+});
+
+// ─── resolveBaseUrl ───
+//
+// Regression cover for a shipped bug: the settings panel filled the base URL
+// from the preset dropdown's CHANGE handler, so on a fresh install -- where
+// the dropdown loads its default and therefore never changes -- nothing was
+// ever written. The field showed a placeholder that looked exactly like a
+// value, and Test Connection reported "enter a base URL and model" against
+// what the user could see was a filled form. Resolution must not depend on
+// an event having fired.
+
+describe("resolveBaseUrl", () => {
+    const { resolveBaseUrl, PRESETS } = require("../AiProvider.js");
+
+    test("a preset resolves even when nothing was ever typed or stored", () => {
+        assert.equal(resolveBaseUrl("ollama", ""), "http://localhost:11434/v1");
+        assert.equal(resolveBaseUrl("ollama", undefined), "http://localhost:11434/v1");
+        assert.equal(resolveBaseUrl("ollama", null), "http://localhost:11434/v1");
+    });
+
+    test("every non-custom preset resolves to its own documented base URL", () => {
+        Object.keys(PRESETS).forEach(function (key) {
+            assert.equal(resolveBaseUrl(key, ""), PRESETS[key].baseUrl, key);
+        });
+    });
+
+    test("an explicitly typed URL always wins over the preset", () => {
+        assert.equal(resolveBaseUrl("ollama", "http://gpu-box:9999/v1"), "http://gpu-box:9999/v1");
+    });
+
+    test("custom resolves to empty, because there is nothing sensible to guess", () => {
+        assert.equal(resolveBaseUrl("custom", ""), "");
+    });
+
+    test("custom still honours whatever the user typed", () => {
+        assert.equal(resolveBaseUrl("custom", "http://10.0.0.5:8000/v1"), "http://10.0.0.5:8000/v1");
+    });
+
+    test("whitespace-only input counts as empty and falls back to the preset", () => {
+        assert.equal(resolveBaseUrl("ollama", "   "), "http://localhost:11434/v1");
+    });
+
+    test("surrounding whitespace is trimmed off a real URL", () => {
+        assert.equal(resolveBaseUrl("ollama", "  http://localhost:1234/v1  "), "http://localhost:1234/v1");
+    });
+
+    test("an unknown or missing preset resolves to empty rather than throwing", () => {
+        assert.equal(resolveBaseUrl("nonesuch", ""), "");
+        assert.equal(resolveBaseUrl(undefined, ""), "");
+        assert.equal(resolveBaseUrl(null, null), "");
+    });
+
+    test("the resolved preset URL is enough to make a provider configured", () => {
+        const { createAiProvider } = require("../AiProvider.js");
+        const p = createAiProvider({ baseUrl: resolveBaseUrl("ollama", ""), model: "qwen3:8b" });
+        assert.equal(p.isConfigured(), true);
+    });
+});
+
+// ─── resolveEmbedModel ───
+//
+// Second instance of a bug this project has now shipped twice: a default that
+// only exists if an event fired, or only in the half of the app that renders
+// the settings form. The settings panel resolved a preset's embedding model
+// for display; the widget read the raw stored value, which was never written
+// because the user never had to type it. The widget concluded it could not
+// embed and disabled interest ranking with no message at all.
+
+describe("resolveEmbedModel", () => {
+    const { resolvePresetEmbedModel, PRESETS } = require("../AiProvider.js");
+
+    test("falls back to the preset's embedding model when nothing was typed", () => {
+        assert.equal(resolvePresetEmbedModel("ollama", ""), PRESETS.ollama.embedModel);
+        assert.equal(resolvePresetEmbedModel("ollama", undefined), PRESETS.ollama.embedModel);
+        assert.equal(resolvePresetEmbedModel("ollama", null), PRESETS.ollama.embedModel);
+    });
+
+    test("a typed model always wins over the preset", () => {
+        assert.equal(resolvePresetEmbedModel("ollama", "mxbai-embed-large"), "mxbai-embed-large");
+    });
+
+    test("whitespace counts as empty", () => {
+        assert.equal(resolvePresetEmbedModel("ollama", "   "), PRESETS.ollama.embedModel);
+    });
+
+    test("surrounding whitespace is trimmed from a real value", () => {
+        assert.equal(resolvePresetEmbedModel("ollama", "  nomic-embed-text  "), "nomic-embed-text");
+    });
+
+    test("a preset with no embedding model resolves to empty rather than guessing", () => {
+        assert.equal(resolvePresetEmbedModel("custom", ""), "");
+    });
+
+    test("unknown or missing presets resolve to empty rather than throwing", () => {
+        assert.equal(resolvePresetEmbedModel("nonesuch", ""), "");
+        assert.equal(resolvePresetEmbedModel(undefined, undefined), "");
+        assert.equal(resolvePresetEmbedModel(null, null), "");
+    });
+
+    test("the resolved default is enough to make a provider able to embed", () => {
+        const { createAiProvider } = require("../AiProvider.js");
+        const p = createAiProvider({
+            baseUrl: "http://localhost:11434/v1",
+            model: "llama3.2:3b",
+            embedModel: resolvePresetEmbedModel("ollama", "")
+        });
+        assert.equal(p.canEmbed(), true, "this is the exact config that silently disabled ranking");
+    });
+});
+
+// ─── digest prompt budget ───
+//
+// Regression cover for a silent truncation. Measured 2026-09-13: llama3.2:3b
+// advertises a 131072-token context, but ollama allocates 4096 at RUNTIME
+// (/api/ps reports context_length: 4096). Thirty articles with full
+// descriptions came to roughly 5000 tokens, so the digest was being cut off
+// before the model ever answered -- no error, just a summary that appeared to
+// ignore most of the user's feeds.
+//
+// Coverage beats detail here: a digest that names every story briefly is more
+// use than one that describes the first forty and never mentions the rest.
+
+describe("digest prompt budget", () => {
+    const { createAiProvider } = require("../AiProvider.js");
+    const provider = createAiProvider({ baseUrl: "http://localhost:11434/v1", model: "m" });
+
+    function promptFor(items) {
+        const req = provider.digestRequest(items);
+        return JSON.parse(req.argv[req.argv.indexOf("-d") + 1]).messages[1].content;
+    }
+    const make = (n, descLen) => Array.from({ length: n }, (_, i) => ({
+        title: "Headline number " + i,
+        description: "D".repeat(descLen)
+    }));
+
+    test("a realistic day stays well inside a 4096-token allocation", () => {
+        const chars = promptFor(make(30, 600)).length;
+        assert.ok(chars <= 9000, "prompt was " + chars + " chars; ollama truncates past ~4096 tokens");
+    });
+
+    test("the budget holds no matter how many items are thrown at it", () => {
+        [100, 300, 1000].forEach(function (n) {
+            assert.ok(promptFor(make(n, 600)).length <= 9000, n + " items exceeded the budget");
+        });
+    });
+
+    test("titles are never sacrificed to make room for a description", () => {
+        const lines = promptFor(make(100, 600)).split("\n");
+        assert.equal(lines.length, 100, "every headline should survive at this size");
+    });
+
+    test("descriptions are the thing that gets dropped, not headlines", () => {
+        const lines = promptFor(make(300, 600)).split("\n");
+        assert.ok(lines.length > 100, "should still cover well over 100 stories, got " + lines.length);
+        // Not zero: whatever budget survives after every headline is placed
+        // still buys a few descriptions, which is the right use of it. The
+        // invariant is that coverage dominates, not that detail vanishes.
+        const withDesc = lines.filter(l => l.includes(" -- ")).length;
+        assert.ok(withDesc < lines.length * 0.2,
+            "descriptions should be a small minority at this volume, got " + withDesc + " of " + lines.length);
+    });
+
+    test("short days keep their descriptions", () => {
+        const lines = promptFor(make(10, 200)).split("\n");
+        assert.equal(lines.length, 10);
+        assert.ok(lines.every(l => l.includes(" -- ")), "there is budget to spare here");
+    });
+
+    test("long descriptions are truncated rather than dropped outright", () => {
+        const line = promptFor([{ title: "T", description: "word ".repeat(400) }]).split("\n")[0];
+        assert.ok(line.includes(" -- "));
+        assert.ok(line.length < 400, "description should be cut down, got " + line.length);
+        assert.ok(line.endsWith("…"), "truncation should be visible, not silent");
+    });
+
+    test("items with no title are skipped and do not leave gaps in the numbering", () => {
+        const lines = promptFor([{ title: "A" }, { title: "" }, { title: "B" }]).split("\n");
+        assert.equal(lines.length, 2);
+        assert.ok(lines[0].startsWith("1. "));
+        assert.ok(lines[1].startsWith("2. "), "numbering must stay contiguous, got: " + lines[1]);
+    });
+
+    test("empty and malformed input do not throw", () => {
+        assert.equal(provider.digestRequest([]), null);
+        assert.doesNotThrow(() => promptFor([null, undefined, {}]));
     });
 });

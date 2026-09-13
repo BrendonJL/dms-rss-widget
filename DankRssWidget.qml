@@ -13,6 +13,11 @@ import "Backends.js" as Backends
 import "GoogleReader.js" as GoogleReader
 import "ChainRunner.js" as ChainRunner
 import "KeyMap.js" as KeyMap
+import "ExportProvider.js" as ExportProvider
+import "HtmlExtract.js" as HtmlExtract
+import "AiProvider.js" as AiProvider
+import "Ranking.js" as Ranking
+import "Palette.js" as Palette
 
 DesktopPluginComponent {
     id: root
@@ -52,6 +57,217 @@ DesktopPluginComponent {
     property string greaderUrl: (pluginData.greaderUrl ?? "").replace(/\/$/, "")
     property string greaderUsername: pluginData.greaderUsername ?? ""
     property string greaderPassword: pluginData.greaderPassword ?? ""
+
+    // --- Notes export settings ---
+    // DesktopPluginWrapper.qml's loadPluginData reads the instance config
+    // first and falls back to the global plugin-wide store; savePluginData
+    // writes to the instance config only. So these are per-instance for an
+    // instanced widget and global otherwise -- the same as every other
+    // setting in this file.
+    // Stage 4d replaced the fixed markdown/obsidian/neovim provider dropdown
+    // with an editable open-command template (exportOpenCommand); exportKind
+    // is now the id of whichever preset is active rather than a closed set
+    // of three values. resolveExportConfig() reads BOTH of those the same
+    // way regardless of whether pluginData is in the old or new shape, so a
+    // config saved before this stage (e.g. exportKind: "obsidian" with no
+    // exportOpenCommand at all) lands on the equivalent preset instead of
+    // silently losing its open-after-export behaviour.
+    readonly property var _exportResolved: ExportProvider.resolveExportConfig(pluginData)
+    property string exportKind: root._exportResolved.exportKind
+    property string exportOpenCommand: root._exportResolved.exportOpenCommand
+    property string exportRoot: pluginData.exportRoot ?? ""
+    property string exportVault: pluginData.exportVault ?? ""
+    property string exportTemplate: pluginData.exportTemplate ?? "{title}.md"
+    property var exportTags: pluginData.exportTags ?? []
+    // Off by default: this makes one outbound HTTP request per exported
+    // article to whatever third-party site the feed links to, which is not
+    // something to do without the user having opted in.
+    property bool exportFullText: pluginData.exportFullText ?? false
+
+    // Empty means follow Theme.fontFamily -- see ReaderWindow.qml.
+    property string readerFontFamily: pluginData.readerFontFamily ?? ""
+    property bool exportImages: pluginData.exportImages ?? false
+    property var notificationRules: pluginData.notificationRules ?? []
+    property bool markReadOnScroll: pluginData.markReadOnScroll ?? false
+    // The plugin's own colour palette, resolved from the chosen preset.
+    //
+    // Every colour in this file goes through here rather than straight to
+    // Theme, so a colour-vision preset can replace the matugen values without
+    // the plugin ever WRITING to Theme -- which it must never do: Theme is a
+    // pragma Singleton shared by the whole shell, and assigning to it would
+    // repaint the bar, the popups and every other plugin too.
+    //
+    // "system" resolves to these same values unchanged, so the default path
+    // is a pass-through and nothing moves for anyone who has not asked for a
+    // preset.
+
+    // Only the three roles the settings panel offers. Anything invalid or
+    // absent is ignored by applyOverrides, so a half-set custom theme falls
+    // back to its base palette rather than to undefined colours.
+    function pluginDataValue(key, fallback) {
+        var v = pluginData[key];
+        return (v === undefined || v === null) ? fallback : v;
+    }
+
+    function customOverrides() {
+        return {
+            primary: root.pluginDataValue("customPrimary", ""),
+            error: root.pluginDataValue("customError", ""),
+            success: root.pluginDataValue("customSuccess", "")
+        };
+    }
+
+    function themeBasePalette() {
+        return {
+            primary: String(Theme.primary),
+            secondary: String(Theme.secondary),
+            surfaceText: String(Theme.surfaceText),
+            surfaceVariantText: String(Theme.surfaceVariantText),
+            error: String(Theme.error),
+            success: String(Theme.success),
+            warning: String(Theme.warning),
+            outlineVariant: String(Theme.outlineVariant),
+            surfaceContainer: String(Theme.surfaceContainer),
+            surfaceContainerHigh: String(Theme.surfaceContainerHigh),
+            surfaceContainerHighest: String(Theme.surfaceContainerHighest),
+            onPrimary: String(Theme.onPrimary),
+            onError: String(Theme.onError)
+        };
+    }
+
+    // Theme.withAlpha takes a colour OBJECT and returns fully transparent for
+    // anything whose .r is undefined -- which a hex string is. The palette
+    // deals in strings (Palette.js does hex arithmetic on them), so every
+    // withAlpha call on a palette colour would have silently produced
+    // transparent rather than a tint: no error, no warning, just backgrounds
+    // and hover states quietly disappearing. Parse it here instead.
+    function tint(hex, a) {
+        var c = ("" + hex).replace("#", "");
+        if (c.length === 3)
+            c = c.charAt(0) + c.charAt(0) + c.charAt(1) + c.charAt(1) + c.charAt(2) + c.charAt(2);
+        if (c.length === 8)
+            c = c.substring(2);
+        var n = parseInt(c.substring(0, 6), 16);
+        if (isNaN(n))
+            return Qt.rgba(0, 0, 0, 0);
+        return Qt.rgba(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, a);
+    }
+
+    property string colourPreset: pluginData.colourPreset ?? "system"
+    readonly property var roleColours: {
+        var base = Palette.resolvePalette(root.colourPreset, root.themeBasePalette());
+        return root.colourPreset === "custom" ? Palette.applyOverrides(base, root.customOverrides()) : base;
+    }
+
+    // Ids already announced by a rule. Separate from seenIds: an item can be
+    // seen (counted, not new) long before a newly-added rule first matches it,
+    // and conflating the two would either re-announce on every refresh or
+    // silently swallow the first match.
+    property var notifiedIds: []
+    // sourceUrl -> epoch ms until which that feed's items stay hidden.
+    // Lives in the state tier beside read/bookmark ids, and expired entries
+    // are pruned on every refresh so a map of long-dead snoozes cannot
+    // accumulate in the state file.
+    property var snoozeMap: ({})
+    // sourceUrl -> epoch ms of the last attempt, for per-feed intervals.
+    // Only feeds that opt in (a positive intervalMinutes on the feed itself)
+    // are ever throttled; everything else fetches on the global cycle exactly
+    // as before, so the default behaviour is untouched.
+    property var feedLastFetch: ({})
+
+    // --- Interest ranking (stage 3d) ---
+    //
+    // Ships OFF, and stays off until it can actually work: it needs an
+    // embedding model configured AND enough starred articles to learn from.
+    // The backlog is explicit that a ranking which feels wrong is worse than
+    // no ranking, so every gate below fails closed and says why rather than
+    // quietly producing an arbitrary order.
+    property bool rankingEnabled: pluginData.rankingEnabled ?? false
+    property int rankingWeight: pluginData.rankingWeight ?? 50
+    // Resolved through the same function the settings panel uses, so a user
+    // who never typed an embedding model still gets the preset's default --
+    // which is exactly the case that silently disabled ranking.
+    property string aiEmbedModel: AiProvider.resolvePresetEmbedModel(root.aiPreset, pluginData.aiEmbedModel ?? "")
+
+    // Vectors are held in memory and deliberately NOT persisted. A single
+    // embedding is a few hundred floats; a few hundred items of them is
+    // megabytes of JSON written into a state file shared with the rest of the
+    // shell, to save one batch request that takes about a second. Recomputing
+    // per session is the cheaper side of that trade by a wide margin.
+    property var vectorMap: ({})
+    property bool rankingBusy: false
+    // Why ranking is not currently applied, shown to the user rather than
+    // left as an unexplained ordering. Empty means it is working.
+    property string rankingReason: ""
+    property var rankedOrder: []
+
+    readonly property bool rankingConfigured: root.rankingEnabled && root.aiEnabled && root.aiProvider.canEmbed({ model: root.aiEmbedModel })
+
+    // Settings changes must re-rank, not wait for the next refresh. Turning
+    // ranking on and seeing nothing happen for thirty minutes reads as broken.
+    onRankingConfiguredChanged: root.refreshRanking()
+    // Starring is the ONLY input the ranking learns from, so it has to react
+    // to it. Without this the reason went stale: star five more articles,
+    // nothing recomputes, and the widget keeps insisting you have not starred
+    // enough -- indistinguishable from the feature being broken, and reported
+    // as exactly that. Debounced, because starring several in a row is normal
+    // and each one would otherwise queue an embedding pass.
+    onBookmarkMapChanged: {
+        if (root.rankingConfigured)
+            rankingSettleTimer.restart();
+    }
+
+    Timer {
+        id: rankingSettleTimer
+        interval: 1200
+        repeat: false
+        onTriggered: root.refreshRanking()
+    }
+    onRankingWeightChanged: {
+        if (root.rankingConfigured && root.rankedOrder.length > 0)
+            root.applyRanking();
+    }
+    property string attachmentDir: pluginData.attachmentDir ?? "attachments"
+
+    // --- AI summaries (stage 3b) ---
+    //
+    // All four are global rather than per-instance. The design doc asked for
+    // the toggle to be per-instance so a small ticker could stay dumb while a
+    // large widget summarises, but every setting in this plugin goes through
+    // savePluginData(pluginId, ...), which is keyed by plugin and not by
+    // instance. Per-instance would mean adopting the DMS plugin-variant
+    // system, which this widget has never used, for one boolean. Recorded as
+    // a deviation rather than done quietly.
+    property bool aiEnabled: pluginData.aiEnabled ?? false
+    // Resolved exactly as the settings panel resolves it, through the same
+    // pure function -- a second copy of "what does empty mean" is how the two
+    // sides drift apart and the widget disagrees with its own settings page.
+    property string aiPreset: pluginData.aiPreset ?? "ollama"
+    property string aiBaseUrl: AiProvider.resolveBaseUrl(root.aiPreset, pluginData.aiBaseUrl ?? "")
+    property string aiModel: pluginData.aiModel ?? ""
+    property string aiApiKey: pluginData.aiApiKey ?? ""
+
+    readonly property var aiProvider: AiProvider.createAiProvider({
+        baseUrl: root.aiBaseUrl,
+        model: root.aiModel,
+        apiKey: root.aiApiKey,
+        embedModel: root.aiEmbedModel
+    })
+
+    // The single gate on every summary affordance. "Enabled but unconfigured"
+    // must look exactly like "disabled": no button, no key, no error. An AI
+    // feature that advertises itself while unusable is the failure mode the
+    // design doc calls the most important behavioural requirement in the phase.
+    readonly property bool aiReady: root.aiEnabled && root.aiProvider.isConfigured()
+
+    readonly property var exportProvider: ExportProvider.createExportProvider({
+        kind: root.exportKind,
+        root: root.exportRoot,
+        vault: root.exportVault,
+        filenameTemplate: root.exportTemplate,
+        tags: root.exportTags,
+        exportOpenCommand: root.exportOpenCommand
+    })
 
     // --- Backend provider interface ---
     // JS owns every backend-specific decision (URL, method, headers, body,
@@ -96,6 +312,14 @@ DesktopPluginComponent {
     // signature.
     property var backendSession: ({})
     property string filterMode: "all"  // "all", "unread" or "bookmarked"
+
+    // Category filter. "" means every category, which is also the only state
+    // reachable on a backend that cannot supply them -- the chip is hidden
+    // rather than shown empty, so the feature is absent instead of broken on
+    // the standard RSS backend, which has no such concept.
+    property string categoryFilter: ""
+    readonly property bool categoriesSupported: root.backend.capabilities.categories === true
+    readonly property var availableCategories: root.categoriesSupported ? Backends.knownCategories(root.allItems) : []
     property string searchQuery: ""
     property bool searchActive: false   // whether the search field is revealed
     property int timeTick: 0           // bumped to re-evaluate relative-time bindings
@@ -114,6 +338,55 @@ DesktopPluginComponent {
 
     function _clickFromOverview() {
         return (typeof CompositorService !== "undefined" && typeof NiriService !== "undefined" && CompositorService.isNiri) ? (NiriService.inOverview || root._overviewGuard) : false;
+    }
+
+    // Row actions, each defined once and invoked from BOTH onClicked and
+    // Accessible.onPressAction.
+    //
+    // These used to be duplicated: the accessibility handler carried a
+    // verbatim copy of the pointer handler's body. That is the shape that
+    // rots, and it already had -- the mark-all pair had drifted to reading
+    // its state through two different names. Assistive tech activates via the
+    // press action rather than a synthesised click, so the two paths must
+    // stay identical by construction, not by discipline.
+    //
+    // Every one of them keeps the overview guard: under Niri a click landing
+    // while the overview is open must not act on the row underneath it.
+    function rowToggleSelected(itemId) {
+        if (root._clickFromOverview())
+            return;
+        root.toggleSelected(itemId);
+    }
+
+    function rowToggleRead(itemId, isRead) {
+        if (root._clickFromOverview())
+            return;
+        root.toggleReadSynced(itemId, isRead);
+    }
+
+    function rowToggleBookmark(itemId) {
+        if (root._clickFromOverview())
+            return;
+        root.toggleBookmark(itemId);
+    }
+
+    function rowViewItem(itemId, index) {
+        if (root._clickFromOverview())
+            return;
+        root.viewItem(itemId, index);
+    }
+
+    function toggleSearch() {
+        if (root.searchActive)
+            root.closeSearch();
+        else
+            root.searchActive = true;
+    }
+
+    function toggleAllRead(currentlyAllRead) {
+        root.setAllRead(!currentlyAllRead);
+        if (root.filterMode === "unread")
+            root.applyFilter();
     }
 
     Connections {
@@ -166,11 +439,120 @@ DesktopPluginComponent {
     // Bindings help overlay, toggled by "?" (KeyMap's "toggleHelp" action).
     property bool helpVisible: false
 
+    // The keyboard bindings help overlay's row data. A plain array except
+    // for "e", which is left out entirely when no export folder is
+    // configured -- pressing "e" does nothing in that state (see
+    // exportArticles()), so documenting it would be advertising a feature
+    // that silently fails.
+    readonly property var helpBindingsModel: {
+        var rows = [
+            {
+                keys: ["j", "k"],
+                desc: "Move cursor down / up"
+            },
+            {
+                keys: ["o", "Enter"],
+                desc: "Open item"
+            },
+            {
+                keys: ["v"],
+                desc: "View in reader window"
+            },
+            {
+                keys: ["shift+j", "shift+k"],
+                desc: "Next / previous article (in reader window)"
+            },
+            {
+                keys: ["m"],
+                desc: "Toggle read / unread (whole selection, if any)"
+            },
+            {
+                keys: ["s"],
+                desc: "Toggle star (whole selection, if any)"
+            }
+        ];
+        if (root.exportRoot)
+            rows.push({
+                keys: ["e"],
+                desc: "Export to notes (whole selection, if any)"
+            });
+        // Gated on aiReady for the same reason "e" is gated on exportRoot:
+        // with no runtime configured "i" does nothing, and documenting a key
+        // that silently fails is worse than not documenting it.
+        if (root.aiReady)
+            rows.push({
+                keys: ["i"],
+                desc: "Summarise (opens the reader on the summary)"
+            });
+        if (root.aiReady)
+            rows.push({
+                keys: ["d"],
+                desc: "Digest of the last 24 hours"
+            });
+        rows.push({
+            keys: ["Space"],
+            desc: "Toggle selection"
+        });
+        rows.push({
+            keys: ["g", "g"],
+            desc: "Jump to first item"
+        });
+        rows.push({
+            keys: ["G"],
+            desc: "Jump to last item"
+        });
+        rows.push({
+            keys: ["/"],
+            desc: "Focus search"
+        });
+        rows.push({
+            keys: ["Esc"],
+            desc: "Close search, clear selection, or clear cursor"
+        });
+        rows.push({
+            keys: ["r"],
+            desc: "Refresh feeds"
+        });
+        rows.push({
+            keys: ["z"],
+            desc: "Snooze this feed for a day"
+        });
+        rows.push({
+            keys: ["p"],
+            desc: "Play this item's audio, if it has any"
+        });
+        rows.push({
+            keys: ["Z"],
+            desc: "Wake every snoozed feed"
+        });
+        rows.push({
+            keys: ["A"],
+            desc: "Mark all read / unread"
+        });
+        rows.push({
+            keys: ["?"],
+            desc: "Toggle this help"
+        });
+        return rows;
+    }
+
     // Read tracking, keyed by stable item id. `readMap` is replaced (not mutated)
     // so QML property-change notification fires; `readOrder` keeps newest-first
     // insertion order so the persisted list can be bounded predictably.
     property var readMap: ({})
     property var readOrder: []
+
+    // Bounded summary cache, persisted like readIds/bookmarkedIds. Capped far
+    // lower than idHistoryCap because these store paragraphs rather than ids:
+    // the whole map is rewritten on every change, so the cap is a write-cost
+    // decision, not just a memory one.
+    property var summaryMap: ({})
+    property var summaryOrder: []
+    // Discards a summary that arrives after the user moved on, so a 5s
+    // response can never render against the article they are looking at now.
+    // Same pattern as fetchGeneration, deliberately a separate counter: a
+    // feed refresh must not invalidate an in-flight summary or vice versa.
+    property int summaryGeneration: 0
     property var seenIds: []
     property bool readerStateLoaded: false
 
@@ -217,6 +599,7 @@ DesktopPluginComponent {
     property var feedStatuses: []
 
     readonly property int idHistoryCap: 1000
+    readonly property int summaryCap: ReaderState.DEFAULT_SUMMARY_CAP
 
     readonly property int unreadCount: ReaderState.countUnread(root.allItems, root.readMap)
 
@@ -234,16 +617,26 @@ DesktopPluginComponent {
         return n;
     }
 
+    readonly property string failedFeedSummary: {
+        var names = [];
+        for (var i = 0; i < root.feedStatuses.length; i++) {
+            var st = root.feedStatuses[i];
+            if (st.state === "error" || st.state === "timeout")
+                names.push((st.name || st.url) + " — " + (st.lastError || "failed"));
+        }
+        return names.join("\n");
+    }
+
     readonly property int activeFeedCount: ReaderState.activeFeeds(root.feeds).length
 
     property color resolvedBorderColor: {
         switch (borderColor) {
         case "secondary":
-            return Theme.secondary;
+            return root.roleColours.secondary;
         case "surface":
-            return Theme.surfaceText;
+            return root.roleColours.surfaceText;
         default:
-            return Theme.primary;
+            return root.roleColours.primary;
         }
     }
 
@@ -404,7 +797,563 @@ DesktopPluginComponent {
         root.bookmarkMap = ReaderState.buildIdMap(bookmarks);
         root.bookmarkOrder = bookmarks;
 
+        var summaries = root.readState("summaries", null);
+        if (summaries && typeof summaries === "object" && Array.isArray(summaries.order)) {
+            // Rebuilt through addSummary rather than trusted wholesale: a
+            // state file hand-edited or written by an older build could carry
+            // an order longer than the current cap, or ids with no entry.
+            var rebuilt = { order: [], map: {} };
+            for (var si = summaries.order.length - 1; si >= 0; si--) {
+                var sid = summaries.order[si];
+                if (typeof sid === "string" && typeof summaries.map[sid] === "string")
+                    rebuilt = ReaderState.addSummary(rebuilt.order, rebuilt.map, sid, summaries.map[sid], root.summaryCap);
+            }
+            root.summaryOrder = rebuilt.order;
+            root.summaryMap = rebuilt.map;
+        }
+
+        root.notifiedIds = ReaderState.boundIdList(root.readState("notifiedIds", []), root.idHistoryCap);
+
+        var storedFetch = root.readState("feedLastFetch", {});
+        root.feedLastFetch = (storedFetch && typeof storedFetch === "object") ? storedFetch : {};
+
+        var stored = root.readState("snoozes", {});
+        root.snoozeMap = ReaderState.pruneSnoozes((stored && typeof stored === "object") ? stored : {}, Date.now());
+
         root.readerStateLoaded = true;
+    }
+
+    // Drops cached summaries for items that have aged out of the feed.
+    //
+    // This lives on the refresh-completion path and NOWHERE else. It used to
+    // sit in applyFilter() next to pruneSelected(), which was wrong twice
+    // over. applyFilter() runs on every search keystroke and filter-chip
+    // click, so the prune re-walked the whole dataset for a question that can
+    // only change on a refresh. Worse, applyFilter() also runs immediately
+    // after `allItems` is emptied -- when every feed is disabled or deleted
+    // (see finalizeFetch's descriptors.length === 0 path) and on a
+    // sourceMode switch -- and "prune against an empty dataset" means "delete
+    // every summary", which was then persisted and unrecoverable. A summary
+    // costs a GPU job; losing the lot because a feed was toggled off is not a
+    // recoverable mistake.
+    //
+    // Hence both guards below. The empty check is the important one; the
+    // length check merely avoids rewriting a map of paragraphs when nothing
+    // actually changed.
+    // Whether a feed is due, given its own interval.
+    //
+    // Opt-in by design: a feed with no intervalMinutes is always due and keeps
+    // the global cycle, so adding this feature changes nothing for anyone who
+    // does not configure it. Only an explicit positive interval throttles.
+    function feedIsDue(feed, nowMs) {
+        return ReaderState.isFeedDue(feed, root.feedLastFetch, nowMs);
+    }
+
+    function previousStatusFor(url) {
+        for (var i = 0; i < root.feedStatuses.length; i++) {
+            if (root.feedStatuses[i].url === url)
+                return root.feedStatuses[i];
+        }
+        return null;
+    }
+
+    function pruneSummaryCache(items) {
+        if (!items || items.length === 0)
+            return;
+        if (root.summaryOrder.length === 0)
+            return;
+
+        var pruned = ReaderState.pruneSummaries(root.summaryOrder, root.summaryMap, items);
+        if (pruned.order.length === root.summaryOrder.length)
+            return;
+
+        root.summaryOrder = pruned.order;
+        root.summaryMap = pruned.map;
+        root.persistSummaries();
+    }
+
+    // One batch embedding call over whatever lacks a vector, then a profile
+    // from the starred items and a ranked order for everything else.
+    //
+    // Called on refresh completion and when the ranking settings change --
+    // never on scroll, never per item. One request for the whole set is the
+    // difference between a second of GPU and a minute of it.
+    function refreshRanking() {
+        if (!root.rankingConfigured) {
+            root.rankedOrder = [];
+            // Only explain when the user has actually asked for ranking.
+            // Off-and-silent is correct; on-and-silent is the bug.
+            root.rankingReason = root.rankingEnabled
+                ? (root.aiEnabled ? "Set an embedding model in settings to rank by interest." : "Enable AI in settings to rank by interest.")
+                : "";
+            return;
+        }
+        if (root.rankingBusy)
+            return;
+
+        var starred = [];
+        var i;
+        for (i = 0; i < root.allItems.length; i++) {
+            if (ReaderState.isBookmarked(root.bookmarkMap, root.allItems[i].id))
+                starred.push(root.allItems[i]);
+        }
+
+        if (starred.length < Ranking.MIN_STARRED_FOR_PROFILE) {
+            root.rankedOrder = [];
+            root.rankingReason = "Star at least " + Ranking.MIN_STARRED_FOR_PROFILE + " articles to teach it what you like (" + starred.length + " so far).";
+            return;
+        }
+
+        var needed = [];
+        var neededIds = [];
+        for (i = 0; i < root.allItems.length; i++) {
+            var it = root.allItems[i];
+            if (!it.id || root.vectorMap[it.id])
+                continue;
+            needed.push(root.aiProvider.prepareEmbedText(it));
+            neededIds.push(it.id);
+        }
+
+        if (needed.length === 0) {
+            root.applyRanking();
+            return;
+        }
+
+        var req = root.aiProvider.embedRequest(needed, { model: root.aiEmbedModel });
+        if (!req) {
+            root.rankingReason = "No embedding model configured.";
+            return;
+        }
+
+        root.rankingBusy = true;
+        root.runRequest(req, function (output, code) {
+            root.rankingBusy = false;
+
+            var parsed = (code === 0 || output) ? req.parse(output) : null;
+            if (!parsed || parsed.error || !parsed.vectors) {
+                root.rankedOrder = [];
+                root.rankingReason = (parsed && parsed.error) ? parsed.error : "Could not reach the embedding model.";
+                return;
+            }
+
+            // Index-matched to neededIds by position, which embedRequest's
+            // parse guarantees by reindexing on the API's own index field.
+            var next = {};
+            for (var k in root.vectorMap) {
+                if (Object.prototype.hasOwnProperty.call(root.vectorMap, k))
+                    next[k] = root.vectorMap[k];
+            }
+            for (var v = 0; v < parsed.vectors.length && v < neededIds.length; v++)
+                next[neededIds[v]] = parsed.vectors[v];
+            root.vectorMap = next;
+
+            root.applyRanking();
+        });
+    }
+
+    function applyRanking() {
+        // buildInterestProfile takes { vector, starredAt } OBJECTS, not raw
+        // vectors -- passing the vectors themselves made every one of them
+        // fail its validity check, so a user with eight starred articles was
+        // told there were not enough, forever. The shapes are adjacent enough
+        // to look right and different enough to fail silently, which is the
+        // whole reason tests/ranking.test.js now pins this exact call.
+        //
+        // starredAt comes from the bookmark order, which is newest-first, so
+        // position 0 is the most recent star. The module only uses it to
+        // decide WHICH stars survive the cap when there are more than it
+        // wants, and relative order is all that requires.
+        var starredVectors = [];
+        var order = root.bookmarkOrder || [];
+        var i;
+        for (i = 0; i < root.allItems.length; i++) {
+            var id = root.allItems[i].id;
+            if (!id || !root.vectorMap[id] || !ReaderState.isBookmarked(root.bookmarkMap, id))
+                continue;
+            var pos = order.indexOf(id);
+            starredVectors.push({
+                vector: root.vectorMap[id],
+                starredAt: (pos < 0) ? 0 : (order.length - pos)
+            });
+        }
+
+        var built = Ranking.buildInterestProfile(starredVectors);
+        if (!built.profile) {
+            root.rankedOrder = [];
+            root.rankingReason = "Not enough starred articles with embeddings yet.";
+            return;
+        }
+
+        var ranked = Ranking.rankItems(root.allItems, root.vectorMap, built.profile);
+        // rankingWeight is a percentage in settings; the module takes 0..1.
+        // 0 is an exact reverse-chronological short-circuit in the module, so
+        // sliding all the way down really is "off", not "nearly off".
+        var blended = Ranking.blendWithRecency(ranked, { weight: root.rankingWeight / 100 });
+
+        var order = [];
+        for (i = 0; i < blended.length; i++)
+            order.push(blended[i].id);
+        root.rankedOrder = order;
+        root.rankingReason = "";
+        root.applyFilter();
+    }
+
+    // --- Digest (stage 3c) ---
+    //
+    // One call over the last 24 hours of titles and descriptions, rendered in
+    // the reading window. Cheaper per item than summarising each article, and
+    // the only AI feature here that is about the feed rather than one entry.
+    property int digestGeneration: 0
+    readonly property int digestWindowMs: 24 * 60 * 60 * 1000
+    // Well above any sane maxItems, well below anything that would strain a
+    // local model's context.
+    readonly property int digestPoolCap: 300
+    property var digestPool: []
+
+    function recentItemsForDigest() {
+        var cutoff = Date.now() - root.digestWindowMs;
+        var pool = (root.digestPool && root.digestPool.length > 0) ? root.digestPool : root.allItems;
+        var out = [];
+        for (var i = 0; i < pool.length; i++) {
+            var it = pool[i];
+            // timestamp 0 means the feed gave no usable date. Included rather
+            // than dropped: an undated item is far more likely to be a feed
+            // with sloppy dates than a genuinely ancient article, and
+            // silently omitting it from "the last 24 hours" is the kind of
+            // gap nobody notices until they miss something.
+            if (!it.timestamp || it.timestamp >= cutoff)
+                out.push(it);
+        }
+        return out;
+    }
+
+    function openDigest() {
+        if (!root.aiReady)
+            return;
+        readerWindow.openDigest(root.recentItemsForDigest().length);
+    }
+
+    function generateDigest() {
+        if (!root.aiReady)
+            return;
+
+        var items = root.recentItemsForDigest();
+        if (items.length === 0) {
+            readerWindow.digestLoading = false;
+            readerWindow.digestError = "Nothing published in the last 24 hours.";
+            return;
+        }
+
+        var req = root.aiProvider.digestRequest(items);
+        if (!req)
+            return;
+
+        readerWindow.digestError = "";
+        readerWindow.digestText = "";
+        readerWindow.digestLoading = true;
+        readerWindow.digestItemCount = items.length;
+
+        root.digestGeneration++;
+        var generation = root.digestGeneration;
+
+        root.runRequest(req, function (output, code) {
+            if (generation !== root.digestGeneration)
+                return;
+            readerWindow.digestLoading = false;
+
+            if (code !== null && code !== 0) {
+                var failure = output ? req.parse(output) : null;
+                readerWindow.digestError = code === 124 ? "The model timed out." : ((failure && failure.error) ? failure.error : "Could not reach the AI runtime.");
+                return;
+            }
+
+            var result = req.parse(output);
+            if (result.error) {
+                readerWindow.digestError = result.error;
+                return;
+            }
+            if (!result.text) {
+                readerWindow.digestError = "The model returned an empty digest.";
+                return;
+            }
+            readerWindow.digestText = result.text;
+        });
+    }
+
+    // Marks everything the cursor scrolled past, given the row now at the top.
+    // The id bookkeeping lives in ReaderState so the "which ids" question is
+    // testable; this only supplies the anchors and writes the result.
+    property string _scrollTopId: ""
+
+    function markScrolledPastRead(topIndex) {
+        if (!root.markReadOnScroll || topIndex < 0 || topIndex >= feedModel.count)
+            return;
+
+        var orderedIds = [];
+        for (var i = 0; i < feedModel.count; i++)
+            orderedIds.push(feedModel.get(i).itemId);
+
+        var topId = feedModel.get(topIndex).itemId;
+        var previous = root._scrollTopId;
+        root._scrollTopId = topId;
+        if (!previous || previous === topId)
+            return;
+
+        // visibleIds[0] IS the new top anchor -- passing an empty array
+        // makes the module return nothing, every time, silently.
+        var passed = ReaderState.itemsScrolledPast([topId], previous, orderedIds);
+        if (!passed || passed.length === 0)
+            return;
+
+        var order = root.readOrder;
+        for (var j = 0; j < passed.length; j++) {
+            if (root.readMap[passed[j]] !== true)
+                order = ReaderState.addRead(order, passed[j], root.idHistoryCap);
+        }
+        if (order === root.readOrder)
+            return;
+
+        root.readOrder = ReaderState.boundIdList(order, root.idHistoryCap);
+        root.readMap = ReaderState.buildIdMap(root.readOrder);
+        root.saveReadState();
+    }
+
+    // --- Per-source snooze ---
+    //
+    // Hides one feed's items until a deadline, without disabling the feed:
+    // a disabled feed stops being fetched at all and its items vanish from
+    // history, whereas a snoozed one keeps syncing quietly and simply stops
+    // shouting. They are different intentions and deserve different controls.
+    function snoozeSource(sourceUrl, hours) {
+        if (!sourceUrl)
+            return;
+        var until = Date.now() + Math.max(1, hours) * 3600000;
+        root.snoozeMap = ReaderState.snoozeSource(root.snoozeMap, sourceUrl, until);
+        root.writeState("snoozes", root.snoozeMap);
+        root.applyFilter();
+    }
+
+    // "z" on a row snoozes the feed that row came from, for a day.
+    //
+    // Toasts, unlike the AI paths: this one hides content the user can no
+    // longer see, so silence would be indistinguishable from the key having
+    // done nothing -- and the toast is where "shift+z" gets taught, since a
+    // snoozed feed leaves no row behind to discover it from.
+    function snoozeFromRow(itemId) {
+        var article = root.itemById(itemId);
+        if (!article)
+            return;
+        var url = article.sourceUrl || "";
+        if (!url) {
+            root.toastError("That item's feed has no address to snooze");
+            return;
+        }
+        root.snoozeSource(url, 24);
+        if (typeof ToastService !== "undefined")
+            ToastService.showInfo("Snoozed " + (article.source || "that feed") + " for a day", "Shift+Z wakes every snoozed feed");
+    }
+
+    property string audioPlayerCommand: pluginData.audioPlayerCommand ?? "mpv"
+
+    // Hands a podcast episode to an external player.
+    //
+    // execDetached, not Proc.runCommand: a player is long-lived and
+    // runCommand kills what it spawned when its timeout expires -- the same
+    // reasoning the editor-open path already records.
+    //
+    // HONEST LIMITATION, worth stating because the backlog's goal was
+    // specifically "so podcast feeds play through the DMS media widget":
+    // that widget lists MPRIS players, and whether this episode appears there
+    // depends entirely on whether the configured player publishes MPRIS. mpv
+    // does NOT on its own -- it needs the separate mpv-mpris plugin, which is
+    // not installed on this machine (checked). VLC publishes it natively.
+    // So this plays the episode reliably; it appears in the media widget only
+    // if the player was set up for that. The alternative -- the widget
+    // registering itself as an MPRIS player -- would mean owning playback,
+    // which is a different and much larger feature.
+    function playEnclosure(itemId) {
+        var article = root.itemById(itemId);
+        if (!article)
+            return;
+        var url = article.audioUrl || "";
+        if (!url) {
+            root.toastError("That item has no audio to play");
+            return;
+        }
+        var cmd = (root.audioPlayerCommand || "mpv").trim();
+        if (!cmd)
+            return;
+        // Split on whitespace so a command with flags works, and never build
+        // a shell string -- argv only, exactly as the editor-open path does.
+        var argv = cmd.split(/\s+/);
+        argv.push(url);
+        Quickshell.execDetached(argv);
+        if (typeof ToastService !== "undefined")
+            ToastService.showInfo("Playing " + (article.title || "episode"));
+    }
+
+    // Steps "all folders" -> each category -> back to all. Wrapping matters:
+    // with no way back the chip would be a one-way trip into a filter the
+    // user has to guess how to leave.
+    function cycleCategory() {
+        var cats = root.availableCategories;
+        if (cats.length === 0) {
+            root.categoryFilter = "";
+            return;
+        }
+        var at = cats.indexOf(root.categoryFilter);
+        root.categoryFilter = (at < 0) ? cats[0] : ((at + 1 >= cats.length) ? "" : cats[at + 1]);
+        root.applyFilter();
+    }
+
+    // Names the failing feeds. A toast rather than a panel: this is a thing
+    // you glance at and then go fix in settings, not something to read in a
+    // widget three inches wide.
+    function showFeedErrors() {
+        if (root.failedFeedCount === 0 || typeof ToastService === "undefined")
+            return;
+        ToastService.showWarning(
+            root.failedFeedCount === 1 ? "1 feed failed to fetch" : root.failedFeedCount + " feeds failed to fetch",
+            root.failedFeedSummary);
+    }
+
+    // Quickshell exposes no clipboard type and DMS's ClipboardService only
+    // re-copies entries that are already in its history, so neither can take
+    // arbitrary text. wl-copy can, it is present on this system, and "--"
+    // plus argv (never a shell string) keeps an article body that happens to
+    // contain quotes or a leading dash from being read as options.
+    //
+    // execDetached rather than runCommand: wl-copy deliberately stays alive to
+    // serve the selection, and runCommand would kill it on timeout -- taking
+    // the clipboard contents with it.
+    function copyToClipboard(text) {
+        if (!text)
+            return;
+        Quickshell.execDetached(["wl-copy", "--", text]);
+        if (typeof ToastService !== "undefined")
+            ToastService.showInfo("Copied to clipboard");
+    }
+
+    function unsnoozeAll() {
+        var count = 0;
+        for (var k in root.snoozeMap) {
+            if (Object.prototype.hasOwnProperty.call(root.snoozeMap, k))
+                count++;
+        }
+        if (count === 0)
+            return;
+        root.snoozeMap = {};
+        root.writeState("snoozes", root.snoozeMap);
+        root.applyFilter();
+        if (typeof ToastService !== "undefined")
+            ToastService.showInfo(count === 1 ? "Woke 1 snoozed feed" : "Woke " + count + " snoozed feeds");
+    }
+
+    function unsnoozeSource(sourceUrl) {
+        if (!sourceUrl)
+            return;
+        root.snoozeMap = ReaderState.unsnoozeSource(root.snoozeMap, sourceUrl);
+        root.writeState("snoozes", root.snoozeMap);
+        root.applyFilter();
+    }
+
+    function persistSummaries() {
+        root.writeState("summaries", {
+            order: root.summaryOrder,
+            map: root.summaryMap
+        });
+    }
+
+    // Called by the reader window's "i" / Summarise button. Everything the
+    // window needs comes back on its summary* properties -- it never sees the
+    // provider, the cache or Proc.
+    function requestSummary(itemId) {
+        if (!root.aiReady || !itemId)
+            return;
+
+        var cached = ReaderState.getSummary(root.summaryMap, itemId);
+        if (cached !== null) {
+            readerWindow.summaryLoading = false;
+            readerWindow.summaryError = "";
+            readerWindow.summaryText = cached;
+            return;
+        }
+
+        var article = root.itemById(itemId);
+        if (!article)
+            return;
+
+        var req = root.aiProvider.summariseRequest(article);
+        if (!req)
+            return;
+
+        readerWindow.summaryError = "";
+        readerWindow.summaryText = "";
+        readerWindow.summaryLoading = true;
+
+        root.summaryGeneration++;
+        var generation = root.summaryGeneration;
+
+        root.runRequest(req, function (output, code) {
+            readerWindow.summaryLoading = false;
+
+            // Article identity, not generation, decides whether ANY of this
+            // may be shown. summaryGeneration only advances when a new
+            // summary is asked for, so navigating away without asking again
+            // leaves it satisfied -- which used to let a failure from the
+            // previous article render against the one now on screen.
+            var stillOnThisArticle = readerWindow.itemId === itemId;
+            var superseded = generation !== root.summaryGeneration;
+
+            if (code !== null && code !== 0) {
+                if (!superseded && stillOnThisArticle) {
+                    // No toast, by design. The reader window shows this and
+                    // nothing else does -- a local runtime that is simply not
+                    // running is not an event worth interrupting anyone for.
+                    //
+                    // A nonzero exit is not automatically "unreachable".
+                    // --fail-with-body makes an HTTP 4xx exit 22 while still
+                    // returning the runtime's own error text, which is far
+                    // more use than a guess -- "model not found" beats
+                    // "could not reach" when the host answered perfectly
+                    // well. So parse first and only fall back to the generic
+                    // wording when the body tells us nothing.
+                    var failure = output ? req.parse(output) : null;
+                    if (code === 124)
+                        readerWindow.summaryError = "The model timed out.";
+                    else if (failure && failure.error)
+                        readerWindow.summaryError = failure.error;
+                    else
+                        readerWindow.summaryError = "Could not reach the AI runtime.";
+                }
+                return;
+            }
+
+            var result = req.parse(output);
+            if (result.error) {
+                if (!superseded && stillOnThisArticle)
+                    readerWindow.summaryError = result.error;
+                return;
+            }
+            if (result.text === null || result.text === "") {
+                if (!superseded && stillOnThisArticle)
+                    readerWindow.summaryError = "The model returned an empty summary.";
+                return;
+            }
+
+            // Cached unconditionally, BEFORE any supersede check. The summary
+            // is keyed by item id, so a result that arrived too late to show
+            // is still a correct answer for the article that asked -- and it
+            // cost a real GPU job. Throwing it away meant asking again later
+            // re-ran the model for an answer we had already paid for.
+            var next = ReaderState.addSummary(root.summaryOrder, root.summaryMap, itemId, result.text, root.summaryCap);
+            root.summaryOrder = next.order;
+            root.summaryMap = next.map;
+            root.persistSummaries();
+
+            if (!superseded && stillOnThisArticle)
+                readerWindow.summaryText = result.text;
+        });
     }
 
     function saveReadState() {
@@ -489,6 +1438,88 @@ DesktopPluginComponent {
                 ToastService.showError("Could not open link", link);
             }
         }
+    }
+
+    // Shared by the "v" keyboard action and the row's view button. Opening
+    // the reader window IS reading the article -- the same read-marking half
+    // of openItem() runs here -- but unlike openItem() it never opens the
+    // link externally; that is the reader window's own "o" binding once it's
+    // open.
+    // index is the row's position in feedModel, when the caller has it (a
+    // keyboard row action or a row's own view button always does) -- it
+    // becomes the reader window's cursor, so shift+j/shift+k and the position
+    // indicator have a list position to work from. Omit it (or pass < 0) to
+    // leave keyboardIndex alone.
+    function viewItem(itemId, index) {
+        if (!itemId)
+            return;
+        if (typeof index === "number" && index >= 0)
+            root.keyboardIndex = index;
+        root.markRead(itemId);
+        if (root.syncReadOnOpen) {
+            var numId = root.backendItemId(itemId);
+            root.runRequest(root.backend.markReadRequest(root.backendConfig, root.backendSession, numId ? [numId] : []), function (output, code) {
+                if (code !== null && code !== 0)
+                    root.toastError("Failed to mark as read");
+            });
+        }
+        var article = root.itemById(itemId);
+        if (article) {
+            readerWindow.openArticle(article);
+            // openArticle() clears the summary fields; put a cached one back
+            // straight away so revisiting an article already summarised is
+            // instant and never re-runs the model.
+            var cached = root.aiReady ? ReaderState.getSummary(root.summaryMap, itemId) : null;
+            if (cached !== null)
+                readerWindow.summaryText = cached;
+        }
+    }
+
+    // "i" from the list: open the reader on this row showing only the summary,
+    // and ask for that summary immediately.
+    //
+    // Deliberately NOT routed through viewItem() the way the reader's own
+    // navigation is, for one reason: viewItem() marks the article read, and
+    // reading a summary is not reading the article. An item you skimmed and
+    // passed over must still be there next time you filter to unread --
+    // otherwise this feature quietly empties your unread list on your behalf.
+    // That is also why the cursor still moves: you looked at this row, so the
+    // cursor should be on it, but you have not consumed it.
+    function summariseItem(itemId, index) {
+        if (!root.aiReady || !itemId)
+            return;
+        // Key-repeat guard, matching the reader's own "i" handler. Without it,
+        // holding "i" spawns one model run per keypress.
+        if (readerWindow.summaryLoading && readerWindow.itemId === itemId)
+            return;
+        if (index !== undefined && index >= 0)
+            root.keyboardIndex = index;
+
+        var article = root.itemById(itemId);
+        if (!article)
+            return;
+
+        readerWindow.openArticle(article, true);
+        // requestSummary already serves from cache when it can, so there is
+        // no second cache lookup here.
+        root.requestSummary(itemId);
+    }
+
+    // Wired to the reader window's shift+j/shift+k (nextRequested/prevRequested).
+    // Deliberately reuses viewItem() rather than calling
+    // readerWindow.openArticle() straight from here -- opening an article
+    // must always go through the same read-marking wrapper "v" and the row's
+    // view button already use, not a second copy of it. No wraparound: past
+    // either end of feedModel this is a no-op, same as "j"/"k" at rest.
+    function readerAdvance(delta) {
+        if (root.keyboardIndex < 0 || feedModel.count === 0)
+            return;
+        var newIndex = root.keyboardIndex + delta;
+        if (newIndex < 0 || newIndex >= feedModel.count)
+            return;
+        feedListView.positionViewAtIndex(newIndex, ListView.Contain);
+        var row = feedModel.get(newIndex);
+        root.viewItem(row.itemId, newIndex);
     }
 
     // Shared by the mark-read button and the "m" keyboard action. An
@@ -577,6 +1608,36 @@ DesktopPluginComponent {
                 root.openItem(openRow.itemId, openRow.link);
                 break;
             }
+        case "view":
+            {
+                var viewRow = feedModel.get(result.index);
+                root.viewItem(viewRow.itemId, result.index);
+                break;
+            }
+        case "digest":
+            root.openDigest();
+            break;
+        case "snoozeSource":
+            {
+                var snoozeRow = feedModel.get(result.index);
+                root.snoozeFromRow(snoozeRow.itemId);
+                break;
+            }
+        case "unsnoozeAll":
+            root.unsnoozeAll();
+            break;
+        case "playAudio":
+            {
+                var audioRow = feedModel.get(result.index);
+                root.playEnclosure(audioRow.itemId);
+                break;
+            }
+        case "summarise":
+            {
+                var sumRow = feedModel.get(result.index);
+                root.summariseItem(sumRow.itemId, result.index);
+                break;
+            }
         case "toggleRead":
             {
                 var readRow = feedModel.get(result.index);
@@ -601,6 +1662,22 @@ DesktopPluginComponent {
         case "saveSelected":
             root.bulkSaveSelected();
             break;
+        case "exportSelected":
+            root.exportSelected();
+            break;
+        case "exportItem":
+            {
+                // No affordance/error/prompt at all when nothing is
+                // configured -- silently doing nothing here is the point,
+                // not a shortcut.
+                if (!root.exportRoot)
+                    break;
+                var exportRow = feedModel.get(result.index);
+                var exportArticle = root.itemById(exportRow.itemId);
+                if (exportArticle)
+                    root.exportArticles([exportArticle]);
+                break;
+            }
         case "toggleSelect":
             {
                 var selectRow = feedModel.get(result.index);
@@ -743,6 +1820,359 @@ DesktopPluginComponent {
         root.clearSelection();
     }
 
+    // --- Notes export ---
+    //
+    // One FileView per file being written, created fresh for that write and
+    // destroyed when it finishes. A single shared FileView driven through a
+    // queue (set path, setText(), wait for onSaved, advance) was tried first
+    // and dropped: quickshell's own docs for FileView (fileview.hpp) say
+    // `preload` defaults to true and `blockLoading` only makes text()/data()
+    // *reads* block -- it does not make a `path` change itself synchronous.
+    // So reusing one FileView across N paths starts a background load of
+    // each new path while the previous write may still be in flight, and
+    // the second write can race that load. Giving every write its own
+    // FileView removes the shared `path`/`text` state those two operations
+    // would otherwise race over -- there is nothing left to interleave.
+    //
+    // _exportResults is indexed by the original selection order (not
+    // completion order, since writes now finish in parallel) so the
+    // reported "first" failure always means first in the article list the
+    // user selected, matching the old sequential behaviour exactly.
+    property var _exportResults: []
+    property int _exportPending: 0
+
+    function itemById(id) {
+        for (var i = 0; i < root.allItems.length; i++) {
+            if (root.allItems[i].id === id)
+                return root.allItems[i];
+        }
+        return null;
+    }
+
+    // Shared by the "e" keyboard action (with a selection) and the
+    // selection bar's Export button.
+    function exportSelected() {
+        if (!root.exportRoot)
+            return;
+        var ids = Object.keys(root.selectedMap);
+        var articles = [];
+        for (var i = 0; i < ids.length; i++) {
+            var article = root.itemById(ids[i]);
+            if (article)
+                articles.push(article);
+        }
+        root.exportArticles(articles);
+        root.clearSelection();
+    }
+
+    // Shared entry point for both the "e" keyboard action and the selection
+    // bar's Export button. `articles` is already the list of full article
+    // objects to export -- callers resolve ids to root.allItems entries
+    // before calling this.
+    //
+    // Path validation happens up front and does NOT depend on the article's
+    // body text, so it runs before any network request -- a hostile or
+    // misconfigured title is rejected without ever fetching that article's
+    // page. Each surviving article then becomes one job; jobs that fetch
+    // full text resolve asynchronously and out of order, but _exportPending
+    // (shared with the write-completion path in _exportItemDone) still only
+    // reaches zero once every job -- fetched or not -- has been written.
+    function exportArticles(articles) {
+        if (!root.exportRoot || articles.length === 0)
+            return;
+        // A batch is already running -- dropping a second trigger (a
+        // double keypress, or the key firing while a click is still being
+        // processed) rather than starting a second overlapping batch.
+        if (root._exportPending > 0)
+            return;
+
+        var jobs = [];
+        var firstBuildError = "";
+        for (var i = 0; i < articles.length; i++) {
+            var article = articles[i];
+            var probe = root.exportProvider.buildNote(article, []);
+            if (probe.error) {
+                // Rule 1 of the design doc: buildNote refuses a path that
+                // would escape the export root. Unreachable in practice --
+                // if a user ever sees this, it is a bug report worth having.
+                if (!firstBuildError)
+                    firstBuildError = (article && article.title) || "an article";
+                continue;
+            }
+            jobs.push({ article: article, title: (article && article.title) || "an article" });
+        }
+
+        if (firstBuildError)
+            root.toastError("Could not export \"" + firstBuildError + "\": generated path escaped the export folder");
+
+        if (jobs.length === 0)
+            return;
+
+        root._exportResults = new Array(jobs.length);
+        root._exportPending = jobs.length;
+
+        for (var j = 0; j < jobs.length; j++) {
+            root._prepareExportJob(jobs[j].article, jobs[j].title, j);
+        }
+    }
+
+    // Fetches the article's own page and extracts it, when the user has
+    // opted into full-text export and the item actually has a link -- on
+    // demand only, once per article being exported right now, never on a
+    // feed refresh or a scroll. Falls through to the plain (no-extraction)
+    // path when the toggle is off or there is no link, so the request is
+    // never made unless it was asked for.
+    function _prepareExportJob(article, title, index) {
+        if (!root.exportFullText || !(article && article.link)) {
+            root._fetchImagesForJob(article, title, index, null);
+            return;
+        }
+
+        // Server-side extraction first, where the backend offers it: Miniflux
+        // has already fetched and parsed the page, so asking it costs one
+        // local API call instead of a round trip to the article's own site.
+        //
+        // Strictly an optimisation, never the only route -- the backlog is
+        // explicit that a feature working on one backend and silently doing
+        // nothing on another is the fragmentation the backend interface
+        // exists to prevent. So every failure here falls through to the
+        // local extractor rather than failing the note: no capability, no
+        // id, a refusal, a malformed body, a timeout. The user cannot tell
+        // which path produced their note, which is the point.
+        if (root.backend.capabilities.fullText) {
+            var backendId = root.backendItemId(article.id);
+            var fastReq = backendId ? root.backend.fullTextRequest(root.backendConfig, backendId) : null;
+            if (fastReq) {
+                root.queueProc(fastReq.argv, fastReq.timeoutMs || undefined, function (out, code) {
+                    var served = null;
+                    if (code === 0 && out) {
+                        var parsedFast = fastReq.parse(out);
+                        if (!parsedFast.error && parsedFast.content) {
+                            // Run the server's HTML through the SAME extractor
+                            // the local route uses, rather than flattening it
+                            // to text. Miniflux returns article HTML, and
+                            // stripping it would cost every paragraph break,
+                            // heading and link -- a worse note than the local
+                            // path produces, which is the opposite of an
+                            // optimisation. Sending it through extractArticle
+                            // means both routes emit identical markdown and
+                            // the only difference is who fetched the page.
+                            var fastExtract = HtmlExtract.extractArticle(parsedFast.content, {
+                                summary: ExportProvider.articleSummaryText(article),
+                                baseUrl: article.link || ""
+                            });
+                            if (!fastExtract.usedFallback)
+                                served = fastExtract;
+                        }
+                    }
+                    if (served) {
+                        root._fetchImagesForJob(article, title, index, served);
+                        return;
+                    }
+                    root._prepareExportJobLocal(article, title, index);
+                });
+                return;
+            }
+        }
+
+        root._prepareExportJobLocal(article, title, index);
+    }
+
+    // The original local route: fetch the article's own page and extract it.
+    function _prepareExportJobLocal(article, title, index) {
+        if (!root.exportFullText || !(article && article.link)) {
+            root._fetchImagesForJob(article, title, index, null);
+            return;
+        }
+
+        var req = ExportProvider.buildArticleFetchRequest(article.link);
+        root.queueProc(req.argv, req.timeoutMs || undefined, function (out, code) {
+            // A per-article fetch failure (bad host, 404, timeout, refused
+            // connection) must not abort the batch -- fall back to the
+            // summary for THIS note alone and keep going. `extracted` stays
+            // null here exactly like the toggle-off path above, so buildNote
+            // renders the honest "extracted: false" note either way.
+            var extracted = null;
+            if (code === 0 && out) {
+                // baseUrl resolves the article's site-relative links. Without
+                // it they emit as "/news/articles/x", which reads as a link
+                // and goes nowhere in a markdown file.
+                extracted = HtmlExtract.extractArticle(out, {
+                    summary: ExportProvider.articleSummaryText(article),
+                    baseUrl: article.link || ""
+                });
+            }
+            root._fetchImagesForJob(article, title, index, extracted);
+        });
+    }
+
+    // Downloads the note's images into the attachments folder, then hands on
+    // to the write. Off by default, and skipped entirely when there is
+    // nothing to fetch, so the common path is unchanged.
+    //
+    // The note path is needed BEFORE the images, because attachment names are
+    // derived from it -- so the note is built once without images purely to
+    // learn its relPath, then built again with the map once they land. That
+    // double build is cheap (string assembly, no I/O) and is what keeps the
+    // attachment names deterministic: re-exporting overwrites rather than
+    // accumulating -1, -2, -3 copies of the same picture.
+    //
+    // A failed image is NOT a failed note. Each fetch reports into the same
+    // tally and whatever succeeded gets rewritten to local paths; anything
+    // that did not keeps its original remote URL, so the note degrades to
+    // today's behaviour for that image alone rather than pointing at a file
+    // that was never written.
+    function _fetchImagesForJob(article, title, index, extracted) {
+        if (!root.exportImages) {
+            root._writeExportJob(article, title, index, extracted, null);
+            return;
+        }
+
+        var probe = root.exportProvider.buildNote(article, [], extracted);
+        if (probe.error) {
+            root._writeExportJob(article, title, index, extracted, null);
+            return;
+        }
+
+        var markdown = extracted && extracted.markdown ? extracted.markdown : ExportProvider.articleSummaryText(article);
+        var urls = ExportProvider.collectImageUrls(markdown, article, FeedParser.isSafeUrl);
+        if (!urls || urls.length === 0) {
+            root._writeExportJob(article, title, index, extracted, null);
+            return;
+        }
+
+        var baseName = probe.relPath.replace(/^.*[\/]/, "").replace(/\.md$/i, "");
+        var root_ = root.exportRoot.replace(/[\/\\]+$/, "");
+        var imageMap = {};
+        var remaining = urls.length;
+
+        var finish = function () {
+            remaining--;
+            if (remaining > 0)
+                return;
+            root._writeExportJob(article, title, index, extracted, imageMap);
+        };
+
+        for (var i = 0; i < urls.length; i++) {
+            (function (url, at) {
+                var rel = ExportProvider.attachmentPath(baseName, url, at, { attachmentDir: root.attachmentDir });
+                var req = ExportProvider.buildImageFetchRequest(url, root_ + "/" + rel);
+                root.queueProc(req.argv, req.timeoutMs || undefined, function (out, code) {
+                    if (code === 0)
+                        imageMap[url] = rel;
+                    finish();
+                });
+            })(urls[i], i);
+        }
+    }
+
+    // Builds the final note (now that extraction, if any, has resolved) and
+    // hands it to the same one-FileView-per-write path as before.
+    function _writeExportJob(article, title, index, extracted, imageMap) {
+        var note = root.exportProvider.buildNote(article, [], extracted, imageMap || undefined);
+        if (note.error) {
+            // The path was already validated by the probe in exportArticles
+            // before any fetch started, so this is unreachable in practice --
+            // treated as a write failure so _exportPending still reaches
+            // zero and the batch still finishes reporting.
+            root._exportItemDone(index, false, title);
+            return;
+        }
+
+        var view = exportFileViewComponent.createObject(root, {
+            exportIndex: index,
+            exportTitle: title,
+            exportRelPath: note.relPath,
+            path: root.exportRoot.replace(/[\/\\]+$/, "") + "/" + note.relPath
+        });
+        view.setText(note.content);
+    }
+
+    // Runs whatever the active preset's open command resolves to, once the
+    // note it names has actually finished writing. `openRequest` returns
+    // null for "no command configured" (write and stop) and for a template
+    // that failed to parse -- both are silent no-ops here, not errors, since
+    // the note itself was still written successfully either way.
+    function _openAfterWrite(relPath) {
+        var req = root.exportProvider.openRequest(relPath);
+        if (!req) return;
+        if (req.url) {
+            // Obsidian is a URL handler, not an executable -- Qt.openUrlExternally
+            // is the same mechanism this widget already uses for article links.
+            Qt.openUrlExternally(req.url);
+        } else if (req.argv) {
+            // execDetached, NOT Proc.runCommand: an editor is a long-lived
+            // process, and runCommand applies a default timeout and kills what
+            // it spawned when that expires -- which closed the terminal a few
+            // seconds after it opened. Fire and forget instead. Still argv
+            // only, never a shell string (see buildOpenRequest's header).
+            Quickshell.execDetached(req.argv);
+        }
+    }
+
+    // Called once per write, in whatever order writes actually finish
+    // (they run in parallel, one FileView each). Only the last one to
+    // finish reports -- _exportResults is filled in article order first,
+    // then walked in that order so "first failure" means first in the
+    // user's selection, not first to complete.
+    function _exportItemDone(index, success, title) {
+        root._exportResults[index] = {
+            success: success,
+            title: title
+        };
+        root._exportPending--;
+        if (root._exportPending > 0)
+            return;
+
+        var written = 0;
+        var firstFailure = "";
+        for (var i = 0; i < root._exportResults.length; i++) {
+            var result = root._exportResults[i];
+            if (result.success)
+                written++;
+            else if (!firstFailure)
+                firstFailure = result.title;
+        }
+
+        if (firstFailure) {
+            root.toastError(written + " note" + (written === 1 ? "" : "s") + " written, failed starting at \"" + firstFailure + "\"");
+        } else if (written > 0) {
+            if (typeof ToastService !== "undefined")
+                ToastService.showInfo(written + " note" + (written === 1 ? "" : "s") + " written");
+        }
+    }
+
+    // blockWrites/atomicWrites match DMS's own cache writer exactly (see
+    // /usr/share/quickshell/dms/Common/CacheData.qml) -- no shell, no Proc,
+    // and a half-written note is never visible to Obsidian's indexer.
+    // preload is off since this FileView only ever writes -- it is never
+    // read from, so there is no reason to load the file it is about to
+    // overwrite.
+    Component {
+        id: exportFileViewComponent
+
+        FileView {
+            id: exportFileViewInstance
+            property int exportIndex: -1
+            property string exportTitle: ""
+            property string exportRelPath: ""
+            blockWrites: true
+            atomicWrites: true
+            preload: false
+
+            onSaved: {
+                root._exportItemDone(exportIndex, true, exportTitle);
+                root._openAfterWrite(exportRelPath);
+                exportFileViewInstance.destroy();
+            }
+
+            onSaveFailed: error => {
+                root._exportItemDone(exportIndex, false, exportTitle);
+                exportFileViewInstance.destroy();
+            }
+        }
+    }
+
     function markRead(itemId) {
         if (!itemId || root.readMap[itemId])
             return;
@@ -805,6 +2235,51 @@ DesktopPluginComponent {
     // backend (e.g. StandardBackend's mark/star requests); report it via a
     // null exit code so callers can tell "nothing to do" apart from a real
     // failure.
+    // --- Bounded process queue, for the export fan-out only ---
+    //
+    // Exporting a selection used to spawn everything at once: one curl per
+    // article for full text, then one per image per article, all in the same
+    // tick. "Select all" with thirty articles and a couple of pictures each is
+    // over a hundred concurrent processes -- inside the shell's own process,
+    // where a stall takes the bar and popups with it.
+    //
+    // Deliberately NOT applied to the AI or backend paths: those are single
+    // requests, and queueing them behind an export batch would make a summary
+    // wait on a hundred image fetches.
+    readonly property int exportConcurrency: 4
+    property var _procQueue: []
+    property int _procActive: 0
+
+    function queueProc(argv, timeoutMs, cb) {
+        root._procQueue.push({
+            argv: argv,
+            timeoutMs: timeoutMs,
+            cb: cb
+        });
+        root._pumpProcQueue();
+    }
+
+    function _pumpProcQueue() {
+        while (root._procActive < root.exportConcurrency && root._procQueue.length > 0) {
+            var job = root._procQueue.shift();
+            root._procActive++;
+            // IIFE: `job` is function-scoped, so without capturing it here
+            // every callback in this loop would see the last job's closure.
+            (function (j) {
+                Proc.runCommand(null, j.argv, function (out, code) {
+                    root._procActive--;
+                    try {
+                        j.cb(out, code);
+                    } finally {
+                        // Pump even if the callback threw, or one bad response
+                        // would strand every job behind it forever.
+                        root._pumpProcQueue();
+                    }
+                }, undefined, j.timeoutMs);
+            })(job);
+        }
+    }
+
     function runRequest(req, cb) {
         if (!req) {
             cb(null, null);
@@ -852,6 +2327,9 @@ DesktopPluginComponent {
         // descriptor, are still QML's job.
         var statuses = [];
         var descriptors = [];
+        var skippedUrls = [];
+        var fetchStamps = {};
+        var fetchNow = Date.now();
 
         if (!backend.capabilities.serverState) {
             // Keyed by meta.index (position in root.feeds), NOT by url: two
@@ -883,6 +2361,25 @@ DesktopPluginComponent {
                     });
                     continue;
                 }
+                // Not due yet: no request, and crucially the PREVIOUS status
+                // is carried forward rather than a fresh "loading" row that
+                // nothing will ever resolve. Its articles are put back in
+                // finalizeFetch from the retention pool.
+                if (!root.feedIsDue(feed, fetchNow)) {
+                    var prior = root.previousStatusFor(feed.url);
+                    statuses.push(prior ? prior : {
+                        url: feed.url,
+                        name: name,
+                        state: "ok",
+                        lastFetched: 0,
+                        lastSuccess: 0,
+                        lastError: "",
+                        itemCount: 0
+                    });
+                    skippedUrls.push(feed.url);
+                    continue;
+                }
+
                 var status = {
                     url: feed.url,
                     name: name,
@@ -894,11 +2391,13 @@ DesktopPluginComponent {
                 };
                 statuses.push(status);
                 var matched = byIndex[i];
-                if (matched)
+                if (matched) {
                     descriptors.push({
                         req: matched,
                         statusIndex: statuses.length - 1
                     });
+                    fetchStamps[feed.url] = fetchNow;
+                }
             }
         } else {
             // Server-backed backend: one synthetic status row per descriptor
@@ -928,8 +2427,23 @@ DesktopPluginComponent {
         root.feedStatuses = statuses;
 
         if (descriptors.length === 0) {
-            root.allItems = [];
+            // Nothing was requested. There are two very different reasons for
+            // that and they must not share an outcome.
+            //
+            // If feeds were SKIPPED because none was due yet, the list is
+            // still correct and must be left exactly as it is. Clearing it
+            // here would empty the widget on any cycle where every feed was
+            // inside its own interval -- articles vanishing for no visible
+            // reason, which is the single failure this feature had to be
+            // designed around.
+            //
+            // If nothing was skipped, there genuinely are no eligible feeds
+            // (all disabled, or the last one deleted) and an empty list is the
+            // honest answer.
+            if (skippedUrls.length === 0)
+                root.allItems = [];
             root.isLoading = false;
+            root.feedStatuses = statuses;
             root.applyFilter();
             root.saveFeedStatuses();
             return;
@@ -944,11 +2458,30 @@ DesktopPluginComponent {
         // already surfaces failures via its own per-feed status rows.
         var hadItems = root.allItems.length > 0;
 
+        // Stamp the feeds we are actually asking for, so the next cycle can
+        // tell what is due. Recorded on ATTEMPT rather than on success: a feed
+        // that is failing should back off to its own interval too, instead of
+        // being retried every global cycle.
+        if (skippedUrls.length > 0 || Object.keys(fetchStamps).length > 0) {
+            var stamps = {};
+            for (var fk in root.feedLastFetch) {
+                if (Object.prototype.hasOwnProperty.call(root.feedLastFetch, fk))
+                    stamps[fk] = root.feedLastFetch[fk];
+            }
+            for (var nk in fetchStamps) {
+                if (Object.prototype.hasOwnProperty.call(fetchStamps, nk))
+                    stamps[nk] = fetchStamps[nk];
+            }
+            root.feedLastFetch = stamps;
+            root.writeState("feedLastFetch", stamps);
+        }
+
         var ctx = {
             gen: gen,
             pending: descriptors.length,
             collector: [],
-            statuses: statuses
+            statuses: statuses,
+            skipped: skippedUrls
         };
 
         for (var d = 0; d < descriptors.length; d++) {
@@ -1097,41 +2630,68 @@ DesktopPluginComponent {
         if (ctx.gen !== root.fetchGeneration)
             return;
 
-        var items = FeedParser.dedupeItems(ctx.collector);
-
-        if (root.sortMode === "oldest") {
-            items.sort(function (a, b) {
-                return a.timestamp - b.timestamp;
-            });
-        } else if (root.sortMode === "byFeed") {
-            // Newest within each feed first, then apply the per-feed cap
-            items.sort(function (a, b) {
-                return b.timestamp - a.timestamp;
-            });
-            var feedCounts = {};
-            items = items.filter(function (item) {
-                var src = item.source || "";
-                feedCounts[src] = (feedCounts[src] || 0) + 1;
-                return feedCounts[src] <= root.maxPerFeed;
-            });
-            // Then group in the order the feeds are arranged in settings, so
-            // the move-up/move-down buttons actually affect what you see.
-            var orderMap = ReaderState.feedOrderMap(root.feeds);
-            items.sort(function (a, b) {
-                return ReaderState.compareByFeedOrder(a, b, orderMap);
-            });
-        } else {
-            // "newest" — default
-            items.sort(function (a, b) {
-                return b.timestamp - a.timestamp;
-            });
+        // Feeds that were not due this cycle produced no descriptor and so
+        // contributed nothing to the collector. Their articles are put back
+        // here, BEFORE the dedupe, so a skipped feed simply keeps what it had
+        // rather than disappearing from the list -- which is the failure this
+        // whole feature had to be designed around. dedupeItems then resolves
+        // any overlap by stable id exactly as it does for a normal fetch.
+        var collected = ctx.collector;
+        if (ctx.skipped && ctx.skipped.length > 0) {
+            var keep = {};
+            for (var sk = 0; sk < ctx.skipped.length; sk++)
+                keep[ctx.skipped[sk]] = true;
+            var pool = root.digestPool && root.digestPool.length ? root.digestPool : root.allItems;
+            for (var rp = 0; rp < pool.length; rp++) {
+                if (keep[pool[rp].sourceUrl])
+                    collected = collected.concat([pool[rp]]);
+            }
         }
+
+        var items = FeedParser.dedupeItems(collected);
+
+        // Sorting lives in ReaderState so it can be tested: this used to be
+        // three inline comparators here, and the "newest"/"oldest" ones broke
+        // ties by timestamp alone. Feed items arrive in batches that share a
+        // timestamp to the second, so equal-timestamp runs were free to come
+        // back in a different order on every refresh -- the list quietly
+        // reshuffled under the cursor. sortItems breaks ties on id.
+        items = ReaderState.sortItems(items, root.sortMode, root.maxPerFeed, ReaderState.feedOrderMap(root.feeds));
+
+        // Captured BEFORE the display cap below, which is the whole point and
+        // was got wrong the first time: taking the slice afterwards made this
+        // identical to allItems, so the digest still only ever saw maxItems
+        // articles and the fix that was supposed to widen it did nothing.
+        //
+        // Also the retention pool for per-feed intervals: a feed that was not
+        // due this cycle contributed nothing to the collector, and its
+        // articles are recovered from here rather than vanishing.
+        root.digestPool = items.slice(0, root.digestPoolCap);
 
         if (items.length > root.maxItems) {
             items = items.slice(0, root.maxItems);
         }
 
+        // The digest reads from digestPool, NOT from allItems.
+        //
+        // allItems is capped at maxItems -- a *display* limit, typically 20 or
+        // 30. Running the digest off it meant "the last 24 hours" was really
+        // "the newest 30 articles", so with thirty feeds configured it silently
+        // covered roughly one item per feed and looked like it was cherry
+        // picking. It was not; it could not see the rest.
+        //
+        // Capped separately and much higher, because the constraint here is
+        // the model's context rather than the widget's height, and a digest
+        // over several hundred titles is still one cheap call.
+
         root.allItems = items;
+        root.pruneSummaryCache(items);
+        var prunedSnoozes = ReaderState.pruneSnoozes(root.snoozeMap, Date.now());
+        if (Object.keys(prunedSnoozes).length !== Object.keys(root.snoozeMap).length) {
+            root.snoozeMap = prunedSnoozes;
+            root.writeState("snoozes", root.snoozeMap);
+        }
+        root.refreshRanking();
         root.feedStatuses = ctx.statuses.slice();
         root.notifyForNewItems(items);
         root.applyFilter();
@@ -1151,7 +2711,22 @@ DesktopPluginComponent {
 
         var result = ReaderState.evaluateSeen(currentIds, root.seenIds, root.idHistoryCap);
 
-        if (!result.firstRun && root.notifyNewItems && result.newCount > 0 && typeof ToastService !== "undefined") {
+        // Rules first, and they REPLACE the plain count rather than adding to
+        // it. The whole point of a rule is to be told about interesting items
+        // instead of merely new ones; firing both would mean two toasts per
+        // refresh, which is how a useful notification becomes one you learn to
+        // dismiss without reading.
+        if (!result.firstRun && root.notificationRules.length > 0) {
+            var ruled = ReaderState.evaluateRules(items, root.notificationRules, root.notifiedIds);
+            if (ruled.ids.length > 0) {
+                root.notifiedIds = ReaderState.boundIdList(ruled.ids.concat(root.notifiedIds), root.idHistoryCap);
+                root.writeState("notifiedIds", root.notifiedIds);
+            }
+            if (ruled.matched.length > 0 && root.notifyNewItems && typeof ToastService !== "undefined") {
+                var lead = ruled.matched[0].title || "an item";
+                ToastService.showInfo(ruled.matched.length === 1 ? lead : lead + " and " + (ruled.matched.length - 1) + " more match your rules");
+            }
+        } else if (!result.firstRun && root.notifyNewItems && result.newCount > 0 && typeof ToastService !== "undefined") {
             ToastService.showInfo(result.newCount + " new item" + (result.newCount > 1 ? "s" : "") + " in RSS Feeds");
         }
 
@@ -1206,6 +2781,61 @@ DesktopPluginComponent {
             bookmarkMap: root.bookmarkMap
         });
 
+        // Only honoured while the chip that sets it is actually on screen.
+        // Otherwise switching to a backend with no categories -- or a folder
+        // simply going away between refreshes -- would keep filtering against
+        // something the user can no longer see or clear, and the list would
+        // silently empty with no visible cause.
+        if (root.categoryFilter !== "" && root.availableCategories.indexOf(root.categoryFilter) < 0)
+            root.categoryFilter = "";
+
+        if (root.categoryFilter !== "") {
+            var wanted = root.categoryFilter;
+            visible = visible.filter(function (it) {
+                var cats = (it && it.categories) || [];
+                for (var c = 0; c < cats.length; c++) {
+                    if (cats[c] === wanted)
+                        return true;
+                }
+                return false;
+            });
+        }
+
+        // Snoozed sources drop out here rather than at fetch time, so their
+        // items still arrive, still count as seen, and reappear intact the
+        // moment the snooze lapses -- no gap in history to explain later.
+        var nowMs = Date.now();
+        var anySnoozed = false;
+        for (var sk in root.snoozeMap) {
+            if (Object.prototype.hasOwnProperty.call(root.snoozeMap, sk)) {
+                anySnoozed = true;
+                break;
+            }
+        }
+        if (anySnoozed)
+            visible = ReaderState.filterSnoozed(visible, root.snoozeMap, nowMs);
+
+        // Ranking reorders what the filter chose; it never changes WHAT is
+        // shown. Keeping the two separate matters: a ranking that also hid
+        // things would be impossible to tell apart from a broken filter, and
+        // the backlog's requirement is an obvious way back, which this gives
+        // for free -- switch ranking off and the same rows are simply in
+        // their old order. Items the ranking never scored keep their relative
+        // position at the end rather than disappearing.
+        if (root.rankingConfigured && root.rankedOrder.length > 0) {
+            var rank = {};
+            for (var r = 0; r < root.rankedOrder.length; r++)
+                rank[root.rankedOrder[r]] = r;
+            var unranked = root.rankedOrder.length;
+            visible = visible.slice().sort(function (a, b) {
+                var ra = (rank[a.id] === undefined) ? unranked : rank[a.id];
+                var rb = (rank[b.id] === undefined) ? unranked : rank[b.id];
+                if (ra !== rb)
+                    return ra - rb;
+                return (b.timestamp || 0) - (a.timestamp || 0);
+            });
+        }
+
         feedModel.clear();
         for (var i = 0; i < visible.length; i++) {
             var item = visible[i];
@@ -1231,6 +2861,7 @@ DesktopPluginComponent {
         // selectedMap rather than the visible model, so this is safe, and the
         // selection-bar label below surfaces the hidden portion explicitly.
         root.selectedMap = ReaderState.pruneSelected(root.selectedMap, root.allItems);
+
         root.visibleItems = visible;
 
         // feedModel was just rebuilt from scratch -- the cursor must never
@@ -1247,11 +2878,51 @@ DesktopPluginComponent {
         id: feedModel
     }
 
+    // Reused by "v"/the row's view button. "e"/"s" pressed inside the window
+    // are forwarded here rather than duplicated, so exporting or starring
+    // from the reader behaves exactly like exporting or starring from the
+    // list -- same functions, same settings, same toasts.
+    ReaderWindow {
+        id: readerWindow
+        readerFontFamily: root.readerFontFamily
+        // Bindings, not a one-time copy on open -- j/k/row-click can move
+        // keyboardIndex, or filtering can resize feedModel, while the reader
+        // is still open, and the position indicator/n/p must track that.
+        positionIndex: root.keyboardIndex
+        positionCount: feedModel.count
+        onExportRequested: article => root.exportArticles([article])
+        onStarRequested: itemId => root.toggleBookmark(itemId)
+        onNextRequested: root.readerAdvance(1)
+        onPrevRequested: root.readerAdvance(-1)
+        colourPreset: root.colourPreset
+        colourOverrides: ({
+                customPrimary: root.pluginDataValue("customPrimary", ""),
+                customError: root.pluginDataValue("customError", ""),
+                customSuccess: root.pluginDataValue("customSuccess", "")
+            })
+        summaryAvailable: root.aiReady
+        onSummaryRequested: itemId => root.requestSummary(itemId)
+        onDigestRequested: root.generateDigest()
+        onCopyRequested: text => root.copyToClipboard(text)
+
+        // Closing this window cannot hand Wayland keyboard focus back to the
+        // widget. forceActiveFocus() only sets Qt's own internal focus item,
+        // not compositor keyboard focus -- under layer-shell OnDemand, focus
+        // arrives on a click, and when a floating window closes niri hands
+        // focus to a regular window, not a layer surface. There used to be a
+        // forceActiveFocus() call here; it did not do anything useful, so it
+        // is gone. The actual fix is "n"/"p" (readerAdvance above): moving to
+        // the next/previous article without ever closing the window means
+        // this focus boundary is never crossed. Closing via Esc still needs
+        // a click before j/k work again, same as any other floating window
+        // regaining focus.
+    }
+
     // --- UI ---
     Rectangle {
         anchors.fill: parent
         radius: Theme.cornerRadius
-        color: Theme.withAlpha(Theme.surfaceContainer, root.backgroundOpacity)
+        color: root.tint(root.roleColours.surfaceContainer, root.backgroundOpacity)
         border.width: root.enableBorder ? root.borderThickness : 0
         border.color: Theme.withAlpha(root.resolvedBorderColor, root.borderOpacity)
         clip: true
@@ -1307,38 +2978,66 @@ DesktopPluginComponent {
                     DankIcon {
                         name: "rss_feed"
                         size: Theme.iconSizeSmall
-                        color: Theme.primary
+                        color: root.roleColours.primary
                     }
 
                     StyledText {
                         text: "RSS Feeds"
                         font.pixelSize: Theme.fontSizeMedium
                         font.weight: Font.Bold
-                        color: Theme.surfaceText
+                        color: root.roleColours.surfaceText
                         elide: Text.ElideRight
                         Layout.fillWidth: true
                     }
 
-                    // Failed-feed indicator; per-feed detail lives in settings.
-                    DankIcon {
+                    // Failed-feed indicator. It used to be inert: it told you
+                    // something was wrong and offered no way to find out what,
+                    // which for anyone who does not already know the detail
+                    // lives in settings is just an anxiety light. It now names
+                    // the feeds and their errors on click.
+                    Rectangle {
                         visible: root.failedFeedCount > 0
-                        name: "error_outline"
-                        size: 14
-                        color: Theme.error
-                    }
+                        implicitWidth: failedRow.implicitWidth + Theme.spacingXS * 2
+                        implicitHeight: 20
+                        radius: Theme.cornerRadius
+                        color: failedArea.containsMouse ? root.tint(root.roleColours.error, 0.18) : "transparent"
 
-                    StyledText {
-                        visible: root.failedFeedCount > 0
-                        text: root.failedFeedCount
-                        font.pixelSize: root.fontSize - 2
-                        color: Theme.error
+                        Accessible.role: Accessible.Button
+                        Accessible.name: root.failedFeedCount === 1 ? "1 feed failed, show why" : (root.failedFeedCount + " feeds failed, show why")
+                        Accessible.onPressAction: root.showFeedErrors()
+
+                        RowLayout {
+                            id: failedRow
+                            anchors.centerIn: parent
+                            spacing: Theme.spacingXXS
+
+                            DankIcon {
+                                name: "error_outline"
+                                size: 14
+                                color: root.roleColours.error
+                            }
+
+                            StyledText {
+                                text: root.failedFeedCount
+                                font.pixelSize: root.fontSize - 2
+                                color: root.roleColours.error
+                            }
+                        }
+
+                        MouseArea {
+                            id: failedArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.showFeedErrors()
+                        }
                     }
 
                     DankSpinner {
                         visible: root.isLoading
                         running: root.isLoading
                         size: 14
-                        color: Theme.primary
+                        color: root.roleColours.primary
                     }
 
                     DankActionButton {
@@ -1356,6 +3055,10 @@ DesktopPluginComponent {
                         buttonSize: 22
                         enabled: !root.isLoading && root.activeFeedCount > 0
                         onClicked: root.refreshNow()
+
+                        Accessible.role: Accessible.Button
+                        Accessible.name: "Refresh feeds"
+                        Accessible.onPressAction: root.refreshNow()
                     }
                 }
 
@@ -1368,7 +3071,7 @@ DesktopPluginComponent {
                         return root.allItems.length + " items · " + root.unreadCount + " unread";
                     }
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                     Layout.fillWidth: true
                     elide: Text.ElideRight
                     horizontalAlignment: Text.AlignHCenter
@@ -1379,7 +3082,7 @@ DesktopPluginComponent {
             Rectangle {
                 Layout.fillWidth: true
                 height: 1
-                color: Theme.outlineVariant
+                color: root.roleColours.outlineVariant
             }
 
             // Search toggle, shared by the actions bar and the selection bar
@@ -1395,14 +3098,32 @@ DesktopPluginComponent {
                     iconName: root.searchActive ? "search_off" : "search"
                     iconSize: 14
                     buttonSize: root.searchToggleSize
-                    iconColor: (root.searchActive || root.searching) ? Theme.primary : Theme.surfaceVariantText
-                    onClicked: {
-                        if (root.searchActive)
-                            root.closeSearch();
-                        else
-                            root.searchActive = true;
-                    }
+                    iconColor: (root.searchActive || root.searching) ? root.roleColours.primary : root.roleColours.surfaceVariantText
+                    onClicked: root.toggleSearch()
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: root.searchActive ? "Close search" : "Search"
+                    Accessible.onPressAction: root.toggleSearch()
                 }
+            }
+
+            // Why ranking is not doing anything, when it is switched on and
+            // is not doing anything.
+            //
+            // This existed as a property with six distinct messages and was
+            // rendered nowhere, which is the worst of both: the code knew
+            // exactly why it had declined to rank and told nobody. The
+            // backlog's requirement was "a visible reason"; a reason that is
+            // not visible does not meet it, and the symptom -- switching
+            // ranking on and observing no change whatsoever -- is
+            // indistinguishable from the feature being broken.
+            StyledText {
+                Layout.fillWidth: true
+                visible: root.rankingEnabled && root.rankingReason !== ""
+                text: root.rankingReason
+                font.pixelSize: root.fontSize - 2
+                color: root.roleColours.surfaceVariantText
+                wrapMode: Text.WordWrap
             }
 
             // --- Actions bar: filter + mark all (normal mode) ---
@@ -1423,7 +3144,7 @@ DesktopPluginComponent {
                         },
                         {
                             key: "bookmarked",
-                            label: "Saved"
+                            label: "Starred"
                         }
                     ]
 
@@ -1434,7 +3155,13 @@ DesktopPluginComponent {
                         Layout.preferredWidth: filterLabel.implicitWidth + Theme.spacingS
                         height: 22
                         radius: Theme.cornerRadius
-                        color: active ? Theme.withAlpha(Theme.primary, 0.18) : (filterArea.containsMouse ? Theme.withAlpha(Theme.primary, 0.08) : "transparent")
+                        color: active ? root.tint(root.roleColours.primary, 0.18) : (filterArea.containsMouse ? root.tint(root.roleColours.primary, 0.08) : "transparent")
+
+                        // filterLabel already gives this a name via ordinary
+                        // Text -- only role/checked are needed to expose the
+                        // segmented-toggle semantics.
+                        Accessible.role: Accessible.Button
+                        Accessible.checked: active
 
                         StyledText {
                             id: filterLabel
@@ -1443,12 +3170,12 @@ DesktopPluginComponent {
                                 if (modelData.key === "unread")
                                     return "Unread (" + root.unreadCount + ")";
                                 if (modelData.key === "bookmarked")
-                                    return "Saved (" + root.bookmarkedCount + ")";
+                                    return "Starred (" + root.bookmarkedCount + ")";
                                 return modelData.label;
                             }
                             font.pixelSize: root.fontSize - 2
                             font.weight: parent.active ? Font.Medium : Font.Normal
-                            color: parent.active ? Theme.primary : Theme.surfaceVariantText
+                            color: parent.active ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
 
                         MouseArea {
@@ -1458,6 +3185,46 @@ DesktopPluginComponent {
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.filterMode = parent.modelData.key
                         }
+                    }
+                }
+
+                // One chip that cycles categories, rather than one chip per
+                // category: this row has to stay readable in a widget a few
+                // hundred pixels wide, and a Miniflux account with a dozen
+                // folders would push everything else off the end. Hidden
+                // entirely unless the backend supplies categories AND there is
+                // more than nothing to choose between.
+                Rectangle {
+                    readonly property bool active: root.categoryFilter !== ""
+                    visible: root.availableCategories.length > 0
+
+                    Layout.preferredWidth: categoryLabel.implicitWidth + Theme.spacingS
+                    height: 22
+                    radius: Theme.cornerRadius
+                    color: active ? root.tint(root.roleColours.primary, 0.18) : (categoryArea.containsMouse ? root.tint(root.roleColours.primary, 0.08) : "transparent")
+
+                    Accessible.role: Accessible.Button
+                    Accessible.checked: active
+                    Accessible.name: root.categoryFilter === "" ? "Filter by category" : ("Category: " + root.categoryFilter + ", tap to change")
+                    Accessible.onPressAction: root.cycleCategory()
+
+                    StyledText {
+                        id: categoryLabel
+                        anchors.centerIn: parent
+                        text: root.categoryFilter === "" ? "All folders" : root.categoryFilter
+                        font.pixelSize: root.fontSize - 2
+                        font.weight: parent.active ? Font.Medium : Font.Normal
+                        color: parent.active ? root.roleColours.primary : root.roleColours.surfaceVariantText
+                        elide: Text.ElideRight
+                        Layout.maximumWidth: 110
+                    }
+
+                    MouseArea {
+                        id: categoryArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.cycleCategory()
                     }
                 }
 
@@ -1482,7 +3249,7 @@ DesktopPluginComponent {
                     visible: root.widgetWidth >= 160
                     height: 22
                     radius: Theme.cornerRadius
-                    color: markAllArea.containsMouse ? Theme.withAlpha(Theme.primary, 0.15) : "transparent"
+                    color: markAllArea.containsMouse ? root.tint(root.roleColours.primary, 0.15) : "transparent"
 
                     RowLayout {
                         id: allReadRow
@@ -1492,7 +3259,7 @@ DesktopPluginComponent {
                         DankIcon {
                             name: markAllRect.allRead ? "remove_done" : "done_all"
                             size: 14
-                            color: markAllArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                            color: markAllArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
 
                         // Label drops out on a narrow widget; the icon carries
@@ -1501,7 +3268,7 @@ DesktopPluginComponent {
                             visible: root.widgetWidth >= 300
                             text: markAllRect.allRead ? "Mark all unread" : "Mark all read"
                             font.pixelSize: root.fontSize - 2
-                            color: markAllArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                            color: markAllArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
                     }
 
@@ -1510,12 +3277,12 @@ DesktopPluginComponent {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            root.setAllRead(!parent.allRead);
-                            if (root.filterMode === "unread")
-                                root.applyFilter();
-                        }
+                        onClicked: root.toggleAllRead(markAllRect.allRead)
                     }
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: markAllRect.allRead ? "Mark all unread" : "Mark all read"
+                    Accessible.onPressAction: root.toggleAllRead(markAllRect.allRead)
                 }
             }
 
@@ -1539,7 +3306,7 @@ DesktopPluginComponent {
                 StyledText {
                     text: root.selectedCount + " selected" + (selectionActionsRow.hiddenSelected > 0 ? " (" + selectionActionsRow.hiddenSelected + " hidden)" : "")
                     font.pixelSize: root.fontSize - 2
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                     Layout.fillWidth: true
                     elide: Text.ElideRight
                 }
@@ -1550,7 +3317,7 @@ DesktopPluginComponent {
                     Layout.minimumWidth: 22 + Theme.spacingS * 2
                     height: 22
                     radius: Theme.cornerRadius
-                    color: saveArea.containsMouse ? Theme.withAlpha(Theme.primary, 0.15) : "transparent"
+                    color: saveArea.containsMouse ? root.tint(root.roleColours.primary, 0.15) : "transparent"
 
                     RowLayout {
                         id: saveRow
@@ -1558,16 +3325,16 @@ DesktopPluginComponent {
                         spacing: Theme.spacingXS
 
                         DankIcon {
-                            name: "bookmark"
+                            name: "star"
                             size: 14
-                            color: saveArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                            color: saveArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
 
                         StyledText {
                             visible: root.widgetWidth >= 300
                             text: "Save"
                             font.pixelSize: root.fontSize - 2
-                            color: saveArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                            color: saveArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
                     }
 
@@ -1578,6 +3345,53 @@ DesktopPluginComponent {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.bulkSaveSelected()
                     }
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: "Star selected items"
+                    Accessible.onPressAction: root.bulkSaveSelected()
+                }
+
+                // Export to notes -- only shown once a folder is configured
+                // (Notes export section of settings). With nothing set there
+                // must be no affordance at all, not a button that errors.
+                Rectangle {
+                    visible: root.exportRoot !== ""
+                    Layout.preferredWidth: exportRow.implicitWidth + Theme.spacingS * 2
+                    Layout.minimumWidth: 22 + Theme.spacingS * 2
+                    height: 22
+                    radius: Theme.cornerRadius
+                    color: exportArea.containsMouse ? root.tint(root.roleColours.primary, 0.15) : "transparent"
+
+                    RowLayout {
+                        id: exportRow
+                        anchors.centerIn: parent
+                        spacing: Theme.spacingXS
+
+                        DankIcon {
+                            name: "note_add"
+                            size: 14
+                            color: exportArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
+                        }
+
+                        StyledText {
+                            visible: root.widgetWidth >= 300
+                            text: "Export"
+                            font.pixelSize: root.fontSize - 2
+                            color: exportArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
+                        }
+                    }
+
+                    MouseArea {
+                        id: exportArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.exportSelected()
+                    }
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: "Export selected items"
+                    Accessible.onPressAction: root.exportSelected()
                 }
 
                 // Mark read/unread -- flips label and action based on
@@ -1590,7 +3404,7 @@ DesktopPluginComponent {
                     Layout.minimumWidth: 22 + Theme.spacingS * 2
                     height: 22
                     radius: Theme.cornerRadius
-                    color: markReadArea.containsMouse ? Theme.withAlpha(Theme.primary, 0.15) : "transparent"
+                    color: markReadArea.containsMouse ? root.tint(root.roleColours.primary, 0.15) : "transparent"
 
                     RowLayout {
                         id: markReadRow
@@ -1600,14 +3414,14 @@ DesktopPluginComponent {
                         DankIcon {
                             name: root.selectedAllRead ? "mark_email_unread" : "mark_email_read"
                             size: 14
-                            color: markReadArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                            color: markReadArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
 
                         StyledText {
                             visible: root.widgetWidth >= 300
                             text: root.selectedAllRead ? "Mark unread" : "Mark read"
                             font.pixelSize: root.fontSize - 2
-                            color: markReadArea.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                            color: markReadArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
                     }
 
@@ -1618,6 +3432,10 @@ DesktopPluginComponent {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.selectedAllRead ? root.bulkMarkUnreadSelected() : root.bulkMarkReadSelected()
                     }
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: root.selectedAllRead ? "Mark selected unread" : "Mark selected read"
+                    Accessible.onPressAction: root.selectedAllRead ? root.bulkMarkUnreadSelected() : root.bulkMarkReadSelected()
                 }
 
                 // The header's filter/search row is replaced by this bar
@@ -1640,6 +3458,10 @@ DesktopPluginComponent {
                     Layout.preferredWidth: 22
                     Layout.preferredHeight: 22
                     onClicked: root.clearSelection()
+
+                    Accessible.role: Accessible.Button
+                    Accessible.name: "Clear selection"
+                    Accessible.onPressAction: root.clearSelection()
                 }
             }
 
@@ -1722,6 +3544,28 @@ DesktopPluginComponent {
                     model: feedModel
                     visible: feedModel.count > 0
 
+                    // Mark-read-on-scroll, debounced rather than per-frame.
+                    //
+                    // The decision itself is ReaderState.itemsScrolledPast,
+                    // which only marks on a SETTLED forward move -- and
+                    // settled is this timer's job. Running it per frame would
+                    // mark the whole list read on a fast fling to the bottom,
+                    // which is the failure mode the module's semantics were
+                    // chosen to avoid; the module can express "only when
+                    // settled" but cannot enforce it, because it owns no
+                    // timer.
+                    onContentYChanged: {
+                        if (root.markReadOnScroll)
+                            scrollSettleTimer.restart();
+                    }
+
+                    Timer {
+                        id: scrollSettleTimer
+                        interval: 400
+                        repeat: false
+                        onTriggered: root.markScrolledPastRead(feedListView.indexAt(0, feedListView.contentY + 1))
+                    }
+
                     delegate: Rectangle {
                         id: itemDelegate
                         readonly property bool isRead: root.readMap[model.itemId] === true
@@ -1748,12 +3592,12 @@ DesktopPluginComponent {
                         height: itemColumn.implicitHeight + Theme.spacingS * 2
                         radius: root.viewMode === "compact" ? 0 : Theme.cornerRadius
                         opacity: isRead ? 0.5 : 1.0
-                        color: itemDelegate.isSelected ? Theme.withAlpha(Theme.primary, 0.12) : (rowHover.hovered ? Theme.withAlpha(Theme.primary, 0.08) : "transparent")
+                        color: itemDelegate.isSelected ? root.tint(root.roleColours.primary, 0.12) : (rowHover.hovered ? root.tint(root.roleColours.primary, 0.08) : "transparent")
                         // Cursor indicator is a border, deliberately not another
                         // fill -- hover and selection are both background tints,
                         // and a third tint would be indistinguishable from them.
                         border.width: itemDelegate.isCursor ? 2 : 0
-                        border.color: Theme.primary
+                        border.color: root.roleColours.primary
 
                         Behavior on color {
                             ColorAnimation {
@@ -1830,7 +3674,7 @@ DesktopPluginComponent {
                                 iconName: itemDelegate.isSelected ? "check_box" : "check_box_outline_blank"
                                 iconSize: 14
                                 buttonSize: itemDelegate.controlSize
-                                iconColor: itemDelegate.isSelected ? Theme.primary : Theme.surfaceVariantText
+                                iconColor: itemDelegate.isSelected ? root.roleColours.primary : root.roleColours.surfaceVariantText
                                 Layout.alignment: Qt.AlignVCenter
                                 opacity: (rowHover.hovered || itemDelegate.isSelected) ? 1.0 : 0.45
                                 enabled: true
@@ -1838,11 +3682,16 @@ DesktopPluginComponent {
                                 // activeFocusOnTab comment on the two
                                 // trailing buttons below for why.
                                 activeFocusOnTab: false
-                                onClicked: {
-                                    if (root._clickFromOverview())
-                                        return;
-                                    root.toggleSelected(model.itemId);
-                                }
+                                onClicked: root.rowToggleSelected(model.itemId)
+
+                                // Checked state is a first-class AT property
+                                // here, not folded into the name string --
+                                // avoids a doubled "checked, Select X,
+                                // checked" announcement.
+                                Accessible.role: Accessible.CheckBox
+                                Accessible.checked: itemDelegate.isSelected
+                                Accessible.name: "Select " + (model.title || "item")
+                                Accessible.onPressAction: root.rowToggleSelected(model.itemId)
 
                                 Behavior on opacity {
                                     NumberAnimation {
@@ -1862,27 +3711,10 @@ DesktopPluginComponent {
                                     spacing: Theme.spacingXS
 
                                     StyledText {
-                                        visible: root.showFeedName
-                                        text: model.source || ""
-                                        font.pixelSize: root.fontSize
-                                        font.weight: Font.Medium
-                                        color: itemDelegate.isRead ? Theme.surfaceVariantText : Theme.primary
-                                        Layout.maximumWidth: 120
-                                        elide: Text.ElideRight
-                                    }
-
-                                    StyledText {
-                                        visible: root.showFeedName
-                                        text: "·"
-                                        font.pixelSize: root.fontSize
-                                        color: Theme.surfaceVariantText
-                                    }
-
-                                    StyledText {
                                         text: model.title || ""
                                         font.pixelSize: root.fontSize
                                         font.weight: Font.Medium
-                                        color: itemDelegate.isRead ? Theme.surfaceVariantText : Theme.surfaceText
+                                        color: itemDelegate.isRead ? root.roleColours.surfaceVariantText : root.roleColours.primary
                                         Layout.fillWidth: true
                                         elide: Text.ElideRight
                                         maximumLineCount: 1
@@ -1892,12 +3724,17 @@ DesktopPluginComponent {
                                     // Compact mode: inline date
                                     StyledText {
                                         visible: root.viewMode === "compact" && text !== ""
+                                        // Source folded in beside the time so
+                                        // the title owns the top line alone,
+                                        // which is what the eye should land on.
                                         text: {
                                             root.timeTick;  // dependency: forces re-evaluation on the 60s tick
-                                            return model.timestamp > 0 ? FeedParser.getRelativeTime(new Date(model.timestamp)) : "";
+                                            var when = model.timestamp > 0 ? FeedParser.getRelativeTime(new Date(model.timestamp)) : "";
+                                            var src = root.showFeedName ? (model.source || "") : "";
+                                            return (when && src) ? (when + " · " + src) : (when || src);
                                         }
                                         font.pixelSize: root.fontSize - 2
-                                        color: Theme.withAlpha(Theme.surfaceVariantText, 0.7)
+                                        color: root.tint(root.roleColours.surfaceVariantText, 0.7)
                                     }
                                 }
 
@@ -1906,7 +3743,7 @@ DesktopPluginComponent {
                                     visible: root.viewMode !== "compact" && (model.description || "") !== ""
                                     text: model.description || ""
                                     font.pixelSize: root.fontSize
-                                    color: Theme.surfaceVariantText
+                                    color: root.roleColours.surfaceVariantText
                                     Layout.fillWidth: true
                                     elide: Text.ElideRight
                                     maximumLineCount: 2
@@ -1918,10 +3755,12 @@ DesktopPluginComponent {
                                     visible: root.viewMode !== "compact" && text !== ""
                                     text: {
                                         root.timeTick;  // dependency: forces re-evaluation on the 60s tick
-                                        return model.timestamp > 0 ? FeedParser.getRelativeTime(new Date(model.timestamp)) : "";
+                                        var when = model.timestamp > 0 ? FeedParser.getRelativeTime(new Date(model.timestamp)) : "";
+                                        var src = root.showFeedName ? (model.source || "") : "";
+                                        return (when && src) ? (when + " · " + src) : (when || src);
                                     }
                                     font.pixelSize: root.fontSize - 2
-                                    color: Theme.withAlpha(Theme.surfaceVariantText, 0.7)
+                                    color: root.tint(root.roleColours.surfaceVariantText, 0.7)
                                 }
                             }
 
@@ -1938,7 +3777,7 @@ DesktopPluginComponent {
                                 Layout.preferredHeight: 48
                                 Layout.alignment: Qt.AlignVCenter
                                 radius: Theme.cornerRadius
-                                color: Theme.surfaceContainerHigh
+                                color: root.roleColours.surfaceContainerHigh
                                 clip: true
 
                                 Image {
@@ -1963,7 +3802,7 @@ DesktopPluginComponent {
                                 iconName: itemDelegate.isRead ? "mark_email_read" : "mark_email_unread"
                                 iconSize: 14
                                 buttonSize: itemDelegate.controlSize
-                                iconColor: itemDelegate.isRead ? Theme.primary : Theme.surfaceVariantText
+                                iconColor: itemDelegate.isRead ? root.roleColours.primary : root.roleColours.surfaceVariantText
                                 Layout.alignment: Qt.AlignVCenter
                                 opacity: (rowHover.hovered || itemDelegate.isRead) ? 1.0 : 0.45
                                 enabled: true
@@ -1989,11 +3828,15 @@ DesktopPluginComponent {
                                 // by their own key ("m"/"s"/Space) on the
                                 // cursor row.
                                 activeFocusOnTab: false
-                                onClicked: {
-                                    if (root._clickFromOverview())
-                                        return;
-                                    root.toggleReadSynced(model.itemId, itemDelegate.isRead);
-                                }
+                                onClicked: root.rowToggleRead(model.itemId, itemDelegate.isRead)
+
+                                // Names the action the press will perform
+                                // (not the current state), matching the
+                                // phrasing the bulk mark-read label already
+                                // uses.
+                                Accessible.role: Accessible.Button
+                                Accessible.name: "Mark \"" + (model.title || "item") + "\" as " + (itemDelegate.isRead ? "unread" : "read")
+                                Accessible.onPressAction: root.rowToggleRead(model.itemId, itemDelegate.isRead)
 
                                 Behavior on opacity {
                                     NumberAnimation {
@@ -2008,20 +3851,46 @@ DesktopPluginComponent {
                             // why it used to be unclickable without hovering
                             // first.
                             DankActionButton {
-                                iconName: itemDelegate.isBookmarked ? "bookmark" : "bookmark_border"
+                                iconName: itemDelegate.isBookmarked ? "star" : "star_border"
                                 iconSize: 14
                                 buttonSize: itemDelegate.controlSize
-                                iconColor: itemDelegate.isBookmarked ? Theme.primary : Theme.surfaceVariantText
+                                iconColor: itemDelegate.isBookmarked ? root.roleColours.primary : root.roleColours.surfaceVariantText
                                 Layout.alignment: Qt.AlignVCenter
                                 opacity: (rowHover.hovered || itemDelegate.isBookmarked) ? 1.0 : 0.45
                                 enabled: true
                                 // See the mark-read button's comment above.
                                 activeFocusOnTab: false
-                                onClicked: {
-                                    if (root._clickFromOverview())
-                                        return;
-                                    root.toggleBookmark(model.itemId);
+                                onClicked: root.rowToggleBookmark(model.itemId)
+
+                                Accessible.role: Accessible.Button
+                                Accessible.name: (itemDelegate.isBookmarked ? "Unstar \"" : "Star \"") + (model.title || "item") + "\""
+                                Accessible.onPressAction: root.rowToggleBookmark(model.itemId)
+
+                                Behavior on opacity {
+                                    NumberAnimation {
+                                        duration: Theme.shortDuration
+                                    }
                                 }
+                            }
+
+                            // Trailing #3: open in the reader window. Never
+                            // touches read/bookmark state itself -- viewItem()
+                            // does the read-marking, same as the "v" key.
+                            DankActionButton {
+                                iconName: "menu_book"
+                                iconSize: 14
+                                buttonSize: itemDelegate.controlSize
+                                iconColor: root.roleColours.surfaceVariantText
+                                Layout.alignment: Qt.AlignVCenter
+                                opacity: rowHover.hovered ? 1.0 : 0.45
+                                enabled: true
+                                // See the mark-read button's comment above.
+                                activeFocusOnTab: false
+                                onClicked: root.rowViewItem(model.itemId, index)
+
+                                Accessible.role: Accessible.Button
+                                Accessible.name: "Open \"" + (model.title || "item") + "\" in reader"
+                                Accessible.onPressAction: root.rowViewItem(model.itemId, index)
 
                                 Behavior on opacity {
                                     NumberAnimation {
@@ -2060,11 +3929,11 @@ DesktopPluginComponent {
                         if (root.allItems.length > 0 && root.searching)
                             return "search_off";
                         if (root.allItems.length > 0 && root.filterMode === "bookmarked")
-                            return "bookmark_border";
+                            return "star_border";
                         return root.backend.capabilities.serverState ? "sync" : "rss_feed";
                     }
                     size: Theme.iconSize * 2
-                    color: Theme.withAlpha(Theme.surfaceVariantText, 0.4)
+                    color: root.tint(root.roleColours.surfaceVariantText, 0.4)
                     Layout.alignment: Qt.AlignHCenter
                 }
 
@@ -2085,13 +3954,13 @@ DesktopPluginComponent {
                         if (root.allItems.length > 0 && root.searching)
                             return "No matching items";
                         if (root.allItems.length > 0 && root.filterMode === "bookmarked")
-                            return "No saved items";
+                            return "No starred items";
                         if (root.allItems.length > 0 && root.filterMode === "unread")
                             return "All caught up";
                         return "No items loaded";
                     }
                     font.pixelSize: Theme.fontSizeMedium
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                     horizontalAlignment: Text.AlignHCenter
@@ -2115,7 +3984,7 @@ DesktopPluginComponent {
                         return "";
                     }
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.withAlpha(Theme.surfaceVariantText, 0.6)
+                    color: root.tint(root.roleColours.surfaceVariantText, 0.6)
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                     horizontalAlignment: Text.AlignHCenter
@@ -2140,14 +4009,14 @@ DesktopPluginComponent {
                 DankSpinner {
                     running: root.isLoading
                     size: 24
-                    color: Theme.primary
+                    color: root.roleColours.primary
                     Layout.alignment: Qt.AlignHCenter
                 }
 
                 StyledText {
                     text: "Loading feeds..."
                     font.pixelSize: Theme.fontSizeMedium
-                    color: Theme.surfaceVariantText
+                    color: root.roleColours.surfaceVariantText
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
                     Layout.alignment: Qt.AlignHCenter
@@ -2171,7 +4040,7 @@ DesktopPluginComponent {
         Rectangle {
             anchors.fill: parent
             visible: root.helpVisible
-            color: Theme.withAlpha(Theme.surfaceContainer, 0.96)
+            color: root.tint(root.roleColours.surfaceContainer, 0.96)
             radius: Theme.cornerRadius
             z: 100
 
@@ -2194,7 +4063,7 @@ DesktopPluginComponent {
                         text: "Keyboard shortcuts"
                         font.pixelSize: root.fontSize
                         font.bold: true
-                        color: Theme.surfaceText
+                        color: root.roleColours.surfaceText
                         Layout.fillWidth: true
                     }
 
@@ -2206,6 +4075,10 @@ DesktopPluginComponent {
                         Layout.preferredWidth: 22
                         Layout.preferredHeight: 22
                         onClicked: root.helpVisible = false
+
+                        Accessible.role: Accessible.Button
+                        Accessible.name: "Close keyboard shortcuts"
+                        Accessible.onPressAction: root.helpVisible = false
                     }
                 }
 
@@ -2226,56 +4099,12 @@ DesktopPluginComponent {
                         spacing: Theme.spacingXS
 
                         Repeater {
-                            model: [
-                                {
-                                    keys: ["j", "k"],
-                                    desc: "Move cursor down / up"
-                                },
-                                {
-                                    keys: ["o", "Enter"],
-                                    desc: "Open item"
-                                },
-                                {
-                                    keys: ["m"],
-                                    desc: "Toggle read / unread (whole selection, if any)"
-                                },
-                                {
-                                    keys: ["s"],
-                                    desc: "Toggle star (whole selection, if any)"
-                                },
-                                {
-                                    keys: ["Space"],
-                                    desc: "Toggle selection"
-                                },
-                                {
-                                    keys: ["g", "g"],
-                                    desc: "Jump to first item"
-                                },
-                                {
-                                    keys: ["G"],
-                                    desc: "Jump to last item"
-                                },
-                                {
-                                    keys: ["/"],
-                                    desc: "Focus search"
-                                },
-                                {
-                                    keys: ["Esc"],
-                                    desc: "Close search, clear selection, or clear cursor"
-                                },
-                                {
-                                    keys: ["r"],
-                                    desc: "Refresh feeds"
-                                },
-                                {
-                                    keys: ["A"],
-                                    desc: "Mark all read / unread"
-                                },
-                                {
-                                    keys: ["?"],
-                                    desc: "Toggle this help"
-                                }
-                            ]
+                            // The "e" row lives in root.helpBindingsModel
+                            // rather than a literal here, so it can be left
+                            // out entirely when no export folder is
+                            // configured -- same "no affordance" rule as the
+                            // selection bar's Export button.
+                            model: root.helpBindingsModel
 
                             RowLayout {
                                 Layout.fillWidth: true
@@ -2297,7 +4126,7 @@ DesktopPluginComponent {
                                 StyledText {
                                     text: modelData.desc
                                     font.pixelSize: root.fontSize - 2
-                                    color: Theme.surfaceVariantText
+                                    color: root.roleColours.surfaceVariantText
                                     Layout.fillWidth: true
                                     wrapMode: Text.WordWrap
                                 }

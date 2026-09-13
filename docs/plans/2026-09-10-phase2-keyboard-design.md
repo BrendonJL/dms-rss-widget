@@ -1,7 +1,7 @@
 # Design: Phase 2 — keyboard navigation
 
 Date: 2026-09-10
-Status: ready to implement
+Status: implemented — shipped in 2.4.0
 Depends on: the search-focus fix (done)
 
 ## The focus problem, which is the whole difficulty

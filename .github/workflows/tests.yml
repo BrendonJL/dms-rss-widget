@@ -37,12 +37,15 @@ jobs:
       # The DMS registry crawls version/author straight out of plugin.json, so a
       # bumped manifest with no changelog entry ships a version nobody can read
       # about -- and an unbumped manifest ships changes the registry never shows.
+      #
+      # Reads CHANGELOG.md. The changelog lived in README.md until the docs
+      # were split out to the wiki; this check moved with it.
       - name: version has a changelog entry
         run: |
           v=$(jq -r .version plugin.json)
           echo "plugin.json version: $v"
-          grep -qF "### $v" README.md || {
-            echo "::error file=README.md::No '### $v' section in the README changelog"
+          grep -qF "### $v" CHANGELOG.md || {
+            echo "::error file=CHANGELOG.md::No '### $v' section in CHANGELOG.md"
             exit 1
           }
 
@@ -128,3 +131,53 @@ jobs:
           done
           if [ "$status" = "0" ]; then echo "all .qml files are syntactically valid"; fi
           exit $status
+
+  # qmllint is deliberately NOT in CI. Three attempts, three failures, one
+  # cause: Ubuntu ships qmllint without a usable QML module tree, so it cannot
+  # resolve QtQuick -- or on some versions even its own builtins ("Failed to
+  # find the following builtins: jsroot.qmltypes"). Everything it then reports
+  # is a cascade from that, and the filter matches 120 false positives across
+  # this repo: Qt.rgba and Qt.openUrlExternally read as missing properties.
+  #
+  # The last attempt carried a self-test that fed it a known-bad property and
+  # failed if that was NOT flagged. It was not flagged. The self-test worked
+  # exactly as intended and proved the checker is useless in this environment,
+  # which is the honest outcome: a permanently red job is worse than no job,
+  # because a check nobody can act on is a check everybody learns to ignore.
+  #
+  # It DOES work locally, where a full Qt exists, and it has already caught a
+  # real bug there (lineHeightMode on a TextEdit, which took the widget down).
+  # Run it before pushing QML -- the invocation and its filter are in
+  # docs/wiki/Development.md.
+
+  # ─── Real QML execution ───
+  #
+  # Six smoke tests under an actual headless engine (~2s locally). Catches
+  # what neither the formatter nor the linter can: wiring that resolves and
+  # type-checks but is still wrong -- a signal connected to nothing, a
+  # function that moved out of scope, a DI shape that does not match.
+  #
+  # run.sh finds its own Qt and SKIPS CLEANLY (exit 0) when there is none, so
+  # if the runner's package layout differs this reports green rather than
+  # blocking. Grep the log for "SKIP:" to know whether it really ran.
+  qml-smoke:
+    name: qml-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install the qml runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qt6-declarative-dev-tools qml6-module-qtqml qml6-module-qtquick
+
+      - name: run the QML smoke tests
+        run: |
+          qmlbin=$(command -v qml6 || command -v qml || true)
+          if [ -z "$qmlbin" ]; then
+            echo "::warning::no qml runtime found; tests/qml/run.sh will skip"
+          else
+            export QT_DIR="$(dirname "$(dirname "$(readlink -f "$qmlbin")")")"
+            echo "QT_DIR=$QT_DIR"
+          fi
+          bash tests/qml/run.sh

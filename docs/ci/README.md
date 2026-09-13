@@ -1,13 +1,71 @@
-# Staged CI changes
+# CI
 
-> **Status:** the qml-syntax job below is live in `.github/workflows/tests.yml`
-> (applied in `ebea5c5`). `tests.yml.proposed` is kept in sync as a mirror, not
-> a pending change — diff it against the real workflow before trusting either.
-
-Claude cannot write to `.github/workflows/` — a security hook blocks all
-workflow-file writes. Future changes get staged here for a human to move:
+The live workflow is `.github/workflows/tests.yml`. `tests.yml.proposed` in
+this directory is the version to apply next; Claude cannot write into
+`.github/workflows/`, so changes land here first and a human copies them:
 
     cp docs/ci/tests.yml.proposed .github/workflows/tests.yml
+
+## PENDING — one new job, from the pre-v3 CI review
+
+`tests.yml.proposed` adds **`qml-smoke`** to the three jobs that already exist.
+Everything else is unchanged.
+
+**A qmllint job was attempted and abandoned — for the third time.** The reason
+is worth keeping so nobody tries a fourth. Ubuntu's `qt6-declarative-dev-tools`
+ships the binary without a usable QML module tree, so qmllint cannot resolve
+QtQuick, and on some versions cannot load its own builtins. Everything it
+reports afterwards is a cascade from that: 120 false positives across this
+repo, including `Qt.rgba` and `Qt.openUrlExternally` reading as missing
+properties. Installing `qml6-module-qtquick` and friends did not fix it.
+
+The last attempt carried a self-test — feed qmllint a deliberately bad property
+and fail if it is NOT flagged. It was not flagged. **The self-test worked
+exactly as designed and proved the checker is useless there**, which is the
+honest outcome. A permanently red job is worse than no job: a check nobody can
+act on is a check everybody learns to ignore.
+
+qmllint DOES work locally, where a full Qt exists, and has already caught a real
+bug there — `lineHeightMode` on a `TextEdit`, which stopped the whole widget
+loading. Run it before pushing QML; the invocation and its filter are in
+`docs/wiki/Development.md`.
+
+**`qml-smoke`** runs `tests/qml/run.sh` — six tests under a real headless
+engine, about two seconds. It catches what neither the formatter nor the
+linter can: wiring that resolves and type-checks and is still wrong. One
+caveat worth knowing — the script has been proven against a Nix Qt, not
+against Ubuntu's `qt6-declarative-dev-tools`, and it **skips cleanly (exit 0)**
+when it cannot find a runtime. So a green tick alone does not prove it ran;
+grep the log for `SKIP:` the first time.
+
+Deliberately NOT added: the extraction oracle. Its value is proven — it has
+caught a `ReferenceError` that 689 unit tests missed, and a silent quality
+drop from 91.1% to 62.6% — but its fixtures are gitignored and not ours to
+redistribute, so CI would have to fetch live from Wikipedia, LWN, the Guardian
+and several personal blogs on every PR. For a single maintainer, a gate that
+fails over a dead link gets disabled, which is worse than not having it. If it
+ever goes in, it belongs on a schedule reporting a number, not on the PR path.
+
+## APPLIED — the changelog check reads `CHANGELOG.md`
+
+The `manifest` job's "version has a changelog entry" step greps for
+`### <version>` matching `plugin.json`. It used to read `README.md`, because
+that is where the changelog lived; the README was later split, with the detail
+going to the wiki and the changelog to `CHANGELOG.md`.
+
+**This has been applied.** The live `.github/workflows/tests.yml` and
+`docs/ci/tests.yml.proposed` both grep `CHANGELOG.md` and are identical on this
+step. This section stayed marked PENDING long after the change landed, and a
+review of CI read it, believed the job was broken, and reported a live outage
+that did not exist. A stale "PENDING" is worse than no note — it is a claim
+about the present.
+
+The check itself is unchanged otherwise, including the reason it exists: the DMS
+registry crawls version and author straight out of `plugin.json`, so a bumped
+manifest with no changelog entry ships a version nobody can read about.
+
+The narrative wiki copy of this page is `docs/wiki/CI.md`; keep the two in step
+when the workflow changes.
 
 ## 2026-09-09 — QML checking: two failed attempts, then the right tool
 

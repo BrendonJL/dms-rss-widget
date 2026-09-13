@@ -2,7 +2,33 @@ const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 
-const { createExportProvider } = require("../ExportProvider.js");
+const {
+    createExportProvider,
+    buildArticleFetchRequest,
+    articleSummaryText,
+    EXPORT_OPEN_PRESETS,
+    resolveExportConfig,
+    collectImageUrls,
+    attachmentPath,
+    buildImageFetchRequest,
+    rewriteImageLinks
+} = require("../ExportProvider.js");
+
+// A minimal stand-in for FeedParser.js's isSafeUrl -- ExportProvider.js takes
+// it as an argument rather than requiring a sibling module (see
+// Architecture.md), so tests supply their own copy of the same contract:
+// http(s) only, no control characters, no whitespace.
+function isSafeUrl(url) {
+    if (typeof url !== "string") return false;
+    var trimmed = url.trim();
+    if (trimmed === "") return false;
+    for (var i = 0; i < trimmed.length; i++) {
+        var code = trimmed.charCodeAt(i);
+        if (code <= 0x1F || code === 0x7F) return false;
+    }
+    if (/\s/.test(trimmed)) return false;
+    return /^https?:\/\//i.test(trimmed);
+}
 
 var ROOT = "/home/user/vault";
 
@@ -81,19 +107,24 @@ function parseFrontmatter(content) {
 // ─── capabilities ───
 
 describe("capabilities", () => {
-    test("markdown provider: no openAfterWrite, no wikilinks", () => {
+    test("no open command configured: no openAfterWrite, no wikilinks", () => {
         var p = createExportProvider(baseConfig({ kind: "markdown" }));
         assert.deepEqual(p.capabilities, { openAfterWrite: false, wikilinks: false });
     });
 
-    test("obsidian provider: openAfterWrite + wikilinks", () => {
-        var p = createExportProvider(baseConfig({ kind: "obsidian" }));
+    test("obsidian preset: openAfterWrite + wikilinks", () => {
+        var p = createExportProvider(baseConfig({ kind: "obsidian", exportOpenCommand: "obsidian://open?vault={vault}&file={file}" }));
         assert.deepEqual(p.capabilities, { openAfterWrite: true, wikilinks: true });
     });
 
-    test("neovim provider: openAfterWrite, no wikilinks", () => {
-        var p = createExportProvider(baseConfig({ kind: "neovim" }));
+    test("a non-obsidian preset with a command: openAfterWrite, no wikilinks", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", exportOpenCommand: "code {path}" }));
         assert.deepEqual(p.capabilities, { openAfterWrite: true, wikilinks: false });
+    });
+
+    test("a whitespace-only command counts as unconfigured", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", exportOpenCommand: "   " }));
+        assert.equal(p.capabilities.openAfterWrite, false);
     });
 });
 
@@ -273,25 +304,35 @@ describe("buildNote: annotation rendering", () => {
         assert.ok(result.content.indexOf("Just a note, no quote.") !== -1);
     });
 });
-
 // ─── provider differences ───
 
-describe("provider differences: wikilink tags", () => {
-    test("obsidian emits wikilink-style tags in the body", () => {
+// These two asserted that tags were written into the note BODY -- as
+// "[[news]]" for Obsidian and "#news" elsewhere. That behaviour was removed
+// deliberately: the frontmatter already carries the tags, every markdown tool
+// that cares reads them from there, and the body line was just something to
+// delete in every note. Rewritten to assert the current intent rather than
+// deleted, so the decision stays visible.
+describe("tags live in frontmatter, not the body", () => {
+    test("obsidian puts no wikilink tags in the body", () => {
         var p = createExportProvider(baseConfig({ kind: "obsidian", tags: ["news", "tech"] }));
-        var result = p.buildNote(article(), []);
-        assert.ok(result.content.indexOf("[[news]]") !== -1);
-        assert.ok(result.content.indexOf("[[tech]]") !== -1);
+        var content = p.buildNote(article(), []).content;
+        var body = content.split(/^---$/m).slice(2).join("---");
+        assert.equal(body.indexOf("[[news]]"), -1);
+        assert.equal(body.indexOf("[[tech]]"), -1);
+        assert.ok(content.indexOf('tags: ["news", "tech"]') !== -1, "frontmatter still carries them");
     });
 
-    test("markdown-dir provider does NOT emit wikilink tags", () => {
+    test("markdown-dir puts no hashtags in the body either", () => {
         var p = createExportProvider(baseConfig({ kind: "markdown", tags: ["news", "tech"] }));
-        var result = p.buildNote(article(), []);
-        assert.equal(result.content.indexOf("[["), -1);
+        var content = p.buildNote(article(), []).content;
+        var body = content.split(/^---$/m).slice(2).join("---");
+        assert.equal(body.indexOf("#news"), -1);
+        assert.equal(body.indexOf("[["), -1);
+        assert.ok(content.indexOf('tags: ["news", "tech"]') !== -1);
     });
 
-    test("neovim provider does NOT emit wikilink tags", () => {
-        var p = createExportProvider(baseConfig({ kind: "neovim", tags: ["news", "tech"] }));
+    test("a non-obsidian preset does NOT emit wikilink tags", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", tags: ["news", "tech"] }));
         var result = p.buildNote(article(), []);
         assert.equal(result.content.indexOf("[["), -1);
     });
@@ -300,41 +341,175 @@ describe("provider differences: wikilink tags", () => {
 // ─── openRequest ───
 
 describe("openRequest", () => {
-    test("markdown provider never returns an open request", () => {
+    test("empty template returns null: write the file and stop", () => {
+        var p = createExportProvider(baseConfig({ kind: "none", exportOpenCommand: "" }));
+        assert.equal(p.openRequest("some-note.md"), null);
+    });
+
+    test("unset template (key absent) also returns null", () => {
         var p = createExportProvider(baseConfig({ kind: "markdown" }));
         assert.equal(p.openRequest("some-note.md"), null);
     });
 
-    test("obsidian provider returns an obsidian:// url", () => {
-        var p = createExportProvider(baseConfig({ kind: "obsidian", vault: "MyVault" }));
+    test("null relPath never produces an open request", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", exportOpenCommand: "code {path}" }));
+        assert.equal(p.openRequest(null), null);
+    });
+
+    // ─── Obsidian: URI, not argv ───
+
+    test("obsidian preset returns an obsidian:// url, not an argv", () => {
+        var p = createExportProvider(baseConfig({
+            kind: "obsidian", vault: "MyVault",
+            exportOpenCommand: "obsidian://open?vault={vault}&file={file}"
+        }));
         var req = p.openRequest("some-note.md");
         assert.ok(req);
+        assert.equal(req.argv, undefined);
         assert.ok(req.url.indexOf("obsidian://open?vault=MyVault") === 0);
         assert.ok(req.url.indexOf("file=some-note") !== -1);
     });
 
-    test("obsidian provider with no vault configured returns null", () => {
-        var p = createExportProvider(baseConfig({ kind: "obsidian", vault: "" }));
+    test("obsidian preset with no vault configured returns null", () => {
+        var p = createExportProvider(baseConfig({
+            kind: "obsidian", vault: "",
+            exportOpenCommand: "obsidian://open?vault={vault}&file={file}"
+        }));
         assert.equal(p.openRequest("some-note.md"), null);
     });
 
-    test("neovim provider with no server configured returns null", () => {
-        var p = createExportProvider(baseConfig({ kind: "neovim" }));
-        assert.equal(p.openRequest("some-note.md"), null);
-    });
+    // ─── {path} substitution: one argv element, never a shell string ───
 
-    test("neovim provider with a server returns a spawnable argv, no shell string", () => {
-        var p = createExportProvider(baseConfig({ kind: "neovim", nvimServer: "/tmp/nvim.sock" }));
+    test("{path} is substituted as its own argv element", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", exportOpenCommand: "code {path}" }));
         var req = p.openRequest("some-note.md");
-        assert.ok(req);
         assert.ok(Array.isArray(req.argv));
-        assert.equal(req.argv[0], "nvim");
-        assert.ok(req.argv.indexOf("/tmp/nvim.sock") !== -1);
+        assert.deepEqual(req.argv, ["code", "/home/user/vault/some-note.md"]);
     });
 
-    test("null relPath never produces an open request", () => {
-        var p = createExportProvider(baseConfig({ kind: "obsidian" }));
-        assert.equal(p.openRequest(null), null);
+    test("a template with flags before {path} keeps them as separate argv elements", () => {
+        var p = createExportProvider(baseConfig({ kind: "custom", exportOpenCommand: "emacsclient -n {path}" }));
+        var req = p.openRequest("some-note.md");
+        assert.deepEqual(req.argv, ["emacsclient", "-n", "/home/user/vault/some-note.md"]);
+    });
+
+    test("a path containing spaces, quotes and semicolons survives intact as ONE argv element", () => {
+        var p = createExportProvider(baseConfig({ kind: "vscode", exportOpenCommand: "code {path}" }));
+        var hostileRelPath = "evil; rm -rf ~ \"'.md";
+        var req = p.openRequest(hostileRelPath);
+        assert.ok(Array.isArray(req.argv));
+        // Never re-fragmented into multiple argv elements by the spaces
+        // inside it -- the split happens on the TEMPLATE, before {path} is
+        // substituted in, not on the result.
+        assert.equal(req.argv.length, 2);
+        assert.equal(req.argv[1], "/home/user/vault/" + hostileRelPath);
+    });
+
+    test("a template with no {path} is rejected -- it would silently open nothing", () => {
+        var p = createExportProvider(baseConfig({ kind: "custom", exportOpenCommand: "code" }));
+        assert.equal(p.openRequest("some-note.md"), null);
+    });
+
+    test("$NVIM is never expanded -- it is handed through as a literal argv element", () => {
+        var preset = EXPORT_OPEN_PRESETS.find(p => p.id === "nvim-remote");
+        var p = createExportProvider(baseConfig({ kind: "custom", exportOpenCommand: preset.template }));
+        var req = p.openRequest("some-note.md");
+        assert.ok(req.argv.indexOf("$NVIM") !== -1);
+    });
+
+    // ─── every preset ───
+
+    describe("every preset parses to a plausible request", () => {
+        EXPORT_OPEN_PRESETS.forEach(function (preset) {
+            test(preset.id, () => {
+                var isObsidian = preset.id === "obsidian";
+                var p = createExportProvider(baseConfig({
+                    kind: isObsidian ? "obsidian" : preset.id,
+                    vault: "MyVault",
+                    exportOpenCommand: preset.template
+                }));
+                var req = p.openRequest("some-note.md");
+
+                if (!preset.template) {
+                    // "None" and "Custom" ship with an empty template --
+                    // there is nothing to open until the user types one.
+                    assert.equal(req, null);
+                    return;
+                }
+
+                assert.ok(req, preset.id + " produced no request");
+                if (isObsidian) {
+                    assert.equal(typeof req.url, "string");
+                    assert.ok(req.url.indexOf("obsidian://") === 0);
+                } else {
+                    assert.ok(Array.isArray(req.argv), preset.id + " did not produce an argv");
+                    assert.ok(req.argv.length > 0);
+                    assert.ok(req.argv.indexOf("/home/user/vault/some-note.md") !== -1,
+                        preset.id + " never substituted {path}");
+                }
+            });
+        });
+    });
+});
+
+// ─── resolveExportConfig: legacy exportKind migration (stage 4d) ───
+
+describe("resolveExportConfig: migrating exportKind to a preset", () => {
+    test("legacy exportKind: 'obsidian' migrates to the obsidian preset, not to None", () => {
+        var resolved = resolveExportConfig({ exportKind: "obsidian" });
+        assert.equal(resolved.exportKind, "obsidian");
+        assert.equal(resolved.exportOpenCommand, EXPORT_OPEN_PRESETS.find(p => p.id === "obsidian").template);
+    });
+
+    test("legacy exportKind: 'neovim' migrates to the running-instance preset, not to None", () => {
+        var resolved = resolveExportConfig({ exportKind: "neovim" });
+        assert.equal(resolved.exportKind, "nvim-remote");
+        assert.equal(resolved.exportOpenCommand, EXPORT_OPEN_PRESETS.find(p => p.id === "nvim-remote").template);
+    });
+
+    test("legacy exportKind: 'markdown' has no equivalent open command -- resolves to None", () => {
+        var resolved = resolveExportConfig({ exportKind: "markdown" });
+        assert.equal(resolved.exportKind, "none");
+        assert.equal(resolved.exportOpenCommand, "");
+    });
+
+    test("no saved config at all resolves to None, not a throw", () => {
+        var resolved = resolveExportConfig(undefined);
+        assert.equal(resolved.exportKind, "none");
+        assert.equal(resolved.exportOpenCommand, "");
+    });
+
+    test("a config that already has exportOpenCommand is left alone, even if empty", () => {
+        var resolved = resolveExportConfig({ exportKind: "custom", exportOpenCommand: "" });
+        assert.equal(resolved.exportKind, "custom");
+        assert.equal(resolved.exportOpenCommand, "");
+    });
+
+    test("a config already in the new shape keeps its own command untouched", () => {
+        var resolved = resolveExportConfig({ exportKind: "vscode", exportOpenCommand: "code -r {path}" });
+        assert.equal(resolved.exportKind, "vscode");
+        assert.equal(resolved.exportOpenCommand, "code -r {path}");
+    });
+});
+
+describe("EXPORT_OPEN_PRESETS", () => {
+    test("has exactly the ten presets from the design doc", () => {
+        assert.equal(EXPORT_OPEN_PRESETS.length, 10);
+    });
+
+    test("every preset has an id, a label, and a template field", () => {
+        EXPORT_OPEN_PRESETS.forEach(function (preset) {
+            assert.equal(typeof preset.id, "string");
+            assert.ok(preset.id.length > 0);
+            assert.equal(typeof preset.label, "string");
+            assert.ok(preset.label.length > 0);
+            assert.equal(typeof preset.template, "string");
+        });
+    });
+
+    test("ids are unique", () => {
+        var ids = EXPORT_OPEN_PRESETS.map(p => p.id);
+        assert.equal(new Set(ids).size, ids.length);
     });
 });
 
@@ -362,6 +537,41 @@ describe("the ordinary case", () => {
         kind: "markdown", root: "Clippings", filenameTemplate: "{title}.md"
     });
 
+
+    // Notes are now written in PARALLEL (one FileView per file), so two
+    // articles resolving to one path is silent data loss rather than a
+    // cosmetic clash. Clamping the assembled "title-hash" truncated from the
+    // end and ate the hash, so any two long titles sharing a prefix collided.
+    test("long titles stay distinct: the hash is reserved, not truncated away", () => {
+        const p = createExportProvider({ kind: "markdown", root: "C", filenameTemplate: "{title}.md" });
+        const arts = [
+            { id: "m:7", title: "x".repeat(400) },
+            { id: "m:8", title: "x".repeat(400) },
+            { id: "m:9", title: "日".repeat(300) },
+            { id: "m:10", title: "日".repeat(300) }
+        ];
+        const paths = arts.map(a => p.buildNote(a, []).relPath);
+        assert.equal(new Set(paths).size, paths.length, "two articles must never share a path");
+        paths.forEach(pth => {
+            assert.ok(Buffer.byteLength(pth) <= 255, pth.length + " bytes exceeds NAME_MAX");
+            assert.match(pth, /-[0-9a-f]+\.md$/, "the disambiguating hash must survive clamping");
+        });
+    });
+
+    // Obsidian and every other markdown tool read tags from frontmatter. A
+    // "[[rss]]" line under the article added nothing and left a stray line to
+    // delete in every note.
+    test("tags appear in frontmatter only, never in the body", () => {
+        const p = createExportProvider({
+            kind: "obsidian", root: "C", vault: "v",
+            filenameTemplate: "{title}.md", tags: ["rss", "news"]
+        });
+        const content = p.buildNote({ id: "m:1", title: "T", link: "https://x/1", description: "Body." }, []).content;
+        const body = content.split(/^---$/m).slice(2).join("---");
+        assert.match(content, /^tags: \["rss", "news"\]$/m, "frontmatter keeps the tags");
+        assert.doesNotMatch(body, /\[\[rss\]\]/, "no wikilink tags in the body");
+        assert.doesNotMatch(body, /#rss\b/, "no hashtags in the body either");
+    });
     test("a normal title yields one extension, hash before it", () => {
         var r = provider.buildNote({ id: "m:42", title: "Cloud licensing probe" }, []);
         assert.match(r.relPath, /^Cloud licensing probe-[0-9a-f]+\.md$/);
@@ -396,6 +606,328 @@ describe("the ordinary case", () => {
     });
 });
 
+// ─── provenance (stage 4c-b) ───
+//
+// `extracted:` is a bare boolean, not a quoted YAML scalar (there's nothing
+// attacker-controlled about it -- it's computed, never templated from feed
+// content), so these check the line directly rather than through
+// parseFrontmatter's quoted-scalar-only parser.
+
+describe("buildNote: provenance of the body text", () => {
+    test("no extracted arg at all (old call signature): extracted: false, body is the summary", () => {
+        var p = createExportProvider(baseConfig());
+        var result = p.buildNote(article({ description: "The feed summary." }), []);
+        assert.ok(!result.error);
+        assert.match(result.content, /^extracted: false$/m);
+        assert.ok(result.content.indexOf("The feed summary.") !== -1);
+    });
+
+    test("extracted result with usedFallback: false -> extracted: true, body is the extracted markdown", () => {
+        var p = createExportProvider(baseConfig());
+        var extracted = { markdown: "Full article text goes here.", textLength: 28, usedFallback: false, reason: "" };
+        var result = p.buildNote(article({ description: "The feed summary." }), [], extracted);
+        assert.ok(!result.error);
+        assert.match(result.content, /^extracted: true$/m);
+        assert.ok(result.content.indexOf("Full article text goes here.") !== -1);
+        assert.equal(result.content.indexOf("The feed summary."), -1);
+    });
+
+    test("extracted result with usedFallback: true -> extracted: false, body is the summary, not the rejected markdown", () => {
+        var p = createExportProvider(baseConfig());
+        var extracted = { markdown: "The feed summary.", textLength: 18, usedFallback: true, reason: "looks like an index page" };
+        var result = p.buildNote(article({ description: "The feed summary." }), [], extracted);
+        assert.ok(!result.error);
+        assert.match(result.content, /^extracted: false$/m);
+    });
+
+    test("extracted result present but markdown empty -> extracted: false (nothing usable came back)", () => {
+        var p = createExportProvider(baseConfig());
+        var extracted = { markdown: "", textLength: 0, usedFallback: false, reason: "" };
+        var result = p.buildNote(article({ description: "The feed summary." }), [], extracted);
+        assert.match(result.content, /^extracted: false$/m);
+        assert.ok(result.content.indexOf("The feed summary.") !== -1);
+    });
+});
+
+// ─── article fetch request (stage 4c-b) ───
+
+describe("buildArticleFetchRequest", () => {
+    test("returns a spawnable argv, no shell string", () => {
+        var req = buildArticleFetchRequest("https://example.com/article");
+        assert.ok(Array.isArray(req.argv));
+        assert.equal(req.argv[0], "curl");
+        assert.equal(req.argv[req.argv.length - 1], "https://example.com/article");
+    });
+
+    test("follows redirects (-L) -- articles carry no credentials to leak", () => {
+        var req = buildArticleFetchRequest("https://example.com/article");
+        assert.ok(req.argv.indexOf("-L") !== -1);
+    });
+
+    test("pins protocol to http/https on request and redirect", () => {
+        var req = buildArticleFetchRequest("https://example.com/article");
+        assert.ok(req.argv.indexOf("--proto") !== -1);
+        assert.equal(req.argv[req.argv.indexOf("--proto") + 1], "=http,https");
+        assert.ok(req.argv.indexOf("--proto-redir") !== -1);
+        assert.equal(req.argv[req.argv.indexOf("--proto-redir") + 1], "=http,https");
+    });
+
+    test("bounds download size and time", () => {
+        var req = buildArticleFetchRequest("https://example.com/article");
+        assert.ok(req.argv.indexOf("--max-filesize") !== -1);
+        assert.ok(req.argv.indexOf("--connect-timeout") !== -1);
+        assert.ok(req.argv.indexOf("--max-time") !== -1);
+    });
+});
+
+describe("articleSummaryText", () => {
+    test("prefers description, falls back to content, then empty string", () => {
+        assert.equal(articleSummaryText({ description: "d", content: "c" }), "d");
+        assert.equal(articleSummaryText({ content: "c" }), "c");
+        assert.equal(articleSummaryText({}), "");
+        assert.equal(articleSummaryText(null), "");
+    });
+});
+
+// ─── images: collectImageUrls ───
+
+describe("collectImageUrls", () => {
+    test("collects markdown image URLs in order", () => {
+        var md = "intro ![a](https://example.com/1.jpg) middle ![b](https://example.com/2.png) end";
+        var urls = collectImageUrls(md, {}, isSafeUrl);
+        assert.deepEqual(urls, ["https://example.com/1.jpg", "https://example.com/2.png"]);
+    });
+
+    test("de-duplicates repeated URLs, keeping first-seen order", () => {
+        var md = "![a](https://example.com/1.jpg) ... ![a again](https://example.com/1.jpg)";
+        var urls = collectImageUrls(md, {}, isSafeUrl);
+        assert.deepEqual(urls, ["https://example.com/1.jpg"]);
+    });
+
+    test("appends article.imageUrl if present and not already collected", () => {
+        var md = "![a](https://example.com/1.jpg)";
+        var urls = collectImageUrls(md, { imageUrl: "https://example.com/hero.jpg" }, isSafeUrl);
+        assert.deepEqual(urls, ["https://example.com/1.jpg", "https://example.com/hero.jpg"]);
+    });
+
+    test("does not duplicate article.imageUrl if already in the markdown", () => {
+        var md = "![a](https://example.com/hero.jpg)";
+        var urls = collectImageUrls(md, { imageUrl: "https://example.com/hero.jpg" }, isSafeUrl);
+        assert.deepEqual(urls, ["https://example.com/hero.jpg"]);
+    });
+
+    test("data: URIs are skipped -- already inline, nothing to fetch", () => {
+        var md = "![inline](data:image/png;base64,AAAA) ![remote](https://example.com/1.jpg)";
+        var urls = collectImageUrls(md, {}, isSafeUrl);
+        assert.deepEqual(urls, ["https://example.com/1.jpg"]);
+    });
+
+    test("unsafe URLs are rejected via the injected isSafeUrl", () => {
+        var md = "![a](javascript:alert(1)) ![b](https://example.com/ok.jpg) ![c](ftp://example.com/x.jpg)";
+        var urls = collectImageUrls(md, {}, isSafeUrl);
+        assert.deepEqual(urls, ["https://example.com/ok.jpg"]);
+    });
+
+    test("no markdown and no article.imageUrl -> empty list", () => {
+        assert.deepEqual(collectImageUrls("", {}, isSafeUrl), []);
+        assert.deepEqual(collectImageUrls(null, null, isSafeUrl), []);
+    });
+
+    test("an unsafe article.imageUrl is rejected too", () => {
+        var urls = collectImageUrls("", { imageUrl: "javascript:alert(1)" }, isSafeUrl);
+        assert.deepEqual(urls, []);
+    });
+});
+
+// ─── images: attachmentPath ───
+
+describe("attachmentPath", () => {
+    // The name is SLUGGED, not merely sanitised. These two tests used to
+    // assert "attachments/My Note-1.jpg" -- a path with a space, which is
+    // a legal filename and an illegal markdown link target. The image
+    // downloaded, landed correctly, and would not render in Obsidian.
+    test("basic shape: attachments/<note-slug>-<index>.<ext>, with no spaces", () => {
+        var p = attachmentPath("My Note", "https://example.com/photo.jpg", 1);
+        assert.equal(p, "attachments/My-Note-1.jpg");
+    });
+
+    test("a path safe to drop straight into ![](...) with no escaping", () => {
+        var p = attachmentPath("Reform's £72m donations, 'in line with law'-cdadf470",
+                               "https://example.com/photo.jpg", 0);
+        assert.ok(!/[\s'"(),\[\]]/.test(p), "unsafe characters remain in: " + p);
+        assert.match(p, /^attachments\/[A-Za-z0-9._-]+\.jpg$/);
+    });
+
+    test("deterministic: same note + URL + index -> same path every time", () => {
+        var a = attachmentPath("My Note", "https://example.com/photo.jpg", 1);
+        var b = attachmentPath("My Note", "https://example.com/photo.jpg", 1);
+        assert.equal(a, b);
+    });
+
+    test("respects options.attachmentDir override", () => {
+        var p = attachmentPath("My Note", "https://example.com/photo.jpg", 1, { attachmentDir: "images" });
+        assert.equal(p, "images/My-Note-1.jpg");
+    });
+
+    test("extension derived from the URL path, ignoring a query string", () => {
+        var p = attachmentPath("Note", "https://example.com/photo.png?w=800&h=600", 1);
+        assert.match(p, /\.png$/);
+    });
+
+    test("missing extension falls back to the default", () => {
+        var p = attachmentPath("Note", "https://example.com/photo", 1);
+        assert.match(p, /\.jpg$/);
+    });
+
+    test("absurd/unknown extension falls back to the default rather than being trusted", () => {
+        var p = attachmentPath("Note", "https://example.com/file.exe", 1);
+        assert.match(p, /\.jpg$/);
+        var p2 = attachmentPath("Note", "https://example.com/file." + "x".repeat(50), 1);
+        assert.match(p2, /\.jpg$/);
+    });
+
+    test("path traversal in the note basename never reaches the output path", () => {
+        var p = attachmentPath("../../../etc/passwd", "https://example.com/photo.jpg", 1);
+        assert.equal(p.indexOf(".."), -1);
+        assert.equal(p.indexOf("/etc/"), -1);
+        // Still a single safe segment under the attachment dir.
+        assert.match(p, /^attachments\/[^/]+\.jpg$/);
+    });
+
+    test("embedded slashes in the note basename are stripped, not treated as directories", () => {
+        var p = attachmentPath("a/b/c", "https://example.com/photo.jpg", 1);
+        assert.match(p, /^attachments\/[^/]+\.jpg$/);
+    });
+
+    test("an absolute-looking note basename does not produce an absolute path", () => {
+        var p = attachmentPath("/etc/passwd", "https://example.com/photo.jpg", 1);
+        assert.notEqual(p.charAt(0), "/");
+    });
+
+    test("path traversal smuggled into the extension is neutralised", () => {
+        var p = attachmentPath("Note", "https://example.com/x.jpg/../../../etc/passwd", 1);
+        assert.equal(p.indexOf(".."), -1);
+        assert.match(p, /\.jpg$/); // "passwd" is not a known image extension -> default
+    });
+
+    test("a very long note basename is clamped, extension and index preserved", () => {
+        var p = attachmentPath("x".repeat(500), "https://example.com/photo.jpg", 3);
+        assert.ok(Buffer.byteLength(p.split("/")[1], "utf8") <= 255);
+        assert.match(p, /-3\.jpg$/);
+    });
+
+    test("unicode note basenames are preserved without corrupting the path", () => {
+        var p = attachmentPath("漢字タイトル", "https://example.com/photo.jpg", 1);
+        assert.match(p, /^attachments\/.+-1\.jpg$/);
+        assert.equal(Buffer.byteLength(p.split("/")[1], "utf8"), Buffer.byteLength(p.split("/")[1], "utf8"));
+    });
+
+    test("different indexes for the same note+URL never collide", () => {
+        var a = attachmentPath("Note", "https://example.com/photo.jpg", 1);
+        var b = attachmentPath("Note", "https://example.com/photo.jpg", 2);
+        assert.notEqual(a, b);
+    });
+});
+
+// ─── images: buildImageFetchRequest ───
+
+describe("buildImageFetchRequest", () => {
+    test("returns a spawnable argv, no shell string, never called over the network here", () => {
+        var req = buildImageFetchRequest("https://example.com/photo.jpg", "/vault/attachments/Note-1.jpg");
+        assert.ok(Array.isArray(req.argv));
+        assert.equal(req.argv[0], "curl");
+    });
+
+    test("writes directly to destPath via -o rather than stdout", () => {
+        var req = buildImageFetchRequest("https://example.com/photo.jpg", "/vault/attachments/Note-1.jpg");
+        var oIdx = req.argv.indexOf("-o");
+        assert.ok(oIdx !== -1);
+        assert.equal(req.argv[oIdx + 1], "/vault/attachments/Note-1.jpg");
+    });
+
+    test("the image URL is the final argv element", () => {
+        var req = buildImageFetchRequest("https://example.com/photo.jpg", "/vault/attachments/Note-1.jpg");
+        assert.equal(req.argv[req.argv.length - 1], "https://example.com/photo.jpg");
+    });
+
+    test("mirrors buildArticleFetchRequest's hardening: timeouts, protocol pinning, size cap, UA", () => {
+        var req = buildImageFetchRequest("https://example.com/photo.jpg", "/vault/a.jpg");
+        assert.ok(req.argv.indexOf("--connect-timeout") !== -1);
+        assert.ok(req.argv.indexOf("--max-time") !== -1);
+        assert.ok(req.argv.indexOf("--max-filesize") !== -1);
+        assert.equal(req.argv[req.argv.indexOf("--proto") + 1], "=http,https");
+        assert.equal(req.argv[req.argv.indexOf("--proto-redir") + 1], "=http,https");
+        var uaIdx = req.argv.indexOf("-A");
+        assert.ok(uaIdx !== -1);
+        var articleReq = buildArticleFetchRequest("https://example.com/article");
+        assert.equal(req.argv[uaIdx + 1], articleReq.argv[articleReq.argv.indexOf("-A") + 1]);
+    });
+});
+
+// ─── images: rewriteImageLinks ───
+
+describe("rewriteImageLinks", () => {
+    test("rewrites a successfully-fetched image to its local path", () => {
+        var md = "![alt](https://example.com/1.jpg)";
+        var out = rewriteImageLinks(md, { "https://example.com/1.jpg": "attachments/Note-1.jpg" });
+        assert.equal(out, "![alt](attachments/Note-1.jpg)");
+    });
+
+    test("partial failure: fetched image is rewritten, failed one keeps its original URL", () => {
+        var md = "![a](https://example.com/ok.jpg) and ![b](https://example.com/fail.jpg)";
+        // Only the successful download appears in the map -- the failed one
+        // is simply absent, per the degradation rule.
+        var out = rewriteImageLinks(md, { "https://example.com/ok.jpg": "attachments/Note-1.jpg" });
+        assert.ok(out.indexOf("![a](attachments/Note-1.jpg)") !== -1);
+        assert.ok(out.indexOf("![b](https://example.com/fail.jpg)") !== -1);
+    });
+
+    test("preserves an image title after the URL", () => {
+        var md = '![alt](https://example.com/1.jpg "a caption")';
+        var out = rewriteImageLinks(md, { "https://example.com/1.jpg": "attachments/Note-1.jpg" });
+        assert.equal(out, '![alt](attachments/Note-1.jpg "a caption")');
+    });
+
+    test("empty map leaves markdown untouched", () => {
+        var md = "![alt](https://example.com/1.jpg)";
+        assert.equal(rewriteImageLinks(md, {}), md);
+    });
+
+    test("null/undefined markdown or map is handled without throwing", () => {
+        assert.equal(rewriteImageLinks(null, {}), null);
+        assert.equal(rewriteImageLinks("text", null), "text");
+    });
+});
+
+// ─── images: threading through buildNote (default OFF) ───
+
+describe("buildNote: images option", () => {
+    test("images off (no imageMap arg) is byte-identical to the pre-images behaviour", () => {
+        var p = createExportProvider(baseConfig());
+        var art = article({ description: "See ![alt](https://example.com/1.jpg) here." });
+        var withoutArg = p.buildNote(art, []);
+        var withUndefined = p.buildNote(art, [], undefined, undefined);
+        assert.equal(withoutArg.content, withUndefined.content);
+        assert.ok(withoutArg.content.indexOf("https://example.com/1.jpg") !== -1,
+            "image URL must remain untouched when the feature is off");
+    });
+
+    test("images on: successfully-mapped image is rewritten in the note body", () => {
+        var p = createExportProvider(baseConfig());
+        var art = article({ description: "See ![alt](https://example.com/1.jpg) here." });
+        var result = p.buildNote(art, [], undefined, { "https://example.com/1.jpg": "attachments/Note-1.jpg" });
+        assert.ok(result.content.indexOf("attachments/Note-1.jpg") !== -1);
+        assert.equal(result.content.indexOf("https://example.com/1.jpg"), -1);
+    });
+
+    test("images on but map empty (nothing downloaded successfully) keeps original URLs", () => {
+        var p = createExportProvider(baseConfig());
+        var art = article({ description: "See ![alt](https://example.com/1.jpg) here." });
+        var result = p.buildNote(art, [], undefined, {});
+        assert.ok(result.content.indexOf("https://example.com/1.jpg") !== -1);
+    });
+});
+
 // The module is loaded by QML as well as Node. A literal control byte in the
 // source made the file read as binary to grep and friends, and risks being
 // mangled by editors and diff tooling; it must stay escaped.
@@ -404,4 +936,118 @@ test("the source contains no literal control characters", () => {
     var src = fs.readFileSync(require.resolve("../ExportProvider.js"), "utf8");
     var bad = new RegExp("[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f]").exec(src);
     assert.equal(bad, null, "use an escape such as \\u0000, never a raw control byte");
+});
+
+// ─── buildImageFetchRequest must create its own directory ───
+//
+// Regression cover for a shipped bug. curl refuses to write into a directory
+// that does not exist and exits 23; the attachments folder never exists on a
+// first export, so every image failed, no folder appeared, and the note kept
+// its remote URLs. The symptom was indistinguishable from the feature being
+// switched off, which is why it survived a manual test pass.
+
+describe("buildImageFetchRequest directory creation", () => {
+    const EP = require("../ExportProvider.js");
+
+    test("passes --create-dirs so a first export can write its attachments folder", () => {
+        const req = EP.buildImageFetchRequest("https://ex.com/a.jpg", "attachments/note-0.jpg");
+        assert.ok(req.argv.indexOf("--create-dirs") !== -1,
+            "--create-dirs missing: every first-time image fetch will exit 23");
+    });
+
+    test("--create-dirs comes before -o, which is what curl requires", () => {
+        const req = EP.buildImageFetchRequest("https://ex.com/a.jpg", "attachments/note-0.jpg");
+        assert.ok(req.argv.indexOf("--create-dirs") < req.argv.indexOf("-o"));
+    });
+
+    test("still writes to the destination it was given", () => {
+        const req = EP.buildImageFetchRequest("https://ex.com/a.jpg", "attachments/note-0.jpg");
+        assert.equal(req.argv[req.argv.indexOf("-o") + 1], "attachments/note-0.jpg");
+    });
+});
+
+// ─── the lead image must actually appear in the note ───
+//
+// Regression cover for a half-working export. Most feed items carry a
+// thumbnail and no inline images, so collectImageUrls downloaded the file,
+// attachmentPath named it, curl wrote it into the attachments folder -- and
+// the note never mentioned it, because rewriteImageLinks only rewrites
+// markdown that is already there. The image existed on disk and was invisible.
+
+describe("withLeadImage", () => {
+    const EP = require("../ExportProvider.js");
+    const article = { title: "A Headline", imageUrl: "https://ex.com/lead.jpg" };
+    const map = { "https://ex.com/lead.jpg": "attachments/note-0.jpg" };
+
+    test("embeds the downloaded lead image just after the title", () => {
+        const out = EP.withLeadImage("# A Headline\n\nBody text.", article, map);
+        const lines = out.split("\n");
+        assert.ok(lines[0].startsWith("# "));
+        assert.equal(lines[2], "![A Headline](attachments/note-0.jpg)");
+    });
+
+    test("does nothing when the image was not downloaded", () => {
+        const md = "# A Headline\n\nBody.";
+        assert.equal(EP.withLeadImage(md, article, {}), md);
+    });
+
+    test("does not duplicate an image the body already shows", () => {
+        const md = "# A Headline\n\n![x](attachments/note-0.jpg)\n\nBody.";
+        assert.equal(EP.withLeadImage(md, article, map), md);
+    });
+
+    test("falls back to the top when there is no heading to anchor to", () => {
+        const out = EP.withLeadImage("Just body text.", article, map);
+        assert.ok(out.startsWith("![A Headline](attachments/note-0.jpg)"));
+    });
+
+    test("strips brackets from the alt text so the markdown cannot break", () => {
+        const out = EP.withLeadImage("# T", { title: "A [weird] title", imageUrl: "https://ex.com/lead.jpg" }, map);
+        assert.ok(out.includes("![A weird title]("), out);
+    });
+
+    test("null and malformed inputs do not throw", () => {
+        assert.doesNotThrow(() => EP.withLeadImage(null, article, map));
+        assert.doesNotThrow(() => EP.withLeadImage("# T", null, map));
+        assert.doesNotThrow(() => EP.withLeadImage("# T", article, null));
+        assert.doesNotThrow(() => EP.withLeadImage("# T", {}, map));
+    });
+
+    test("an article with no imageUrl is untouched", () => {
+        const md = "# T\n\nBody.";
+        assert.equal(EP.withLeadImage(md, { title: "T" }, map), md);
+    });
+});
+
+// ─── clearing the attachment folder means "beside the notes" ───
+//
+// The default is a folder the user never chose, so images landing in a
+// subfolder read as the setting being ignored. Clearing the field has to be a
+// real choice rather than falling back to the default, otherwise the setting
+// has a value that cannot be selected.
+
+describe("attachmentDir edge cases", () => {
+    const EP = require("../ExportProvider.js");
+
+    test("omitted entirely uses the default folder", () => {
+        assert.equal(EP.attachmentPath("My Note", "https://x/a.jpg", 0, {}), "attachments/My-Note-0.jpg");
+        assert.equal(EP.attachmentPath("My Note", "https://x/a.jpg", 0), "attachments/My-Note-0.jpg");
+    });
+
+    test("cleared to empty puts images beside the notes, with no stray slash", () => {
+        assert.equal(EP.attachmentPath("My Note", "https://x/a.jpg", 0, { attachmentDir: "" }), "My-Note-0.jpg");
+    });
+
+    test("whitespace-only counts as cleared", () => {
+        assert.equal(EP.attachmentPath("My Note", "https://x/a.jpg", 0, { attachmentDir: "   " }), "My-Note-0.jpg");
+    });
+
+    test("an explicit folder is honoured", () => {
+        assert.equal(EP.attachmentPath("My Note", "https://x/a.jpg", 0, { attachmentDir: "images" }), "images/My-Note-0.jpg");
+    });
+
+    test("traversal in the folder name is still refused", () => {
+        const p = EP.attachmentPath("My Note", "https://x/a.jpg", 0, { attachmentDir: "../../etc" });
+        assert.ok(p.indexOf("..") === -1, "escaped the export root: " + p);
+    });
 });

@@ -1,7 +1,7 @@
 # Design: search focus + search-during-selection
 
 Date: 2026-09-07
-Status: approved, ready to implement
+Status: implemented — shipped in 2.4.0
 Scope: two bugs in `DankRssWidget.qml` + one behaviour change in `ReaderState.js`
 
 > **Status:** implemented. `HoverHandler`/`acceptsKeyboardFocus`, the

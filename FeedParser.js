@@ -103,6 +103,48 @@ function isSafeUrl(url) {
     return /^https?:\/\//i.test(trimmed);
 }
 
+// The audio enclosure, if a feed carries one -- podcasts almost always do.
+//
+// Deliberately audio only. A feed may enclose a PDF, a torrent or a video, and
+// handing an arbitrary enclosure to a media player is how "play this episode"
+// becomes "open whatever the feed felt like attaching". The same isSafeUrl
+// gate every other URL in this file passes applies here too, for the same
+// reason: a malicious feed must not be able to point this at file: or data:.
+//
+// Returns "" when there is nothing playable, so the caller's check is a plain
+// truthiness test and the field is absent-shaped rather than null-shaped,
+// matching imageUrl beside it.
+function extractAudioUrl(block) {
+    if (!block)
+        return "";
+
+    var patterns = [
+        /<enclosure[^>]*type=["']audio\/[^"']*["'][^>]*url=["']([^"']+)["']/i,
+        /<enclosure[^>]*url=["']([^"']+)["'][^>]*type=["']audio\//i
+    ];
+    for (var i = 0; i < patterns.length; i++) {
+        var m = block.match(patterns[i]);
+        if (m && m[1] && isSafeUrl(m[1]))
+            return cleanText(m[1]);
+    }
+    return "";
+}
+
+// Miniflux hands us entry.enclosures directly rather than raw XML, so the
+// regex path above never sees it -- same split as minifluxEntryImage.
+function minifluxEntryAudio(entry) {
+    var enclosures = (entry && entry.enclosures) || [];
+    for (var k = 0; k < enclosures.length; k++) {
+        var enc = enclosures[k];
+        if (!enc || !enc.url)
+            continue;
+        var mime = enc.mime_type || "";
+        if (mime.indexOf("audio/") === 0 && isSafeUrl(enc.url))
+            return enc.url;
+    }
+    return "";
+}
+
 function extractImageUrl(block, content) {
     var url = "";
 
@@ -198,7 +240,8 @@ function parseRssFeed(xml, sourceName, sourceUrl) {
             timestamp: pubDate ? new Date(pubDate).getTime() || 0 : 0,
             source: sourceName,
             sourceUrl: sourceUrl || "",
-            imageUrl: extractImageUrl(block, description || "")
+            imageUrl: extractImageUrl(block, description || ""),
+            audioUrl: extractAudioUrl(block)
         });
     }
     return items;
@@ -280,7 +323,8 @@ function parseAtomFeed(xml, sourceName, sourceUrl) {
             timestamp: updated ? new Date(updated).getTime() || 0 : 0,
             source: sourceName,
             sourceUrl: sourceUrl || "",
-            imageUrl: extractImageUrl(block, summary || "")
+            imageUrl: extractImageUrl(block, summary || ""),
+            audioUrl: extractAudioUrl(block)
         });
     }
     return items;
@@ -442,7 +486,8 @@ function parseMinifluxEntries(json, defaultSourceUrl) {
             timestamp: timestamp,
             source: source,
             sourceUrl: defaultSourceUrl || "",
-            imageUrl: minifluxEntryImage(entry)
+            imageUrl: minifluxEntryImage(entry),
+            audioUrl: minifluxEntryAudio(entry)
         });
 
         serverStatus.push({
@@ -472,22 +517,341 @@ function minifluxEntryImage(entry) {
     return extractImageUrl("", entry.content || entry.summary || "");
 }
 
+// Decodes the standard XML entities in an already-extracted attribute value.
+// &amp; is decoded LAST, matching cleanText's ordering: it must not run
+// first, or a literal "&lt;" written by an encoder that escaped "&" before
+// "<" would collapse in one step to "<" instead of surviving as text.
+// (buildOpml's escapeXmlAttr encodes "&" first for the same reason in
+// reverse, so encode/decode are symmetric round-trips of each other.)
+function decodeXmlEntities(text) {
+    if (!text) return "";
+    text = text.replace(/&lt;/g, "<");
+    text = text.replace(/&gt;/g, ">");
+    text = text.replace(/&quot;/g, '"');
+    text = text.replace(/&#39;/g, "'");
+    text = text.replace(/&apos;/g, "'");
+    text = text.replace(/&#x([0-9a-fA-F]+);/g, function (m, hex) {
+        return String.fromCharCode(parseInt(hex, 16));
+    });
+    text = text.replace(/&#(\d+);/g, function (m, dec) {
+        return String.fromCharCode(parseInt(dec, 10));
+    });
+    text = text.replace(/&amp;/g, "&");
+    return text;
+}
+
+// XML-escapes a value for use inside a double-quoted attribute. Order
+// matters: "&" must be escaped FIRST, or the "&" introduced by escaping
+// "<"/">"/etc would itself get re-escaped into "&amp;lt;" and so on.
+function escapeXmlAttr(value) {
+    return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&apos;");
+}
+
+// Same escaping, for element text content (<title>...</title>) rather than
+// an attribute value -- quotes don't need escaping there, but leaving them
+// unescaped is also harmless, so this just reuses escapeXmlAttr.
+function escapeXmlText(value) {
+    return escapeXmlAttr(value);
+}
+
 function parseOpml(xml) {
     var feeds = [];
     var outlineRegex = /<outline[^>]*xmlUrl=["']([^"']+)["'][^>]*>/gi;
     var match;
     while ((match = outlineRegex.exec(xml)) !== null) {
         var fullTag = match[0];
-        var url = match[1].replace(/&amp;/g, "&");
+        var url = decodeXmlEntities(match[1]);
 
         var titleAttr = fullTag.match(/\btitle=["']([^"']*)["']/i);
         var textAttr = fullTag.match(/\btext=["']([^"']*)["']/i);
         var rawName = titleAttr ? titleAttr[1] : (textAttr ? textAttr[1] : url);
-        var name = rawName.replace(/&amp;/g, "&");
+        var name = decodeXmlEntities(rawName);
+
+        // Gated here, at the parse boundary, exactly as imageUrl and audioUrl
+        // already are. An OPML file is attacker-influenced input like any other
+        // feed content, and unlike a hand-typed feed it never passes through
+        // validateFeedUrl -- the import path pushes straight into the feed
+        // list, and every enabled feed's url then becomes a curl argument on
+        // every refresh, unattended. A value shaped like a curl flag has no
+        // business getting that far.
+        if (!isSafeUrl(url))
+            continue;
 
         feeds.push({ name: name, url: url });
     }
     return feeds;
+}
+
+// Inverse of parseOpml: turns the widget's feed array into an OPML 2.0
+// document. feeds is [{ name, url, enabled }] -- the same shape
+// DankRssWidgetSettings.qml keeps. `enabled` is deliberately ignored: OPML
+// is an interchange format for "the feeds I subscribe to", and enabled/
+// disabled is local UI state about how THIS widget currently displays them,
+// not a property of the feed itself. Exporting only the enabled subset
+// would silently drop feeds from a file the user explicitly asked to back
+// up or hand to another reader.
+//
+// options.dateCreated is taken as a plain string/value to embed verbatim
+// (e.g. the caller passes `new Date().toUTCString()`), never read from the
+// clock in here -- this file does no I/O and nothing time-dependent, so a
+// given input always produces the same output, which is what makes the
+// round-trip test (and any test at all) deterministic. Omitting it entirely
+// when not supplied avoids emitting a fake/misleading date.
+function buildOpml(feeds, options) {
+    options = options || {};
+    var title = (options && options.title) || "Dank RSS Widget Feeds";
+    var list = Array.isArray(feeds) ? feeds : [];
+
+    var lines = [];
+    for (var i = 0; i < list.length; i++) {
+        var feed = list[i];
+        if (!feed || !feed.url) continue; // garbage entries are skipped, not thrown
+
+        var name = feed.name || feed.url;
+        lines.push(
+            '        <outline text="' + escapeXmlAttr(name) + '" title="' + escapeXmlAttr(name) +
+            '" type="rss" xmlUrl="' + escapeXmlAttr(feed.url) + '"/>'
+        );
+    }
+
+    var head = '    <head>\n        <title>' + escapeXmlText(title) + '</title>\n';
+    if (options.dateCreated) {
+        head += '        <dateCreated>' + escapeXmlText(options.dateCreated) + '</dateCreated>\n';
+    }
+    head += '    </head>\n';
+
+    var body = '    <body>\n' + (lines.length ? lines.join("\n") + "\n" : "") + '    </body>\n';
+
+    return '<?xml version="1.0" encoding="UTF-8"?>\n<opml version="2.0">\n' + head + body + '</opml>\n';
+}
+
+// ─── feed autodiscovery ───
+//
+// Given a site's raw HTML, finds the <link rel="alternate"> feed(s) declared
+// in its <head>, the same way a browser or feed reader's "subscribe" button
+// does. Kept deliberately independent of HtmlExtract.js's tokenizer even
+// though the approach (quote-aware scan to the tag's ">", then a
+// quote-or-unquoted attribute regex) is the same one HtmlExtract.js uses --
+// cross-module require() doesn't work under QML (see file header), so this
+// is a second, small, purpose-built copy rather than a shared import. If a
+// third module ever needs the same tag scanning, it's worth promoting to a
+// function both modules take as an argument; for two call sites duplicating
+// ~15 lines, that indirection isn't worth it yet.
+
+var FEED_LINK_TYPE_LABELS = {
+    "application/rss+xml": "rss",
+    "application/atom+xml": "atom",
+    "application/json": "json"
+};
+
+// Isolates the document's <head>...</head> so a <link> mentioned in a
+// comment, a code sample in the body, or a template string in a <script>
+// later on the page can't be mistaken for a real feed declaration. Falls
+// back to "everything before <body>" for pages missing a <head> tag
+// entirely -- broken markup autodiscovery has to tolerate in the wild.
+function extractHeadSection(html) {
+    if (!html) return "";
+    var headOpen = /<head[\s>]/i.exec(html);
+    if (!headOpen) {
+        var bodyOpen = /<body[\s>]/i.exec(html);
+        return bodyOpen ? html.slice(0, bodyOpen.index) : html;
+    }
+    var rest = html.slice(headOpen.index);
+    var headClose = /<\/head\s*>/i.exec(rest);
+    return headClose ? rest.slice(0, headClose.index) : rest;
+}
+
+// Quote-aware scan from just past "<link" to the tag's closing ">", so a
+// quoted attribute value that happens to contain ">" can't end the tag
+// early. Mirrors HtmlExtract.js's scanTagEnd -- see the note above.
+function scanLinkTagEnd(html, pos) {
+    var quote = null;
+    for (var i = pos; i < html.length; i++) {
+        var c = html.charAt(i);
+        if (quote) {
+            if (c === quote) quote = null;
+            continue;
+        }
+        if (c === '"' || c === "'") { quote = c; continue; }
+        if (c === ">") {
+            var selfClosed = i > pos && html.charAt(i - 1) === "/";
+            return { end: i, attrsStr: html.slice(pos, selfClosed ? i - 1 : i) };
+        }
+    }
+    return { end: -1, attrsStr: "" };
+}
+
+// Attribute values may be double-quoted, single-quoted, or bare
+// (rel=alternate) per HTML5, and real-world <link> tags use all three.
+function parseLinkAttrs(attrsStr) {
+    var attrs = {};
+    var re = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
+    var m;
+    while ((m = re.exec(attrsStr)) !== null) {
+        var name = m[1].toLowerCase();
+        var value = m[3] !== undefined ? m[3] : (m[4] !== undefined ? m[4] : m[5]);
+        attrs[name] = value;
+    }
+    return attrs;
+}
+
+// Resolves an href found in a page against that page's own URL. Same
+// algorithm as HtmlExtract.js's resolveHref (absolute / protocol-relative /
+// root-relative / directory-relative, with ../ and ./ collapsed by hand
+// since this file, like that one, runs under QML's JS engine and has no
+// URL class to lean on) -- duplicated for the same cross-module reason
+// noted above. Safety is NOT this function's job: isSafeUrl (already in
+// this file) is the single allowlist every caller here runs the result
+// through afterwards.
+function resolveFeedUrl(href, baseUrl) {
+    var h = String(href || "").trim();
+    if (!h) return "";
+
+    if (/^[a-z][a-z0-9+.-]*:/i.test(h)) return h;
+
+    if (h.indexOf("//") === 0) {
+        var schemeMatch = String(baseUrl || "").match(/^([a-z][a-z0-9+.-]*):/i);
+        return schemeMatch ? schemeMatch[1] + ":" + h : "";
+    }
+
+    if (h.charAt(0) === "#") return "";
+
+    var originMatch = String(baseUrl || "").match(/^([a-z][a-z0-9+.-]*:\/\/[^\/?#]+)/i);
+    var origin = originMatch ? originMatch[1] : "";
+    if (!origin) return "";
+
+    if (h.charAt(0) === "/") return origin + h;
+
+    var pathOnly = String(baseUrl).replace(/^[a-z][a-z0-9+.-]*:\/\/[^\/?#]+/i, "").replace(/[?#].*$/, "");
+    var dir = pathOnly.replace(/[^\/]*$/, "");
+    if (dir.charAt(0) !== "/") dir = "/" + dir;
+
+    var joined = dir + h;
+    var parts = joined.split("/");
+    var stack = [];
+    for (var i = 0; i < parts.length; i++) {
+        var seg = parts[i];
+        if (seg === "" || seg === ".") continue;
+        if (seg === "..") { stack.pop(); continue; }
+        stack.push(seg);
+    }
+    return origin + "/" + stack.join("/");
+}
+
+// A link's title or href suggesting it's a feed of COMMENTS ("/comments/feed",
+// "Comments Feed", WordPress's default comment-feed link) is the actual
+// failure mode worth guarding against here: it validates and parses exactly
+// like a real feed, so nothing else in this pipeline would catch someone
+// getting subscribed to a stream of comment notifications when they meant
+// to subscribe to the site.
+function looksLikeCommentsFeed(title, href) {
+    return /comment/i.test(title || "") || /comment/i.test(href || "");
+}
+
+// Finds every <link rel="alternate" type="application/{rss,atom}+xml|json">
+// in html's <head>, resolves each href against baseUrl, and returns
+// { title, url, type } objects with the best subscription candidate first.
+//
+// Ranking: RSS/Atom before JSON Feed, because every backend and the OPML
+// import path in this widget already speaks RSS/Atom, while JSON Feed
+// support is exploratory at best in most readers a user's OPML file might
+// end up in -- prefer the format everything downstream actually consumes.
+// Within that, a comments-feed link (see looksLikeCommentsFeed) sinks below
+// every non-comments link regardless of format, since subscribing someone
+// to comments when they wanted the site is strictly worse than getting the
+// format preference "wrong". Ties otherwise keep the document's own order.
+function discoverFeeds(html, baseUrl) {
+    if (!html) return [];
+
+    var headHtml = extractHeadSection(html);
+    var candidates = [];
+    var seen = {};
+
+    var tagStart = /<link\b/gi;
+    var m;
+    while ((m = tagStart.exec(headHtml)) !== null) {
+        var scan = scanLinkTagEnd(headHtml, m.index + 5);
+        if (scan.end === -1) break;
+        tagStart.lastIndex = scan.end + 1;
+
+        var attrs = parseLinkAttrs(scan.attrsStr);
+
+        var rel = String(attrs.rel || "").toLowerCase().split(/\s+/);
+        var isAlternate = false;
+        for (var r = 0; r < rel.length; r++) {
+            if (rel[r] === "alternate") { isAlternate = true; break; }
+        }
+        if (!isAlternate) continue;
+
+        var mime = String(attrs.type || "").toLowerCase();
+        var typeLabel = FEED_LINK_TYPE_LABELS[mime];
+        if (!typeLabel) continue;
+
+        if (!attrs.href) continue;
+        var resolved = resolveFeedUrl(attrs.href, baseUrl);
+        if (!resolved || !isSafeUrl(resolved)) continue;
+
+        if (Object.prototype.hasOwnProperty.call(seen, resolved)) continue;
+        seen[resolved] = true;
+
+        var title = attrs.title ? cleanText(attrs.title) : "";
+
+        candidates.push({
+            title: title,
+            url: resolved,
+            type: typeLabel,
+            isComment: looksLikeCommentsFeed(title, attrs.href),
+            formatRank: typeLabel === "json" ? 0 : 1
+        });
+    }
+
+    // Array.prototype.sort's stability isn't guaranteed on every JS engine
+    // this file runs under (QML's is pre-ES2019 V4), so ties are broken on
+    // original index explicitly rather than relied on implicitly.
+    var indexed = candidates.map(function (c, idx) { return { c: c, idx: idx }; });
+    indexed.sort(function (a, b) {
+        if (a.c.isComment !== b.c.isComment) return a.c.isComment ? 1 : -1;
+        if (a.c.formatRank !== b.c.formatRank) return b.c.formatRank - a.c.formatRank;
+        return a.idx - b.idx;
+    });
+
+    return indexed.map(function (x) {
+        return { title: x.c.title, url: x.c.url, type: x.c.type };
+    });
+}
+
+// Request descriptor for fetching siteUrl and running discoverFeeds over the
+// result -- no I/O happens in this file (see header); QML executes argv and
+// hands the stdout to `parse`. Curl hardening copied verbatim from
+// ExportProvider.buildArticleFetchRequest: this is the same situation
+// (a GET against an arbitrary user-supplied site, no credentials to leak,
+// so -L following redirects is safe and necessary -- AMP/canonical bounces
+// are as common on homepages as on articles).
+function buildDiscoveryRequest(siteUrl) {
+    return {
+        argv: [
+            "curl", "-sS",
+            "--connect-timeout", "5",
+            "--max-time", "15",
+            "-L",
+            "--proto", "=http,https",
+            "--proto-redir", "=http,https",
+            "--max-redirs", "5",
+            "--max-filesize", "5000000",
+            "-A", "Mozilla/5.0 (X11; Linux x86_64) DankRssWidget/1.0",
+            "--",
+            String(siteUrl)
+        ],
+        timeoutMs: null,
+        parse: function (stdout) {
+            return discoverFeeds(stdout, siteUrl);
+        }
+    };
 }
 
 if (typeof module !== "undefined" && module.exports) {
@@ -500,6 +864,8 @@ if (typeof module !== "undefined" && module.exports) {
         getRelativeTime: getRelativeTime,
         extractImageUrl: extractImageUrl,
         isSafeUrl: isSafeUrl,
+        extractAudioUrl: extractAudioUrl,
+        minifluxEntryAudio: minifluxEntryAudio,
         makeItemId: makeItemId,
         parseRssFeed: parseRssFeed,
         parseAtomFeed: parseAtomFeed,
@@ -508,6 +874,9 @@ if (typeof module !== "undefined" && module.exports) {
         rootElementPrefix: rootElementPrefix,
         stripNamespacePrefix: stripNamespacePrefix,
         parseOpml: parseOpml,
+        buildOpml: buildOpml,
+        discoverFeeds: discoverFeeds,
+        buildDiscoveryRequest: buildDiscoveryRequest,
         dedupeItems: dedupeItems,
         parseMinifluxEntries: parseMinifluxEntries
     };
