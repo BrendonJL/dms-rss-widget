@@ -155,6 +155,33 @@ PluginSettings {
         return AiProvider.resolveBaseUrl(root.loadValue("aiPreset", "ollama"), root.loadValue("aiBaseUrl", ""));
     }
 
+    // Declared on the ROOT, deliberately, even though every caller sits deep
+    // inside the Feed Management section.
+    //
+    // QML resolves an unqualified name against the calling object and the
+    // COMPONENT ROOT -- it does NOT walk intermediate ancestors. Moving this
+    // onto the section object alongside its callers looked tidier and broke
+    // all sixteen Quick Add buttons with "addPresetFeed is not defined",
+    // silently, at click time. Verified against a real QML engine rather than
+    // reasoned about: a function on an intermediate object is unreachable
+    // from a nested child.
+    function addPresetFeed(name, url) {
+        var currentFeeds = root.loadValue("feeds", []);
+        for (var i = 0; i < currentFeeds.length; i++) {
+            if (currentFeeds[i].url === url) {
+                if (typeof ToastService !== "undefined") {
+                    ToastService.showError("Feed already added");
+                }
+                return;
+            }
+        }
+        currentFeeds = currentFeeds.concat([{ name: name, url: url, enabled: true, addedAt: Date.now() }]);
+        root.saveValue("feeds", currentFeeds);
+        if (typeof ToastService !== "undefined") {
+            ToastService.showInfo("Added " + name);
+        }
+    }
+
     function statusForUrl(url) {
         var list = root.feedStatuses || [];
         for (var i = 0; i < list.length; i++) {
@@ -1990,27 +2017,6 @@ PluginSettings {
 
     } // end Quick Add Column
 
-    // Still lexically nested under the Feed Management section (same as it
-    // was nested under `root` before) -- QML resolves the unqualified
-    // addPresetFeed(...) calls in the Quick Add buttons above by walking
-    // outward through the enclosing object tree, so moving this one level
-    // deeper alongside them changes nothing about how it's found.
-    function addPresetFeed(name, url) {
-        var currentFeeds = root.loadValue("feeds", []);
-        for (var i = 0; i < currentFeeds.length; i++) {
-            if (currentFeeds[i].url === url) {
-                if (typeof ToastService !== "undefined") {
-                    ToastService.showError("Feed already added");
-                }
-                return;
-            }
-        }
-        currentFeeds = currentFeeds.concat([{ name: name, url: url, enabled: true, addedAt: Date.now() }]);
-        root.saveValue("feeds", currentFeeds);
-        if (typeof ToastService !== "undefined") {
-            ToastService.showInfo("Added " + name);
-        }
-    }
     } // end Feed Management DankCollapsibleSection
 
     // ─── Appearance Settings ───
