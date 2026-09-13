@@ -181,6 +181,23 @@ DesktopPluginComponent {
     // Settings changes must re-rank, not wait for the next refresh. Turning
     // ranking on and seeing nothing happen for thirty minutes reads as broken.
     onRankingConfiguredChanged: root.refreshRanking()
+    // Starring is the ONLY input the ranking learns from, so it has to react
+    // to it. Without this the reason went stale: star five more articles,
+    // nothing recomputes, and the widget keeps insisting you have not starred
+    // enough -- indistinguishable from the feature being broken, and reported
+    // as exactly that. Debounced, because starring several in a row is normal
+    // and each one would otherwise queue an embedding pass.
+    onBookmarkMapChanged: {
+        if (root.rankingConfigured)
+            rankingSettleTimer.restart();
+    }
+
+    Timer {
+        id: rankingSettleTimer
+        interval: 1200
+        repeat: false
+        onTriggered: root.refreshRanking()
+    }
     onRankingWeightChanged: {
         if (root.rankingConfigured && root.rankedOrder.length > 0)
             root.applyRanking();
@@ -2930,7 +2947,7 @@ DesktopPluginComponent {
                         },
                         {
                             key: "bookmarked",
-                            label: "Saved"
+                            label: "Starred"
                         }
                     ]
 
@@ -2956,7 +2973,7 @@ DesktopPluginComponent {
                                 if (modelData.key === "unread")
                                     return "Unread (" + root.unreadCount + ")";
                                 if (modelData.key === "bookmarked")
-                                    return "Saved (" + root.bookmarkedCount + ")";
+                                    return "Starred (" + root.bookmarkedCount + ")";
                                 return modelData.label;
                             }
                             font.pixelSize: root.fontSize - 2
@@ -3111,7 +3128,7 @@ DesktopPluginComponent {
                         spacing: Theme.spacingXS
 
                         DankIcon {
-                            name: "bookmark"
+                            name: "star"
                             size: 14
                             color: saveArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
@@ -3133,7 +3150,7 @@ DesktopPluginComponent {
                     }
 
                     Accessible.role: Accessible.Button
-                    Accessible.name: "Bookmark selected items"
+                    Accessible.name: "Star selected items"
                     Accessible.onPressAction: root.bulkSaveSelected()
                 }
 
@@ -3497,27 +3514,6 @@ DesktopPluginComponent {
                                     spacing: Theme.spacingXS
 
                                     StyledText {
-                                        visible: root.showFeedName
-                                        text: model.source || ""
-                                        font.pixelSize: root.fontSize
-                                        font.weight: Font.Medium
-                                        // Source is secondary information, so
-                                        // it takes the muted text colour. The
-                                        // title carries primary -- it is what
-                                        // you are scanning for.
-                                        color: root.roleColours.surfaceVariantText
-                                        Layout.maximumWidth: 120
-                                        elide: Text.ElideRight
-                                    }
-
-                                    StyledText {
-                                        visible: root.showFeedName
-                                        text: "·"
-                                        font.pixelSize: root.fontSize
-                                        color: root.roleColours.surfaceVariantText
-                                    }
-
-                                    StyledText {
                                         text: model.title || ""
                                         font.pixelSize: root.fontSize
                                         font.weight: Font.Medium
@@ -3531,9 +3527,14 @@ DesktopPluginComponent {
                                     // Compact mode: inline date
                                     StyledText {
                                         visible: root.viewMode === "compact" && text !== ""
+                                        // Source folded in beside the time so
+                                        // the title owns the top line alone,
+                                        // which is what the eye should land on.
                                         text: {
                                             root.timeTick;  // dependency: forces re-evaluation on the 60s tick
-                                            return model.timestamp > 0 ? FeedParser.getRelativeTime(new Date(model.timestamp)) : "";
+                                            var when = model.timestamp > 0 ? FeedParser.getRelativeTime(new Date(model.timestamp)) : "";
+                                            var src = root.showFeedName ? (model.source || "") : "";
+                                            return (when && src) ? (when + " · " + src) : (when || src);
                                         }
                                         font.pixelSize: root.fontSize - 2
                                         color: root.tint(root.roleColours.surfaceVariantText, 0.7)
@@ -3557,7 +3558,9 @@ DesktopPluginComponent {
                                     visible: root.viewMode !== "compact" && text !== ""
                                     text: {
                                         root.timeTick;  // dependency: forces re-evaluation on the 60s tick
-                                        return model.timestamp > 0 ? FeedParser.getRelativeTime(new Date(model.timestamp)) : "";
+                                        var when = model.timestamp > 0 ? FeedParser.getRelativeTime(new Date(model.timestamp)) : "";
+                                        var src = root.showFeedName ? (model.source || "") : "";
+                                        return (when && src) ? (when + " · " + src) : (when || src);
                                     }
                                     font.pixelSize: root.fontSize - 2
                                     color: root.tint(root.roleColours.surfaceVariantText, 0.7)
@@ -3651,7 +3654,7 @@ DesktopPluginComponent {
                             // why it used to be unclickable without hovering
                             // first.
                             DankActionButton {
-                                iconName: itemDelegate.isBookmarked ? "bookmark" : "bookmark_border"
+                                iconName: itemDelegate.isBookmarked ? "star" : "star_border"
                                 iconSize: 14
                                 buttonSize: itemDelegate.controlSize
                                 iconColor: itemDelegate.isBookmarked ? root.roleColours.primary : root.roleColours.surfaceVariantText
@@ -3663,7 +3666,7 @@ DesktopPluginComponent {
                                 onClicked: root.rowToggleBookmark(model.itemId)
 
                                 Accessible.role: Accessible.Button
-                                Accessible.name: (itemDelegate.isBookmarked ? "Remove bookmark from \"" : "Bookmark \"") + (model.title || "item") + "\""
+                                Accessible.name: (itemDelegate.isBookmarked ? "Unstar \"" : "Star \"") + (model.title || "item") + "\""
                                 Accessible.onPressAction: root.rowToggleBookmark(model.itemId)
 
                                 Behavior on opacity {
@@ -3729,7 +3732,7 @@ DesktopPluginComponent {
                         if (root.allItems.length > 0 && root.searching)
                             return "search_off";
                         if (root.allItems.length > 0 && root.filterMode === "bookmarked")
-                            return "bookmark_border";
+                            return "star_border";
                         return root.backend.capabilities.serverState ? "sync" : "rss_feed";
                     }
                     size: Theme.iconSize * 2
@@ -3754,7 +3757,7 @@ DesktopPluginComponent {
                         if (root.allItems.length > 0 && root.searching)
                             return "No matching items";
                         if (root.allItems.length > 0 && root.filterMode === "bookmarked")
-                            return "No saved items";
+                            return "No starred items";
                         if (root.allItems.length > 0 && root.filterMode === "unread")
                             return "All caught up";
                         return "No items loaded";

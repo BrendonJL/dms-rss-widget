@@ -235,7 +235,10 @@ function buildBody(article, annotations, caps, config, extracted, imageMap) {
     // output byte-for-byte. QML only builds and passes one after it has run
     // collectImageUrls()/buildImageFetchRequest() and attempted the fetches;
     // this file never fetches anything itself.
-    if (text && imageMap) text = rewriteImageLinks(text, imageMap);
+    if (text && imageMap) {
+        text = rewriteImageLinks(text, imageMap);
+        text = withLeadImage(text, article, imageMap);
+    }
 
     if (text) parts.push(text);
 
@@ -714,6 +717,42 @@ function buildImageFetchRequest(imageUrl, destPath) {
 // doesn't exist -- a broken relative link renders as nothing everywhere,
 // whereas the untouched remote URL still has a chance of loading (or at
 // worst behaves exactly as it did before this feature existed).
+// Puts the feed's own lead image into the note when it was downloaded and the
+// body does not already show it.
+//
+// Without this, exporting an article whose only picture is the feed thumbnail
+// downloaded the file, wrote it into the attachments folder, and then produced
+// a note that never mentioned it -- the image was on disk and invisible, which
+// reads as the feature half-working. Most feed items have a thumbnail and no
+// inline images at all, so this is the common case, not an edge one.
+//
+// Placed after the H1 so the note still opens with its title, and skipped
+// entirely when the body already references that same file, so an article that
+// genuinely contains its lead image does not show it twice.
+function withLeadImage(markdown, article, urlToPathMap) {
+    if (!markdown || !article || !urlToPathMap)
+        return markdown;
+    var src = article.imageUrl || "";
+    if (!src || !Object.prototype.hasOwnProperty.call(urlToPathMap, src))
+        return markdown;
+
+    var local = urlToPathMap[src];
+    if (markdown.indexOf(local) !== -1)
+        return markdown;
+
+    var alt = (article.title || "Image").replace(/[\[\]]/g, "");
+    var embed = "![" + alt + "](" + local + ")";
+
+    var lines = markdown.split("\n");
+    for (var i = 0; i < lines.length; i++) {
+        if (lines[i].indexOf("# ") === 0) {
+            lines.splice(i + 1, 0, "", embed);
+            return lines.join("\n");
+        }
+    }
+    return embed + "\n\n" + markdown;
+}
+
 function rewriteImageLinks(markdown, urlToPathMap) {
     if (!markdown || !urlToPathMap) return markdown;
     return markdown.replace(/!\[([^\]]*)\]\(\s*([^\s)]+)([^)]*)\)/g, function (whole, alt, url, rest) {
@@ -752,6 +791,7 @@ if (typeof module !== "undefined" && module.exports) {
         collectImageUrls: collectImageUrls,
         attachmentPath: attachmentPath,
         buildImageFetchRequest: buildImageFetchRequest,
-        rewriteImageLinks: rewriteImageLinks
+        rewriteImageLinks: rewriteImageLinks,
+        withLeadImage: withLeadImage
     };
 }

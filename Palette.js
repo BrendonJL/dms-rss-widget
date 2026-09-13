@@ -321,11 +321,131 @@ var TRITANOPIA_PALETTE = {
     onError: "#000000"
 };
 
+// Redmean distance below which two colours are treated as confusable under a
+// simulated deficiency. 50 is well above the ~20-30 commonly cited as a just-
+// noticeable difference for this metric, so it is a deliberately cautious bar.
+var CVD_DISTINCT_THRESHOLD = 50;
+
+// --- Aesthetic presets -------------------------------------------------
+//
+// These are well-known open-source colour schemes, values taken from each
+// project's own published specification rather than sampled by eye.
+//
+// They are NOT colour-vision-deficient palettes and are not held to the
+// distinctness bar the three above are -- most of them use a conventional
+// red/green for error/success, which is the pair deuteranopes and protanopes
+// cannot separate. They are safe to offer here only because this widget never
+// signals state by hue alone: feed status pairs colour with a distinct icon
+// shape and its own text, read state is opacity plus greyscale, and every row
+// toggle changes icon shape. Pick one of these for looks; pick one of the
+// three above if you need the colours themselves to carry meaning.
+//
+// isCvdSafe below is computed, not asserted -- see the tests.
+
+// Solarized (Ethan Schoonover, ethanschoonover.com/solarized) -- base03 ground.
+var SOLARIZED_PALETTE = {
+    primary: "#268bd2",           // blue
+    secondary: "#6c71c4",         // violet
+    surfaceText: "#93a1a1",       // base1
+    surfaceVariantText: "#657b83", // base00
+    error: "#dc322f",             // red
+    success: "#859900",           // green
+    warning: "#b58900",           // yellow
+    outlineVariant: "#073642",    // base02
+    surfaceContainer: "#002b36",  // base03
+    surfaceContainerHigh: "#073642",
+    surfaceContainerHighest: "#0a4351",
+    onPrimary: "#002b36",
+    onError: "#fdf6e3"
+};
+
+// Nord (Arctic Ice Studio, nordtheme.com) -- Polar Night ground, Aurora accents.
+var NORD_PALETTE = {
+    primary: "#88c0d0",           // nord8, frost
+    secondary: "#b48ead",         // nord15, aurora purple
+    surfaceText: "#eceff4",       // nord6
+    surfaceVariantText: "#d8dee9", // nord4
+    error: "#bf616a",             // nord11
+    success: "#a3be8c",           // nord14
+    warning: "#ebcb8b",           // nord13
+    outlineVariant: "#4c566a",    // nord3
+    surfaceContainer: "#2e3440",  // nord0
+    surfaceContainerHigh: "#3b4252", // nord1
+    surfaceContainerHighest: "#434c5e", // nord2
+    onPrimary: "#2e3440",
+    onError: "#eceff4"
+};
+
+// Gruvbox dark (Pavel Pertsev, github.com/morhetz/gruvbox) -- "neutral" variants.
+var GRUVBOX_PALETTE = {
+    primary: "#83a598",           // blue
+    secondary: "#d3869b",         // purple
+    surfaceText: "#ebdbb2",       // fg1
+    surfaceVariantText: "#a89984", // fg4
+    error: "#fb4934",             // bright red
+    success: "#b8bb26",           // bright green
+    warning: "#fabd2f",           // bright yellow
+    outlineVariant: "#504945",    // bg2
+    surfaceContainer: "#282828",  // bg0
+    surfaceContainerHigh: "#3c3836", // bg1
+    surfaceContainerHighest: "#504945",
+    onPrimary: "#282828",
+    onError: "#282828"
+};
+
+// Catppuccin Mocha (github.com/catppuccin/catppuccin) -- the dark flavour.
+var CATPPUCCIN_PALETTE = {
+    primary: "#89b4fa",           // blue
+    secondary: "#cba6f7",         // mauve
+    surfaceText: "#cdd6f4",       // text
+    surfaceVariantText: "#a6adc8", // subtext0
+    error: "#f38ba8",             // red
+    success: "#a6e3a1",           // green
+    warning: "#f9e2af",           // yellow
+    outlineVariant: "#45475a",    // surface1
+    surfaceContainer: "#1e1e2e",  // base
+    surfaceContainerHigh: "#313244", // surface0
+    surfaceContainerHighest: "#45475a",
+    onPrimary: "#1e1e2e",
+    onError: "#1e1e2e"
+};
+
+// Dracula (Zeno Rocha, draculatheme.com/contribute) -- the published spec.
+var DRACULA_PALETTE = {
+    primary: "#bd93f9",           // purple
+    secondary: "#ff79c6",         // pink
+    surfaceText: "#f8f8f2",       // foreground
+    surfaceVariantText: "#6272a4", // comment
+    error: "#ff5555",             // red
+    success: "#50fa7b",           // green
+    warning: "#f1fa8c",           // yellow
+    outlineVariant: "#44475a",    // current line
+    surfaceContainer: "#282a36",  // background
+    surfaceContainerHigh: "#343746",
+    surfaceContainerHighest: "#44475a",
+    onPrimary: "#282a36",
+    onError: "#282a36"
+};
+
 var PRESETS = {
     deuteranopia: DEUTERANOPIA_PALETTE,
     protanopia: PROTANOPIA_PALETTE,
-    tritanopia: TRITANOPIA_PALETTE
+    tritanopia: TRITANOPIA_PALETTE,
+    solarized: SOLARIZED_PALETTE,
+    nord: NORD_PALETTE,
+    gruvbox: GRUVBOX_PALETTE,
+    catppuccin: CATPPUCCIN_PALETTE,
+    dracula: DRACULA_PALETTE
 };
+
+// Whether a preset's error and success stay apart under a given condition.
+// Computed rather than declared, so a palette cannot claim to be safe.
+function isCvdSafe(presetName, condition) {
+    var pal = PRESETS[presetName];
+    if (!pal)
+        return false;
+    return colourDistance(simulate(pal.error, condition), simulate(pal.success, condition)) >= CVD_DISTINCT_THRESHOLD;
+}
 
 // --- Public API --------------------------------------------------------
 
@@ -397,6 +517,9 @@ if (typeof module !== "undefined" && module.exports) {
         ROLE_NAMES: ROLE_NAMES,
         DEFAULT_PALETTE: DEFAULT_PALETTE,
         resolvePalette: resolvePalette,
+        isCvdSafe: isCvdSafe,
+        PRESET_NAMES: Object.keys(PRESETS),
+        CVD_DISTINCT_THRESHOLD: CVD_DISTINCT_THRESHOLD,
         applyOverrides: applyOverrides,
         contrastRatio: contrastRatio,
         simulate: simulate,

@@ -285,3 +285,58 @@ describe("no function mutates its inputs", () => {
         });
     });
 });
+
+// ─── The aesthetic presets, and what they cost ───
+//
+// These are ordinary colour schemes, not CVD palettes, and they are offered
+// only because this widget never signals state by hue alone. What must NOT
+// happen is one of them quietly claiming to be safe when it is not, so
+// isCvdSafe is computed from the simulated colours rather than declared.
+
+describe("aesthetic presets", () => {
+    const P = require("../Palette.js");
+    const AESTHETIC = ["nord", "gruvbox", "catppuccin", "dracula", "solarized"];
+    const CVD = ["deuteranopia", "protanopia", "tritanopia"];
+
+    test("every preset resolves a complete set of roles", () => {
+        P.PRESET_NAMES.forEach(function (name) {
+            const pal = P.resolvePalette(name, P.DEFAULT_PALETTE);
+            P.ROLE_NAMES.forEach(function (role) {
+                assert.match(pal[role], /^#[0-9a-fA-F]{6}$/, name + "." + role + " = " + pal[role]);
+            });
+        });
+    });
+
+    test("the three CVD palettes are safe for the condition they are named for", () => {
+        CVD.forEach(function (name) {
+            assert.equal(P.isCvdSafe(name, name), true, name + " must be safe for " + name);
+        });
+    });
+
+    test("Solarized is honestly reported as unsafe for deuteranopia", () => {
+        // Measured 43 on the redmean scale against a threshold of 50. It is
+        // offered anyway, but it must never claim otherwise -- this test
+        // exists so that a future palette tweak cannot silently flip the
+        // claim without someone noticing.
+        assert.equal(P.isCvdSafe("solarized", "deuteranopia"), false);
+    });
+
+    test("isCvdSafe is computed, not declared -- an unknown preset is not safe", () => {
+        assert.equal(P.isCvdSafe("nonesuch", "deuteranopia"), false);
+        assert.equal(P.isCvdSafe(null, "deuteranopia"), false);
+    });
+
+    test("every aesthetic preset still has readable body text on its own surface", () => {
+        AESTHETIC.forEach(function (name) {
+            const pal = P.resolvePalette(name, P.DEFAULT_PALETTE);
+            const ratio = P.contrastRatio(pal.surfaceText, pal.surfaceContainer);
+            assert.ok(ratio >= 4.5, name + " surfaceText on surfaceContainer is only " + ratio.toFixed(2) + ":1");
+        });
+    });
+
+    test("aesthetic presets do not mutate the base they were given", () => {
+        const base = JSON.parse(JSON.stringify(P.DEFAULT_PALETTE));
+        P.resolvePalette("dracula", base);
+        assert.deepEqual(base, P.DEFAULT_PALETTE);
+    });
+});

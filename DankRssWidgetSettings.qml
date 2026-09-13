@@ -2497,12 +2497,17 @@ PluginSettings {
         id: colourPresetSetting
         settingKey: "colourPreset"
         label: "Colour Theme"
-        description: "System follows your DMS theme as-is. The other three swap the widget's error/success/warning colours for a colour-vision-deficiency-safe palette (Okabe-Ito for deuteranopia/protanopia, Paul Tol's bright scheme for tritanopia) so those states stay distinguishable."
+        description: "System follows your DMS theme as-is. The first three are colour-vision-deficiency palettes (Okabe-Ito for deuteranopia and protanopia, Paul Tol's bright scheme for tritanopia), chosen so error and success stay apart for that condition. The rest are ordinary themes, offered because this widget never signals state by hue alone — feed status also changes icon shape and text, and read state uses opacity. The swatches below are the real thing: if two of them look the same to you, pick another."
         options: [
             { label: "System", value: "system" },
-            { label: "Deuteranopia", value: "deuteranopia" },
-            { label: "Protanopia", value: "protanopia" },
-            { label: "Tritanopia", value: "tritanopia" }
+            { label: "Deuteranopia-safe", value: "deuteranopia" },
+            { label: "Protanopia-safe", value: "protanopia" },
+            { label: "Tritanopia-safe", value: "tritanopia" },
+            { label: "Nord", value: "nord" },
+            { label: "Gruvbox", value: "gruvbox" },
+            { label: "Catppuccin Mocha", value: "catppuccin" },
+            { label: "Dracula", value: "dracula" },
+            { label: "Solarized", value: "solarized" }
         ]
         defaultValue: "system"
     }

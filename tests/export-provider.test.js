@@ -954,3 +954,56 @@ describe("buildImageFetchRequest directory creation", () => {
         assert.equal(req.argv[req.argv.indexOf("-o") + 1], "attachments/note-0.jpg");
     });
 });
+
+// ─── the lead image must actually appear in the note ───
+//
+// Regression cover for a half-working export. Most feed items carry a
+// thumbnail and no inline images, so collectImageUrls downloaded the file,
+// attachmentPath named it, curl wrote it into the attachments folder -- and
+// the note never mentioned it, because rewriteImageLinks only rewrites
+// markdown that is already there. The image existed on disk and was invisible.
+
+describe("withLeadImage", () => {
+    const EP = require("../ExportProvider.js");
+    const article = { title: "A Headline", imageUrl: "https://ex.com/lead.jpg" };
+    const map = { "https://ex.com/lead.jpg": "attachments/note-0.jpg" };
+
+    test("embeds the downloaded lead image just after the title", () => {
+        const out = EP.withLeadImage("# A Headline\n\nBody text.", article, map);
+        const lines = out.split("\n");
+        assert.ok(lines[0].startsWith("# "));
+        assert.equal(lines[2], "![A Headline](attachments/note-0.jpg)");
+    });
+
+    test("does nothing when the image was not downloaded", () => {
+        const md = "# A Headline\n\nBody.";
+        assert.equal(EP.withLeadImage(md, article, {}), md);
+    });
+
+    test("does not duplicate an image the body already shows", () => {
+        const md = "# A Headline\n\n![x](attachments/note-0.jpg)\n\nBody.";
+        assert.equal(EP.withLeadImage(md, article, map), md);
+    });
+
+    test("falls back to the top when there is no heading to anchor to", () => {
+        const out = EP.withLeadImage("Just body text.", article, map);
+        assert.ok(out.startsWith("![A Headline](attachments/note-0.jpg)"));
+    });
+
+    test("strips brackets from the alt text so the markdown cannot break", () => {
+        const out = EP.withLeadImage("# T", { title: "A [weird] title", imageUrl: "https://ex.com/lead.jpg" }, map);
+        assert.ok(out.includes("![A weird title]("), out);
+    });
+
+    test("null and malformed inputs do not throw", () => {
+        assert.doesNotThrow(() => EP.withLeadImage(null, article, map));
+        assert.doesNotThrow(() => EP.withLeadImage("# T", null, map));
+        assert.doesNotThrow(() => EP.withLeadImage("# T", article, null));
+        assert.doesNotThrow(() => EP.withLeadImage("# T", {}, map));
+    });
+
+    test("an article with no imageUrl is untouched", () => {
+        const md = "# T\n\nBody.";
+        assert.equal(EP.withLeadImage(md, { title: "T" }, map), md);
+    });
+});
