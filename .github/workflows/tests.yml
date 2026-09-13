@@ -152,6 +152,12 @@ jobs:
   # and treating it as failure would make this job permanently red.
   qml-types:
     name: qml-types
+    # continue-on-error while this job earns trust. It is new, it depends on a
+    # runner package set that has already surprised us twice, and a false red on
+    # a release is worse than a missed warning -- the check exists to catch a bug
+    # class, not to gate merges before anyone knows it behaves. Flip this off once
+    # it has been green across a few pushes.
+    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -159,7 +165,12 @@ jobs:
       - name: install qmllint
         run: |
           sudo apt-get update
-          sudo apt-get install -y qt6-declarative-dev-tools
+          # The MODULES, not just the tools. qt6-declarative-dev-tools ships
+          # qmllint itself; without qml6-module-qtquick the import path exists but
+          # QtQuick is not in it, so every Qt.rgba and Qt.openUrlExternally reads
+          # as a missing property -- 120 false positives, which is exactly how this
+          # job failed the first two times.
+          sudo apt-get install -y qt6-declarative-dev-tools qml6-module-qtqml qml6-module-qtquick qml6-module-qtquick-layouts qml6-module-qtquick-controls
 
       - name: locate qmllint
         id: find
