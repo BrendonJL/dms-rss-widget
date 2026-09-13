@@ -1769,6 +1769,63 @@ DesktopPluginComponent {
             return;
         }
 
+        // Server-side extraction first, where the backend offers it: Miniflux
+        // has already fetched and parsed the page, so asking it costs one
+        // local API call instead of a round trip to the article's own site.
+        //
+        // Strictly an optimisation, never the only route -- the backlog is
+        // explicit that a feature working on one backend and silently doing
+        // nothing on another is the fragmentation the backend interface
+        // exists to prevent. So every failure here falls through to the
+        // local extractor rather than failing the note: no capability, no
+        // id, a refusal, a malformed body, a timeout. The user cannot tell
+        // which path produced their note, which is the point.
+        if (root.backend.capabilities.fullText) {
+            var backendId = root.backendItemId(article.id);
+            var fastReq = backendId ? root.backend.fullTextRequest(root.backendConfig, backendId) : null;
+            if (fastReq) {
+                Proc.runCommand(null, fastReq.argv, function (out, code) {
+                    var served = null;
+                    if (code === 0 && out) {
+                        var parsedFast = fastReq.parse(out);
+                        if (!parsedFast.error && parsedFast.content) {
+                            // Run the server's HTML through the SAME extractor
+                            // the local route uses, rather than flattening it
+                            // to text. Miniflux returns article HTML, and
+                            // stripping it would cost every paragraph break,
+                            // heading and link -- a worse note than the local
+                            // path produces, which is the opposite of an
+                            // optimisation. Sending it through extractArticle
+                            // means both routes emit identical markdown and
+                            // the only difference is who fetched the page.
+                            var fastExtract = HtmlExtract.extractArticle(parsedFast.content, {
+                                summary: ExportProvider.articleSummaryText(article),
+                                baseUrl: article.link || ""
+                            });
+                            if (!fastExtract.usedFallback)
+                                served = fastExtract;
+                        }
+                    }
+                    if (served) {
+                        root._fetchImagesForJob(article, title, index, served);
+                        return;
+                    }
+                    root._prepareExportJobLocal(article, title, index);
+                }, undefined, fastReq.timeoutMs || undefined);
+                return;
+            }
+        }
+
+        root._prepareExportJobLocal(article, title, index);
+    }
+
+    // The original local route: fetch the article's own page and extract it.
+    function _prepareExportJobLocal(article, title, index) {
+        if (!root.exportFullText || !(article && article.link)) {
+            root._fetchImagesForJob(article, title, index, null);
+            return;
+        }
+
         var req = ExportProvider.buildArticleFetchRequest(article.link);
         Proc.runCommand(null, req.argv, function (out, code) {
             // A per-article fetch failure (bad host, 404, timeout, refused
