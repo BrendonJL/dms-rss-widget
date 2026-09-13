@@ -2,7 +2,10 @@
 
 A desktop widget for [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell)
 that shows RSS and Atom feeds, fetched directly or synced from Miniflux or any
-Google Reader API server.
+Google Reader API server. On top of reading and syncing, it can summarise and
+digest articles with a local AI model, find and organise your feeds with
+folders and per-feed schedules, and export what you read as illustrated
+notes — all of it opt-in. Every icon-only control carries an accessible name.
 
 The [README](https://github.com/BrendonJL/dms-rss-widget) covers installation,
 features and the keyboard reference. These pages are the detail behind it.
@@ -12,8 +15,8 @@ features and the keyboard reference. These pages are the detail behind it.
 | Page | What it covers |
 |---|---|
 | [Architecture](Architecture) | How the plugin is structured, the backend interface, and two rules that break things quietly if ignored |
-| [Sources and Sync](Sources-and-Sync) | Standard RSS, Miniflux and Google Reader — setup, credentials, and what each server does differently |
-| [Notes Export](Notes-Export) | Exporting articles as markdown, full-text extraction, and opening notes in your editor |
+| [Sources and Sync](Sources-and-Sync) | Standard RSS, Miniflux and Google Reader — setup, credentials, categories/folders and per-feed refresh intervals |
+| [Notes Export](Notes-Export) | Exporting articles as markdown with images, full-text extraction, and opening notes in your editor |
 | [Data and Persistence](Data-and-Persistence) | Where settings and state live, and how to reset them |
 | [Development](Development) | Running the tests, the QML harness, the live server suites, and the extraction oracle |
 | [CI](CI) | What runs on a pull request, and why the QML check is `qmlformat` rather than `qmllint` |

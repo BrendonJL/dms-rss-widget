@@ -6,9 +6,15 @@ Plugin data is split across two tiers.
 
 `~/.config/DankMaterialShell/settings.json`, shared with the rest of DMS.
 
-Holds your configured feeds, source mode and credentials, refresh interval, max
-items, sort mode, notes-export configuration and appearance preferences.
-Written via `pluginService.setData`, read via `getData`.
+Holds your configured feeds (including each one's own `intervalMinutes`,
+empty by default), source mode and credentials, refresh interval, max items,
+sort mode, appearance preferences, and every new v3 configuration surface:
+notes-export options (including the attachment directory for exported
+images), notification rules, mark-read-on-scroll, colour preset, ranking
+enable/weight, and the AI settings (`aiEnabled`, preset, base URL, model, key,
+embed model). All of it is plugin data, not state — grep `pluginData.` in
+`DankRssWidget.qml` for the exhaustive list. Written via `pluginService.setData`,
+read via `getData`.
 
 **API tokens and passwords are stored in plaintext here**, like every other
 setting. Keep that in mind if your DMS settings are backed up or synced.
@@ -18,11 +24,40 @@ setting. Keep that in mind if your DMS settings are backed up or synced.
 `~/.local/state/DankMaterialShell/plugins/dankRssWidget_state.json`, a dedicated
 per-plugin file.
 
-Holds read/seen item IDs, bookmarked item IDs (`bookmarkedIds`), the bounded AI
-summary cache, and per-feed fetch status. Written via
-`pluginService.savePluginState`, read via `loadPluginState`. This file is not
-part of your shared DMS settings and is not synced or backed up along with them.
-The state tier is not permission-gated separately from the rest of the plugin.
+Holds, per key:
+
+| Key | What it holds |
+|---|---|
+| `readIds` | Read item ids, in order |
+| `seenIds` | Ids the widget has already displayed once, used to tell a genuinely new item from one just fetched again |
+| `bookmarkedIds` | Bookmarked item ids |
+| `summaries` | The bounded AI summary cache: an id order plus an id-to-text map |
+| `notifiedIds` | Ids a notification **rule** has already fired a toast for |
+| `feedLastFetch` | Per-feed timestamps, for per-feed refresh intervals |
+| `snoozes` | Per-source snooze expiries |
+| `feedStatus` | Per-feed fetch status (last result, error text, item count) |
+
+Written via `pluginService.savePluginState`, read via `loadPluginState`. This
+file is not part of your shared DMS settings and is not synced or backed up
+along with them. The state tier is not permission-gated separately from the
+rest of the plugin.
+
+**`notifiedIds` is kept separate from `seenIds`.** `seenIds` answers "has this
+item ever been displayed" and drives the plain new-item count; `notifiedIds`
+answers "has a notification *rule* already matched this item", which is a
+different question once rules replace the plain count — an item can be seen
+without ever matching a rule, and re-evaluating rules against `seenIds` would
+either miss a rule that starts matching later or re-fire on every refresh.
+
+**`feedLastFetch` is stamped on attempt, not success.** A feed that is failing
+still needs to back off to its own interval instead of being retried every
+global cycle, so the timestamp records that a fetch was *asked for*, not that
+it worked.
+
+**`snoozes` is pruned on load and on every refresh.** `finalizeFetch` calls
+`ReaderState.pruneSnoozes` after every fetch completes and only writes the
+state back if pruning actually removed something, so an expired snooze
+disappears without waiting for you to touch the snooze UI.
 
 The directory comes from Quickshell's `Paths.state` — the XDG generic state
 location plus `/DankMaterialShell`.
@@ -36,14 +71,17 @@ configured feeds, delete the state file:
 rm ~/.local/state/DankMaterialShell/plugins/dankRssWidget_state.json
 ```
 
-**This also clears your bookmarks.** They live in the same file as read/seen
-state, not a separate one.
+**This also clears your bookmarks, cached AI summaries, snoozes and per-feed
+fetch timestamps.** They all live in the same file as read/seen state, not
+separate ones — a snoozed feed unsnoozes, a per-feed interval starts counting
+from zero again, and every cached summary has to be regenerated.
 
 ### Bounds
 
-Read and seen id lists are bounded to 1000 ids each. The summary cache is
-bounded to 100 entries — those lists store ids and this one stores paragraphs,
-and the whole state file is rewritten on every change.
+`readIds`, `seenIds`, `bookmarkedIds` and `notifiedIds` are each bounded to
+1000 ids (`idHistoryCap`). The summary cache is bounded to 100 entries
+(`summaryCap`) — those lists store ids and this one stores paragraphs, and the
+whole state file is rewritten on every change.
 
 `boundIdList` self-heals a duplicate that has already leaked into an order list,
 and the summary cache does the same, so the two do not behave differently under
@@ -97,6 +135,13 @@ Item IDs are stable: `guid`/`id`, then the canonical link, then a deterministic
 hash. Ids are prefixed per source (`m:` Miniflux, `r:` direct RSS, `g:`/`l:`/`h:`
 Google Reader), so switching modes never clears read or bookmark history in
 either direction — the two sets cannot collide.
+
+## What is deliberately not persisted
+
+Interest-ranking embeddings live in memory only and are recomputed on each
+refresh. A few hundred articles of them is megabytes of JSON, and writing that
+into a state file shared with the rest of the shell to save one batch request
+that takes about a second is not a trade worth making.
 
 ## Upgrading from 1.x
 

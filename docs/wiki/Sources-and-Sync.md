@@ -15,10 +15,35 @@ collide. See [Data and Persistence](Data-and-Persistence.md).
 **Credentials are stored in plaintext** in the plugin's settings, like every
 other setting.
 
+## Categories and folders
+
+Miniflux and Google Reader both return the categories or folders your server
+organises feeds into; RSS mode has no such concept, since it is a flat list of
+feeds you added yourself. A chip in the filter row cycles through folders and
+wraps back to all. The chip is hidden entirely on a backend that cannot supply
+categories, rather than shown empty.
+
 ## RSS mode
 
-Add feeds by name and URL, or use the quick-add presets (news, tech, Reddit).
-OPML import is available; OPML *export* is not yet.
+Add feeds by name and URL, or use the quick-add presets (news, tech, Reddit),
+or paste a site's own address and let autodiscovery find its feed — candidates
+that look like a comment feed (`/comments/feed`) rank last, since being handed
+one when you asked for the site is the actual failure mode here. Both OPML
+import and export are available, round-trip tested against titles that need
+escaping (`Tom & Jerry`) because a backup that looks fine until the day you
+need it is worse than no backup.
+
+### Per-feed refresh intervals
+
+Each feed can carry its own poll rate — set it in the add or edit feed form
+(`intervalMinutes`); leave it empty to follow the global refresh interval. It
+is opt-in per feed, not a replacement for the global setting. Skipping a
+feed's request on a global refresh cycle would otherwise mean it contributes
+nothing to that rebuild and its articles briefly vanish; they are restored
+from a retention pool instead, and "no feeds are due this cycle" is tracked
+separately from "no feeds are enabled", which previously looked the same.
+The field is RSS-mode only: Miniflux and Google Reader are each one logical
+stream synced as a whole, so there is no individual feed to schedule.
 
 Feeds can be reordered with move-up/move-down buttons. The stored order is what
 "grouped by feed" sort follows — grouping is keyed by feed URL rather than

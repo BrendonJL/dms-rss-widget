@@ -14,17 +14,28 @@ Miniflux or any Google Reader API server.
   server (FreshRSS, TT-RSS, Inoreader, TheOldReader, BazQux) — bidirectional
   read and starred state
 - **Keyboard-driven**, vim-style, with a `?` cheatsheet in the widget
-- **Reading window** (`v`) that typesets one article at a readable measure
+- **Reading window** (`v`) that typesets one article at a readable measure,
+  with summary-only mode and "Load full article" (`f`), podcast playback
+  (`p`), and copy-to-clipboard (`c`)
+- **AI, opt-in and local** via any OpenAI-compatible runtime (ollama, vLLM,
+  llama.cpp, LM Studio) — per-article summaries (`i`) and a 24-hour digest
+  (`d`); interest ranking is available but off by default
 - **Notes export** (`e`) to a markdown folder, Obsidian or Neovim, with
-  optional local full-text extraction — measured at 92% of Mozilla Readability
+  downloaded images, optional local full-text extraction — measured at 92% of
+  Mozilla Readability — and a Miniflux server-side fast path
 - **Open the note in your editor** — VS Code, Zed, Emacs, Neovim, Helix, Vim,
   or your own command
-- All / Unread / Saved filters with live counts, plus search across title,
-  description and source
-- Feed management: add, edit, reorder, enable/disable, OPML import, quick-add
-  presets, per-feed status and readable errors
-- Auto-refresh from 5 minutes to 24 hours, plus new-item toasts that stay
-  silent on first run
+- **Accessible**: an accessible name on every icon-only control, plus
+  colour-blindness palettes (deuteranopia, protanopia, tritanopia) alongside
+  Nord, Gruvbox, Catppuccin, Dracula, Solarized and a Custom theme
+- All / Unread / Saved filters with live counts, category/folder filtering on
+  backends that support it, and search across title, description and source
+- Feed management: add, edit, reorder, enable/disable, autodiscovery, OPML
+  import/export, quick-add presets, per-feed refresh intervals, per-source
+  snooze (`z` / `Shift+Z`), rule-based notifications, per-feed status and
+  readable errors
+- Auto-refresh from 5 minutes to 24 hours, mark-read-on-scroll, plus new-item
+  toasts that stay silent on first run
 
 ## Keyboard
 
@@ -50,6 +61,8 @@ Reload DMS (Ctrl+Shift+R) or restart your compositor.
 - DankMaterialShell >= 1.2.0
 - `curl`
 - A Miniflux or Google Reader API server and credentials — only for sync modes
+- An OpenAI-compatible runtime (e.g. ollama) — only for AI summaries, digest
+  and ranking, all opt-in and off by default
 
 ## Configuration
 
@@ -69,8 +82,9 @@ plaintext alongside every other setting.
   restarts, but Saved can only show items still present in the fetched set, so
   an item that scrolls out of its feed stays bookmarked but invisible until it
   is fetched again.
-- **Deleting the state file clears bookmarks too** — read/seen state and
-  bookmarks live in the same file.
+- **Deleting the state file clears bookmarks too** — read/seen state,
+  bookmarks, cached AI summaries, snoozes and per-feed refresh timestamps all
+  live in the same file.
 - **Two widget instances share one read/bookmark history** (it is keyed by
   plugin ID), but *not* one set of settings — every setting is per-instance,
   with the global store as a default.
@@ -93,7 +107,7 @@ The page sources live in [`docs/wiki/`](docs/wiki/):
 - [Sources and Sync](docs/wiki/Sources-and-Sync.md) — RSS, Miniflux and Google
   Reader modes
 - [Notes Export](docs/wiki/Notes-Export.md) — providers, editor presets,
-  full-text extraction
+  full-text extraction and images
 - [Data and Persistence](docs/wiki/Data-and-Persistence.md) — where settings
   and state live, desktop widget instances, upgrading from 1.x
 - [Development](docs/wiki/Development.md) — the three test tiers and the

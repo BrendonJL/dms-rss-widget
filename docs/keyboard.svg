@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 822" width="980" height="822" role="img" aria-label="Keyboard bindings for the Dank RSS Widget">
-  <rect x="0.5" y="0.5" width="979" height="821" rx="14" ry="14" fill="#1c2128" stroke="#30363d" stroke-width="1"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 906" width="980" height="906" role="img" aria-label="Keyboard bindings for the Dank RSS Widget">
+  <rect x="0.5" y="0.5" width="979" height="905" rx="14" ry="14" fill="#1c2128" stroke="#30363d" stroke-width="1"/>
   <text x="34" y="46" fill="#f0f6fc" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="19" font-weight="700">Dank RSS Widget &#183; keyboard</text>
   <text x="34" y="68" fill="#768390" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Click the widget once to give it focus. m, s and e act on the whole selection when one exists.</text>
   <g>
@@ -126,9 +126,17 @@
     <rect x="503" y="709" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
     <text x="517" y="728" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">i</text>
     <text x="600" y="728" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Summarise the article (needs AI set up)</text>
-    <rect x="500" y="748" width="46" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
-    <rect x="503" y="751" width="40" height="24" rx="4" ry="4" fill="#424a53"/>
-    <text x="523" y="770" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" text-anchor="middle">Esc</text>
-    <text x="600" y="770" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Close and return focus to the list</text>
+    <rect x="500" y="748" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
+    <rect x="503" y="751" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
+    <text x="517" y="770" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">f</text>
+    <text x="600" y="770" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Load the full article (summary view)</text>
+    <rect x="500" y="790" width="34" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
+    <rect x="503" y="793" width="28" height="24" rx="4" ry="4" fill="#424a53"/>
+    <text x="517" y="812" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600" text-anchor="middle">c</text>
+    <text x="600" y="812" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Copy the article or digest</text>
+    <rect x="500" y="832" width="46" height="34" rx="6" ry="6" fill="#373e47" stroke="#545d68" stroke-width="1"/>
+    <rect x="503" y="835" width="40" height="24" rx="4" ry="4" fill="#424a53"/>
+    <text x="523" y="854" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" text-anchor="middle">Esc</text>
+    <text x="600" y="854" fill="#adbac7" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Close and return focus to the list</text>
   </g>
 </svg>
