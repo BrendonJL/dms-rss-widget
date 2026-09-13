@@ -1923,7 +1923,7 @@ DesktopPluginComponent {
             var backendId = root.backendItemId(article.id);
             var fastReq = backendId ? root.backend.fullTextRequest(root.backendConfig, backendId) : null;
             if (fastReq) {
-                Proc.runCommand(null, fastReq.argv, function (out, code) {
+                root.queueProc(fastReq.argv, fastReq.timeoutMs || undefined, function (out, code) {
                     var served = null;
                     if (code === 0 && out) {
                         var parsedFast = fastReq.parse(out);
@@ -1950,7 +1950,7 @@ DesktopPluginComponent {
                         return;
                     }
                     root._prepareExportJobLocal(article, title, index);
-                }, undefined, fastReq.timeoutMs || undefined);
+                });
                 return;
             }
         }
@@ -1966,7 +1966,7 @@ DesktopPluginComponent {
         }
 
         var req = ExportProvider.buildArticleFetchRequest(article.link);
-        Proc.runCommand(null, req.argv, function (out, code) {
+        root.queueProc(req.argv, req.timeoutMs || undefined, function (out, code) {
             // A per-article fetch failure (bad host, 404, timeout, refused
             // connection) must not abort the batch -- fall back to the
             // summary for THIS note alone and keep going. `extracted` stays
@@ -1983,7 +1983,7 @@ DesktopPluginComponent {
                 });
             }
             root._fetchImagesForJob(article, title, index, extracted);
-        }, undefined, req.timeoutMs || undefined);
+        });
     }
 
     // Downloads the note's images into the attachments folder, then hands on
@@ -2037,11 +2037,11 @@ DesktopPluginComponent {
             (function (url, at) {
                 var rel = ExportProvider.attachmentPath(baseName, url, at, { attachmentDir: root.attachmentDir });
                 var req = ExportProvider.buildImageFetchRequest(url, root_ + "/" + rel);
-                Proc.runCommand(null, req.argv, function (out, code) {
+                root.queueProc(req.argv, req.timeoutMs || undefined, function (out, code) {
                     if (code === 0)
                         imageMap[url] = rel;
                     finish();
-                }, undefined, req.timeoutMs || undefined);
+                });
             })(urls[i], i);
         }
     }
@@ -2215,6 +2215,51 @@ DesktopPluginComponent {
     // backend (e.g. StandardBackend's mark/star requests); report it via a
     // null exit code so callers can tell "nothing to do" apart from a real
     // failure.
+    // --- Bounded process queue, for the export fan-out only ---
+    //
+    // Exporting a selection used to spawn everything at once: one curl per
+    // article for full text, then one per image per article, all in the same
+    // tick. "Select all" with thirty articles and a couple of pictures each is
+    // over a hundred concurrent processes -- inside the shell's own process,
+    // where a stall takes the bar and popups with it.
+    //
+    // Deliberately NOT applied to the AI or backend paths: those are single
+    // requests, and queueing them behind an export batch would make a summary
+    // wait on a hundred image fetches.
+    readonly property int exportConcurrency: 4
+    property var _procQueue: []
+    property int _procActive: 0
+
+    function queueProc(argv, timeoutMs, cb) {
+        root._procQueue.push({
+            argv: argv,
+            timeoutMs: timeoutMs,
+            cb: cb
+        });
+        root._pumpProcQueue();
+    }
+
+    function _pumpProcQueue() {
+        while (root._procActive < root.exportConcurrency && root._procQueue.length > 0) {
+            var job = root._procQueue.shift();
+            root._procActive++;
+            // IIFE: `job` is function-scoped, so without capturing it here
+            // every callback in this loop would see the last job's closure.
+            (function (j) {
+                Proc.runCommand(null, j.argv, function (out, code) {
+                    root._procActive--;
+                    try {
+                        j.cb(out, code);
+                    } finally {
+                        // Pump even if the callback threw, or one bad response
+                        // would strand every job behind it forever.
+                        root._pumpProcQueue();
+                    }
+                }, undefined, j.timeoutMs);
+            })(job);
+        }
+    }
+
     function runRequest(req, cb) {
         if (!req) {
             cb(null, null);
