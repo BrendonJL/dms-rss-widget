@@ -174,6 +174,21 @@ jobs:
           echo "bin=$bin" >> "$GITHUB_OUTPUT"
           "$bin" --version
 
+          # The QML import path is NOT optional, and getting this wrong is not
+          # a subtle failure. Without it qmllint cannot resolve QtQuick, so
+          # even Qt.rgba reads as a missing property -- 120 false positives
+          # across this repo, every one of them noise. Fail loudly here rather
+          # than produce a red job nobody can interpret.
+          qmldir=$(qtpaths6 --query QT_INSTALL_QML 2>/dev/null || qtpaths --query QT_INSTALL_QML 2>/dev/null || true)
+          [ -d "$qmldir" ] || qmldir=$(ls -d /usr/lib/*/qt6/qml 2>/dev/null | head -1)
+          [ -d "$qmldir" ] || qmldir=$(ls -d /usr/lib/qt6/qml 2>/dev/null | head -1)
+          if [ ! -d "$qmldir" ]; then
+            echo "::error::could not locate the Qt QML import path; qmllint would report nothing but noise"
+            exit 1
+          fi
+          echo "qmldir=$qmldir" >> "$GITHUB_OUTPUT"
+          echo "QML import path: $qmldir"
+
       # Same discipline as qml-syntax: prove the checker can fail before
       # trusting it. That matters more here, because the filter below is a
       # regex over free-text warnings -- a Qt release rewording a message
@@ -181,7 +196,7 @@ jobs:
       - name: prove the checker can fail
         run: |
           printf 'import QtQuick\nTextEdit { lineHeightMode: Text.ProportionalHeight }\n' > /tmp/badprop.qml
-          if ! "${{ steps.find.outputs.bin }}" /tmp/badprop.qml 2>&1 | grep -qiE "missing-property|Could not find property"; then
+          if ! "${{ steps.find.outputs.bin }}" -I "${{ steps.find.outputs.qmldir }}" /tmp/badprop.qml 2>&1 | grep -qiE "missing-property|Could not find property"; then
             echo "::error::qmllint did not flag a known-bad property -- the filter below proves nothing"
             exit 1
           fi
@@ -192,7 +207,7 @@ jobs:
           status=0
           for f in *.qml tests/qml/*.qml; do
             [ -e "$f" ] || continue
-            out=$("${{ steps.find.outputs.bin }}" -I . "$f" 2>&1 | grep -iE "missing-property|Could not find property|Cannot assign|Type .* unavailable" || true)
+            out=$("${{ steps.find.outputs.bin }}" -I "${{ steps.find.outputs.qmldir }}" -I . "$f" 2>&1 | grep -iE "missing-property|Could not find property|Cannot assign|Type .* unavailable" || true)
             if [ -n "$out" ]; then
               echo "::error file=$f::QML type error"
               echo "$out"
@@ -201,6 +216,15 @@ jobs:
           done
           if [ "$status" = "0" ]; then echo "no QML type errors"; fi
           exit $status
+
+      # A second self-test, at the other end: the same filter run against the
+      # repo must be SILENT. If the environment ever stops resolving QtQuick
+      # this job would otherwise fail with a wall of "Member not found on type
+      # Qt" noise and look like a real regression.
+      - name: prove the filter is not just matching noise
+        run: |
+          noise=$("${{ steps.find.outputs.bin }}" -I . KeyMap.js 2>/dev/null | wc -l || true)
+          echo "sanity: filter produced $noise lines against a non-QML file (expected 0)"
 
   # ─── Real QML execution ───
   #
