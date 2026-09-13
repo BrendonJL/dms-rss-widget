@@ -742,9 +742,20 @@ describe("collectImageUrls", () => {
 // ─── images: attachmentPath ───
 
 describe("attachmentPath", () => {
-    test("basic shape: attachments/<note-slug>-<index>.<ext>", () => {
+    // The name is SLUGGED, not merely sanitised. These two tests used to
+    // assert "attachments/My Note-1.jpg" -- a path with a space, which is
+    // a legal filename and an illegal markdown link target. The image
+    // downloaded, landed correctly, and would not render in Obsidian.
+    test("basic shape: attachments/<note-slug>-<index>.<ext>, with no spaces", () => {
         var p = attachmentPath("My Note", "https://example.com/photo.jpg", 1);
-        assert.equal(p, "attachments/My Note-1.jpg");
+        assert.equal(p, "attachments/My-Note-1.jpg");
+    });
+
+    test("a path safe to drop straight into ![](...) with no escaping", () => {
+        var p = attachmentPath("Reform's £72m donations, 'in line with law'-cdadf470",
+                               "https://example.com/photo.jpg", 0);
+        assert.ok(!/[\s'"(),\[\]]/.test(p), "unsafe characters remain in: " + p);
+        assert.match(p, /^attachments\/[A-Za-z0-9._-]+\.jpg$/);
     });
 
     test("deterministic: same note + URL + index -> same path every time", () => {
@@ -755,7 +766,7 @@ describe("attachmentPath", () => {
 
     test("respects options.attachmentDir override", () => {
         var p = attachmentPath("My Note", "https://example.com/photo.jpg", 1, { attachmentDir: "images" });
-        assert.equal(p, "images/My Note-1.jpg");
+        assert.equal(p, "images/My-Note-1.jpg");
     });
 
     test("extension derived from the URL path, ignoring a query string", () => {

@@ -639,6 +639,18 @@ function extensionFromImageUrl(url) {
 // already sanitised it elsewhere -- this function has to be safe called on
 // its own, which is also why there is a direct test for path-traversal
 // attempts against it.
+// Reduces a filename to something that survives being a markdown link target
+// without any escaping: ASCII word characters, dots and hyphens only.
+// Deliberately lossy -- these are attachment filenames nobody types, and the
+// note keeps the readable name.
+function slugifyForUrl(name) {
+    return String(name || "")
+        .replace(/[\s]+/g, "-")
+        .replace(/[^A-Za-z0-9._-]/g, "")
+        .replace(/-{2,}/g, "-")
+        .replace(/^[-.]+|[-.]+$/g, "");
+}
+
 function attachmentPath(noteBasename, imageUrl, index, options) {
     options = options || {};
 
@@ -649,7 +661,19 @@ function attachmentPath(noteBasename, imageUrl, index, options) {
     if (!dir) dir = "attachments";
 
     var ext = extensionFromImageUrl(imageUrl);
-    var safeBase = sanitizeSegment(String(noteBasename || "")) || "note";
+
+    // Slugged, not merely sanitised. The note's own filename may legitimately
+    // contain spaces, apostrophes and commas -- a title like
+    // "Reform's £72m donations 'in line with law', Jenrick says" is a perfectly
+    // good note name. It is NOT a good markdown link target: a path with spaces
+    // in ![alt](path) does not resolve in Obsidian or most other renderers, so
+    // the image downloaded correctly, sat in the right folder, and still did
+    // not display.
+    //
+    // Encoding the link at the point of use would fix the rendering and leave
+    // the filesystem full of awkward names; slugging fixes both, and the note
+    // filename itself is untouched.
+    var safeBase = slugifyForUrl(sanitizeSegment(String(noteBasename || ""))) || "note";
 
     var suffix = "-" + String(index) + "." + ext;
     var base = clampUtf8Bytes(safeBase, 255 - suffix.length) + suffix;
@@ -792,6 +816,7 @@ if (typeof module !== "undefined" && module.exports) {
         attachmentPath: attachmentPath,
         buildImageFetchRequest: buildImageFetchRequest,
         rewriteImageLinks: rewriteImageLinks,
+        slugifyForUrl: slugifyForUrl,
         withLeadImage: withLeadImage
     };
 }

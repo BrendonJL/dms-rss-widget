@@ -266,3 +266,71 @@ describe("input immutability across the module", () => {
         assert.deepEqual(b, [4, 5, 6]);
     });
 });
+
+// ─── the shape the widget actually passes ───
+//
+// Regression cover for a silent interface mismatch. buildInterestProfile takes
+// { vector, starredAt } objects; the widget passed the raw vectors. Every
+// entry then failed `isVector(e.vector)`, valid.length came back 0, and a user
+// with eight starred articles was told indefinitely that they had not starred
+// enough. Both shapes are arrays of the right length, so nothing threw and
+// nothing logged -- the only symptom was a feature that never turned on.
+//
+// These tests exercise the call exactly as DankRssWidget.applyRanking makes it.
+
+describe("buildInterestProfile input shape (as the widget calls it)", () => {
+    const R = require("../Ranking.js");
+    const vec = (seed) => Array.from({ length: 8 }, (_, i) => Math.sin(seed + i));
+    const asWidgetPasses = (n) => Array.from({ length: n }, (_, i) => ({
+        vector: vec(i), starredAt: 1000 - i
+    }));
+
+    test("accepts { vector, starredAt } objects and builds a profile", () => {
+        const built = R.buildInterestProfile(asWidgetPasses(8));
+        assert.ok(built.profile, "profile should build from 8 starred: " + built.reason);
+        assert.equal(built.count, 8);
+    });
+
+    test("RAW vectors are rejected -- the exact mistake that shipped", () => {
+        const raw = Array.from({ length: 8 }, (_, i) => vec(i));
+        const built = R.buildInterestProfile(raw);
+        assert.equal(built.profile, null);
+        assert.equal(built.count, 0,
+            "raw vectors must be rejected; if this ever passes, the widget's wrapping is redundant");
+    });
+
+    test("the profile is a unit vector of the same dimensionality", () => {
+        const built = R.buildInterestProfile(asWidgetPasses(6));
+        assert.equal(built.profile.length, 8);
+        const mag = Math.sqrt(built.profile.reduce((a, x) => a + x * x, 0));
+        assert.ok(Math.abs(mag - 1) < 1e-9, "expected unit length, got " + mag);
+    });
+
+    test("one below the minimum still refuses, with the count reported", () => {
+        const built = R.buildInterestProfile(asWidgetPasses(R.MIN_STARRED_FOR_PROFILE - 1));
+        assert.equal(built.profile, null);
+        assert.equal(built.reason, "not_enough_starred");
+        assert.equal(built.count, R.MIN_STARRED_FOR_PROFILE - 1);
+    });
+
+    test("exactly the minimum succeeds -- the boundary is inclusive", () => {
+        const built = R.buildInterestProfile(asWidgetPasses(R.MIN_STARRED_FOR_PROFILE));
+        assert.ok(built.profile);
+    });
+
+    test("entries with a missing or malformed vector are skipped, not fatal", () => {
+        const mixed = asWidgetPasses(6).concat([{ starredAt: 1 }, { vector: "nope", starredAt: 2 }, null]);
+        const built = R.buildInterestProfile(mixed);
+        assert.ok(built.profile);
+        assert.equal(built.count, 6);
+    });
+
+    test("the profile feeds rankItems, which takes a plain id->vector map", () => {
+        const built = R.buildInterestProfile(asWidgetPasses(6));
+        const items = [{ id: "a", timestamp: 2 }, { id: "b", timestamp: 1 }];
+        const ranked = R.rankItems(items, { a: vec(0), b: vec(3) }, built.profile);
+        assert.equal(ranked.length, 2);
+        assert.ok(ranked.every(r => r.hasVector), "both items should score");
+        assert.ok(ranked.every(r => typeof r.score === "number" && !isNaN(r.score)));
+    });
+});

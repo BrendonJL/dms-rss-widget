@@ -100,8 +100,24 @@ function cosineSimilarity(a, b) {
     return sim;
 }
 
+// A real vector, not merely something with a length.
+//
+// The looser "has a numeric .length" test let a STRING through -- strings have
+// a length, so "nope" counted as a valid embedding, inflated the starred count
+// and contributed a zero-similarity entry to the profile. cosineSimilarity was
+// safe about it (it returns 0 rather than NaN), which is precisely why it went
+// unnoticed: the ranking silently got slightly worse instead of failing.
+//
+// Checking the first element rather than every one is deliberate: embeddings
+// arrive as 768-float arrays in batches of hundreds, and a malformed one comes
+// from the API returning something other than numbers, which is uniform when
+// it happens.
 function isVector(v) {
-    return !!v && typeof v.length === "number";
+    if (!v || typeof v.length !== "number" || v.length === 0)
+        return false;
+    if (typeof Array.isArray === "function" && !Array.isArray(v))
+        return false;
+    return typeof v[0] === "number" && !isNaN(v[0]);
 }
 
 function numericOr0(v) {

@@ -907,12 +907,29 @@ DesktopPluginComponent {
     }
 
     function applyRanking() {
+        // buildInterestProfile takes { vector, starredAt } OBJECTS, not raw
+        // vectors -- passing the vectors themselves made every one of them
+        // fail its validity check, so a user with eight starred articles was
+        // told there were not enough, forever. The shapes are adjacent enough
+        // to look right and different enough to fail silently, which is the
+        // whole reason tests/ranking.test.js now pins this exact call.
+        //
+        // starredAt comes from the bookmark order, which is newest-first, so
+        // position 0 is the most recent star. The module only uses it to
+        // decide WHICH stars survive the cap when there are more than it
+        // wants, and relative order is all that requires.
         var starredVectors = [];
+        var order = root.bookmarkOrder || [];
         var i;
         for (i = 0; i < root.allItems.length; i++) {
             var id = root.allItems[i].id;
-            if (id && root.vectorMap[id] && ReaderState.isBookmarked(root.bookmarkMap, id))
-                starredVectors.push(root.vectorMap[id]);
+            if (!id || !root.vectorMap[id] || !ReaderState.isBookmarked(root.bookmarkMap, id))
+                continue;
+            var pos = order.indexOf(id);
+            starredVectors.push({
+                vector: root.vectorMap[id],
+                starredAt: (pos < 0) ? 0 : (order.length - pos)
+            });
         }
 
         var built = Ranking.buildInterestProfile(starredVectors);
