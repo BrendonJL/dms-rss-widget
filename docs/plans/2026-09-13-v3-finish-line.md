@@ -104,4 +104,118 @@ Findings go in `## Review findings` below, not into a chat log that disappears.
 
 ## Review findings
 
-_To be filled in by the review pass._
+Five hostile reviews, 2026-09-13. Four returned; the bug and security passes are
+noted where they stand. Findings are recorded with their verdict so a later
+reader can tell what was acted on from what was judged and left.
+
+### Architecture — clean, one doc lag (ACTED ON, `91f1cf2`)
+
+Both failure classes this project has actually repeated showed **zero new
+instances** across ~7000 lines written by several agents in parallel:
+
+- Dual-runtime discipline holds: no `.pragma library`, no cross-module
+  `require()`, no unguarded clock read in a pure module. `Palette.js` and
+  `Ranking.js` match house style, and `Ranking.js`'s habit of documenting
+  *rejected* alternatives was rated above the existing baseline.
+- "Two places deciding one setting" — the bug shipped twice before
+  (`resolveBaseUrl`, `resolvePresetEmbedModel`) — does not recur. Every
+  candidate is single-sourced.
+- Colour discipline is uniform: no direct `Theme.*` role reads outside the
+  three `themeBasePalette()` builders.
+- The `Accessible.onPressAction` duplication fix held across all ~19 pairs.
+
+Acted on: three docs claimed per-feed intervals were unbuilt (the roadmap was
+updated *before* the feature landed), and `Ranking.explainRank` is a complete,
+tested, entirely unwired API surface — now flagged as such in source.
+
+Noted, not fixed: the interval work has no dated design doc, only this log,
+against this project's own "every phase gets one" rule. Minor, but it is what
+working at pace costs.
+
+### Performance — one real finding (ACTED ON, `1ff99c7`)
+
+**Export fan-out had no concurrency cap.** One curl per article for full text,
+then one per image per article, all in the same tick — "select all" over thirty
+articles is 100+ concurrent processes inside the shell's own process, where a
+stall takes the bar with it. Now a bounded queue, four at a time, applied to
+the export fetches only; AI and backend requests stay unqueued so a summary
+never waits behind an image batch.
+
+Everything else the review was pointed at came back **correctly bounded at this
+scale**, and it was refreshingly willing to say so: `applyFilter` is ~6-7
+passes over ≤30 items and properly debounced at 150ms; the retention
+concat-in-loop is sub-millisecond once per refresh; `indexOf`/`itemById`/
+`previousStatusFor` scans are trivial at 30 items; the summary cache rebuild is
+already the right trade and documented as such; every persisted list is capped.
+No per-frame or per-keystroke problems.
+
+### CI — recommendations, one of which was wrong (PARTIALLY ACTED ON)
+
+**Its top finding was false.** It reported the manifest job's changelog grep as
+a live outage still pointing at `README.md`. It is not — the live workflow and
+`docs/ci/tests.yml.proposed` are byte-identical below `jobs:` and both read
+`CHANGELOG.md`. The review had trusted `docs/ci/README.md`, which still said
+PENDING long after the change landed, and it flagged that it had not verified
+against the live file. **`docs/ci/README.md` has been corrected** — a stale
+"PENDING" is a claim about the present, and it cost a reviewer a finding.
+
+Worth doing, and **needs a human**: Claude cannot write to `.github/workflows/`.
+
+1. **A filtered `qmllint` job.** This is the answer to the question that
+   started the review: `qmlformat` passed the change that took the widget down
+   (`lineHeightMode` on a `TextEdit`), because it is a syntax check with no
+   opinion on whether a property exists. `qmllint` catches it. It cannot
+   resolve `qs.*` and never will, but it resolves plain QtQuick types, which is
+   where that bug lived. Run it, grep for
+   `missing-property|Could not find property|Cannot assign|Type .* unavailable`,
+   and fail only on a match. Uses the `qt6-declarative-dev-tools` package the
+   existing `qml-syntax` job already installs. Sub-second. Keep that job's
+   "prove the checker can fail" discipline: feed it a deliberately bad fixture
+   and assert the grep *does* match, because the filter is a regex over
+   free-text warnings and a Qt reword would silently disarm it.
+2. **Wire in `tests/qml/run.sh`** — six real QML smoke tests, 1.7s locally.
+   Catches what neither formatter nor linter can: wiring that resolves but is
+   wrong. One caveat the reviewer was honest about — it has only been proven
+   against a Nix Qt, not against Ubuntu's package, so smoke-test the runner
+   once before trusting it.
+3. **The oracle suite: keep it OUT of the per-PR path.** Its value is proven
+   (it caught a `ReferenceError` 689 unit tests missed, and a silent drop from
+   91.1% to 62.6%), but its fixtures are gitignored and not ours to
+   redistribute, so CI would have to fetch live from Wikipedia, LWN, the
+   Guardian and several personal blogs on every PR. For a single maintainer a
+   gate that fails over a dead link gets disabled, which is worse than absent.
+   A scheduled or manual report job is the right shape if it goes in at all.
+4. **Do not bother** with a JS linter or an "exports have not changed" job:
+   `node --test` already `require()`s all eleven root modules, so a syntax
+   error or renamed export fails CI today. The `.pragma` glob was verified
+   correct.
+
+### Uncaught bugs — rerun in progress
+
+First attempt died on a session limit. Rerunning, pointed specifically at
+QML→module call-shape agreement, which has failed silently twice
+(`buildInterestProfile` taking objects not raw vectors; `itemsScrolledPast`
+taking the anchor as `visibleIds[0]`).
+
+One was already found by hand while landing the collapsible settings: moving
+`addPresetFeed` onto the section object alongside its callers broke all sixteen
+Quick Add buttons, because **QML resolves unqualified names against the calling
+object and the component root only — never intermediate ancestors.** Proved
+with a nine-line file under the real engine rather than argued. Fixed in
+`a1944a9`.
+
+### Security — rerun in progress
+
+First attempt died on a session limit. Rerunning against the real threat model:
+a malicious feed is the adversary, and its content reaches the parser, the
+extractor, the renderer, the export path that writes files, and the argv of
+every fetch.
+
+## Still open after the reviews
+
+1. **Settings UI for per-feed intervals** — the logic shipped in `e490027` but
+   `intervalMinutes` is only reachable by hand-editing `settings.json`.
+2. **MPRIS ownership** — see above; scope it before starting.
+3. **The two CI jobs** — a human has to add them; Claude cannot write to
+   `.github/workflows/`.
+

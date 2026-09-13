@@ -9,25 +9,19 @@ workflow-file writes. Future changes get staged here for a human to move:
 
     cp docs/ci/tests.yml.proposed .github/workflows/tests.yml
 
-## PENDING — the changelog check now reads `CHANGELOG.md`
+## APPLIED — the changelog check reads `CHANGELOG.md`
 
 The `manifest` job's "version has a changelog entry" step greps for
-`### <version>` matching `plugin.json`. It read `README.md`, because that is
-where the changelog lived.
+`### <version>` matching `plugin.json`. It used to read `README.md`, because
+that is where the changelog lived; the README was later split, with the detail
+going to the wiki and the changelog to `CHANGELOG.md`.
 
-The changelog has moved to `CHANGELOG.md` (the README was split, with the detail
-going to the wiki and its sources to `docs/wiki/`). **The live workflow will fail
-on the next push until this is copied across**, because `README.md` no longer
-contains any `### ` heading at all.
-
-Diff is one step, three lines:
-
-```diff
--          grep -qF "### $v" README.md || {
--            echo "::error file=README.md::No '### $v' section in the README changelog"
-+          grep -qF "### $v" CHANGELOG.md || {
-+            echo "::error file=CHANGELOG.md::No '### $v' section in CHANGELOG.md"
-```
+**This has been applied.** The live `.github/workflows/tests.yml` and
+`docs/ci/tests.yml.proposed` both grep `CHANGELOG.md` and are identical on this
+step. This section stayed marked PENDING long after the change landed, and a
+review of CI read it, believed the job was broken, and reported a live outage
+that did not exist. A stale "PENDING" is worse than no note — it is a claim
+about the present.
 
 The check itself is unchanged otherwise, including the reason it exists: the DMS
 registry crawls version and author straight out of `plugin.json`, so a bumped
