@@ -557,6 +557,45 @@ function shallowCopyMap(map) {
     return out;
 }
 
+// Whether a feed is due for a fetch, given its own interval.
+//
+// Opt-in: a feed with no positive intervalMinutes is ALWAYS due and keeps the
+// global refresh cycle, so this changes nothing for anyone who does not
+// configure it. Only an explicit interval throttles.
+//
+// nowMs is supplied by the caller; this module never reads a clock.
+//
+// The stakes are higher than they look. A feed judged not-due produces no
+// request, so its articles have to be carried over from the previous cycle --
+// get this wrong in the "not due" direction and articles quietly disappear
+// from the list, which nobody notices until they have already lost something.
+// Hence: anything malformed, missing or nonsensical answers TRUE. Fetching
+// slightly too often is a wasted request; fetching too rarely loses content.
+function isFeedDue(feed, lastFetchMap, nowMs) {
+    if (!feed || !feed.url)
+        return true;
+
+    var minutes = Number(feed.intervalMinutes);
+    if (!isFinite(minutes) || minutes <= 0)
+        return true;
+
+    var map = lastFetchMap || {};
+    var last = Number(map[feed.url]);
+    if (!isFinite(last) || last <= 0)
+        return true;
+
+    var now = Number(nowMs);
+    if (!isFinite(now))
+        return true;
+
+    // A clock that moved backwards (suspend, NTP correction) would otherwise
+    // make every feed look freshly fetched for as long as the skew lasts.
+    if (last > now)
+        return true;
+
+    return (now - last) >= (minutes * 60000);
+}
+
 function pruneSummaries(order, map, items) {
     if (!items || items.length === 0)
         return { order: (order || []).slice(), map: shallowCopyMap(map) };
@@ -979,6 +1018,7 @@ if (typeof module !== "undefined" && module.exports) {
         getSummary: getSummary,
         hasSummary: hasSummary,
         pruneSummaries: pruneSummaries,
+        isFeedDue: isFeedDue,
         DEFAULT_SUMMARY_CAP: DEFAULT_SUMMARY_CAP,
         curlExitMessage: curlExitMessage,
         isFeedEnabled: isFeedEnabled,

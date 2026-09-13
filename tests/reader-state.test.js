@@ -1233,3 +1233,60 @@ describe("pruneSummaries with an empty dataset", () => {
         assert.equal(R.getSummary(out.map, "b"), null);
     });
 });
+
+// ─── isFeedDue ───
+//
+// The stakes here are asymmetric and the tests are written around that. A feed
+// judged not-due produces no request, so its articles must be carried over
+// from the previous cycle; getting it wrong in the "not due" direction means
+// articles quietly disappear. Fetching slightly too often costs one request.
+// So every malformed, missing or nonsensical input must answer TRUE.
+
+describe("isFeedDue", () => {
+    const NOW = 1_000_000_000;
+    const MIN = 60000;
+
+    test("a feed with no interval is always due -- the global cycle governs it", () => {
+        assert.equal(R.isFeedDue({ url: "u" }, { u: NOW }, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 0 }, { u: NOW }, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: null }, { u: NOW }, NOW), true);
+    });
+
+    test("never fetched before is due", () => {
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, {}, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, { u: 0 }, NOW), true);
+    });
+
+    test("inside its interval is not due", () => {
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, { u: NOW - 29 * MIN }, NOW), false);
+    });
+
+    test("exactly at the interval is due -- the boundary is inclusive", () => {
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, { u: NOW - 30 * MIN }, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, { u: NOW - 30 * MIN + 1 }, NOW), false);
+    });
+
+    test("a clock that moved backwards does not freeze every feed", () => {
+        // Suspend or an NTP correction can leave a stamp in the future. Left
+        // unguarded, every feed would look freshly fetched until real time
+        // caught up.
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, { u: NOW + 5 * MIN }, NOW), true);
+    });
+
+    test("malformed everything still answers due, never blocked", () => {
+        assert.equal(R.isFeedDue(null, {}, NOW), true);
+        assert.equal(R.isFeedDue({}, {}, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: "abc" }, { u: NOW }, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: -5 }, { u: NOW }, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: NaN }, { u: NOW }, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, null, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, { u: "junk" }, NOW), true);
+        assert.equal(R.isFeedDue({ url: "u", intervalMinutes: 30 }, { u: NOW }, "junk"), true);
+    });
+
+    test("two feeds with different intervals are judged independently", () => {
+        const map = { fast: NOW - 10 * MIN, slow: NOW - 10 * MIN };
+        assert.equal(R.isFeedDue({ url: "fast", intervalMinutes: 5 }, map, NOW), true);
+        assert.equal(R.isFeedDue({ url: "slow", intervalMinutes: 60 }, map, NOW), false);
+    });
+});

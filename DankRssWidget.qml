@@ -149,6 +149,11 @@ DesktopPluginComponent {
     // are pruned on every refresh so a map of long-dead snoozes cannot
     // accumulate in the state file.
     property var snoozeMap: ({})
+    // sourceUrl -> epoch ms of the last attempt, for per-feed intervals.
+    // Only feeds that opt in (a positive intervalMinutes on the feed itself)
+    // are ever throttled; everything else fetches on the global cycle exactly
+    // as before, so the default behaviour is untouched.
+    property var feedLastFetch: ({})
 
     // --- Interest ranking (stage 3d) ---
     //
@@ -789,6 +794,9 @@ DesktopPluginComponent {
 
         root.notifiedIds = ReaderState.boundIdList(root.readState("notifiedIds", []), root.idHistoryCap);
 
+        var storedFetch = root.readState("feedLastFetch", {});
+        root.feedLastFetch = (storedFetch && typeof storedFetch === "object") ? storedFetch : {};
+
         var stored = root.readState("snoozes", {});
         root.snoozeMap = ReaderState.pruneSnoozes((stored && typeof stored === "object") ? stored : {}, Date.now());
 
@@ -812,6 +820,23 @@ DesktopPluginComponent {
     // Hence both guards below. The empty check is the important one; the
     // length check merely avoids rewriting a map of paragraphs when nothing
     // actually changed.
+    // Whether a feed is due, given its own interval.
+    //
+    // Opt-in by design: a feed with no intervalMinutes is always due and keeps
+    // the global cycle, so adding this feature changes nothing for anyone who
+    // does not configure it. Only an explicit positive interval throttles.
+    function feedIsDue(feed, nowMs) {
+        return ReaderState.isFeedDue(feed, root.feedLastFetch, nowMs);
+    }
+
+    function previousStatusFor(url) {
+        for (var i = 0; i < root.feedStatuses.length; i++) {
+            if (root.feedStatuses[i].url === url)
+                return root.feedStatuses[i];
+        }
+        return null;
+    }
+
     function pruneSummaryCache(items) {
         if (!items || items.length === 0)
             return;
@@ -2237,6 +2262,9 @@ DesktopPluginComponent {
         // descriptor, are still QML's job.
         var statuses = [];
         var descriptors = [];
+        var skippedUrls = [];
+        var fetchStamps = {};
+        var fetchNow = Date.now();
 
         if (!backend.capabilities.serverState) {
             // Keyed by meta.index (position in root.feeds), NOT by url: two
@@ -2268,6 +2296,25 @@ DesktopPluginComponent {
                     });
                     continue;
                 }
+                // Not due yet: no request, and crucially the PREVIOUS status
+                // is carried forward rather than a fresh "loading" row that
+                // nothing will ever resolve. Its articles are put back in
+                // finalizeFetch from the retention pool.
+                if (!root.feedIsDue(feed, fetchNow)) {
+                    var prior = root.previousStatusFor(feed.url);
+                    statuses.push(prior ? prior : {
+                        url: feed.url,
+                        name: name,
+                        state: "ok",
+                        lastFetched: 0,
+                        lastSuccess: 0,
+                        lastError: "",
+                        itemCount: 0
+                    });
+                    skippedUrls.push(feed.url);
+                    continue;
+                }
+
                 var status = {
                     url: feed.url,
                     name: name,
@@ -2279,11 +2326,13 @@ DesktopPluginComponent {
                 };
                 statuses.push(status);
                 var matched = byIndex[i];
-                if (matched)
+                if (matched) {
                     descriptors.push({
                         req: matched,
                         statusIndex: statuses.length - 1
                     });
+                    fetchStamps[feed.url] = fetchNow;
+                }
             }
         } else {
             // Server-backed backend: one synthetic status row per descriptor
@@ -2313,8 +2362,23 @@ DesktopPluginComponent {
         root.feedStatuses = statuses;
 
         if (descriptors.length === 0) {
-            root.allItems = [];
+            // Nothing was requested. There are two very different reasons for
+            // that and they must not share an outcome.
+            //
+            // If feeds were SKIPPED because none was due yet, the list is
+            // still correct and must be left exactly as it is. Clearing it
+            // here would empty the widget on any cycle where every feed was
+            // inside its own interval -- articles vanishing for no visible
+            // reason, which is the single failure this feature had to be
+            // designed around.
+            //
+            // If nothing was skipped, there genuinely are no eligible feeds
+            // (all disabled, or the last one deleted) and an empty list is the
+            // honest answer.
+            if (skippedUrls.length === 0)
+                root.allItems = [];
             root.isLoading = false;
+            root.feedStatuses = statuses;
             root.applyFilter();
             root.saveFeedStatuses();
             return;
@@ -2329,11 +2393,30 @@ DesktopPluginComponent {
         // already surfaces failures via its own per-feed status rows.
         var hadItems = root.allItems.length > 0;
 
+        // Stamp the feeds we are actually asking for, so the next cycle can
+        // tell what is due. Recorded on ATTEMPT rather than on success: a feed
+        // that is failing should back off to its own interval too, instead of
+        // being retried every global cycle.
+        if (skippedUrls.length > 0 || Object.keys(fetchStamps).length > 0) {
+            var stamps = {};
+            for (var fk in root.feedLastFetch) {
+                if (Object.prototype.hasOwnProperty.call(root.feedLastFetch, fk))
+                    stamps[fk] = root.feedLastFetch[fk];
+            }
+            for (var nk in fetchStamps) {
+                if (Object.prototype.hasOwnProperty.call(fetchStamps, nk))
+                    stamps[nk] = fetchStamps[nk];
+            }
+            root.feedLastFetch = stamps;
+            root.writeState("feedLastFetch", stamps);
+        }
+
         var ctx = {
             gen: gen,
             pending: descriptors.length,
             collector: [],
-            statuses: statuses
+            statuses: statuses,
+            skipped: skippedUrls
         };
 
         for (var d = 0; d < descriptors.length; d++) {
@@ -2482,7 +2565,25 @@ DesktopPluginComponent {
         if (ctx.gen !== root.fetchGeneration)
             return;
 
-        var items = FeedParser.dedupeItems(ctx.collector);
+        // Feeds that were not due this cycle produced no descriptor and so
+        // contributed nothing to the collector. Their articles are put back
+        // here, BEFORE the dedupe, so a skipped feed simply keeps what it had
+        // rather than disappearing from the list -- which is the failure this
+        // whole feature had to be designed around. dedupeItems then resolves
+        // any overlap by stable id exactly as it does for a normal fetch.
+        var collected = ctx.collector;
+        if (ctx.skipped && ctx.skipped.length > 0) {
+            var keep = {};
+            for (var sk = 0; sk < ctx.skipped.length; sk++)
+                keep[ctx.skipped[sk]] = true;
+            var pool = root.digestPool && root.digestPool.length ? root.digestPool : root.allItems;
+            for (var rp = 0; rp < pool.length; rp++) {
+                if (keep[pool[rp].sourceUrl])
+                    collected = collected.concat([pool[rp]]);
+            }
+        }
+
+        var items = FeedParser.dedupeItems(collected);
 
         // Sorting lives in ReaderState so it can be tested: this used to be
         // three inline comparators here, and the "newest"/"oldest" ones broke
@@ -2492,11 +2593,21 @@ DesktopPluginComponent {
         // reshuffled under the cursor. sortItems breaks ties on id.
         items = ReaderState.sortItems(items, root.sortMode, root.maxPerFeed, ReaderState.feedOrderMap(root.feeds));
 
+        // Captured BEFORE the display cap below, which is the whole point and
+        // was got wrong the first time: taking the slice afterwards made this
+        // identical to allItems, so the digest still only ever saw maxItems
+        // articles and the fix that was supposed to widen it did nothing.
+        //
+        // Also the retention pool for per-feed intervals: a feed that was not
+        // due this cycle contributed nothing to the collector, and its
+        // articles are recovered from here rather than vanishing.
+        root.digestPool = items.slice(0, root.digestPoolCap);
+
         if (items.length > root.maxItems) {
             items = items.slice(0, root.maxItems);
         }
 
-        // The digest reads from here, NOT from allItems.
+        // The digest reads from digestPool, NOT from allItems.
         //
         // allItems is capped at maxItems -- a *display* limit, typically 20 or
         // 30. Running the digest off it meant "the last 24 hours" was really
@@ -2507,7 +2618,6 @@ DesktopPluginComponent {
         // Capped separately and much higher, because the constraint here is
         // the model's context rather than the widget's height, and a digest
         // over several hundred titles is still one cheap call.
-        root.digestPool = items.slice(0, root.digestPoolCap);
 
         root.allItems = items;
         root.pruneSummaryCache(items);
