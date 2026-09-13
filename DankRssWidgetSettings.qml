@@ -283,6 +283,18 @@ PluginSettings {
     // "system" resolves to these same values unchanged, so the default path
     // is a pass-through and nothing moves for anyone who has not asked for a
     // preset.
+
+    // Only the three roles the settings panel offers. Anything invalid or
+    // absent is ignored by applyOverrides, so a half-set custom theme falls
+    // back to its base palette rather than to undefined colours.
+    function customOverrides() {
+        return {
+            primary: root.loadValue("customPrimary", ""),
+            error: root.loadValue("customError", ""),
+            success: root.loadValue("customSuccess", "")
+        };
+    }
+
     function themeBasePalette() {
         return {
             primary: String(Theme.primary),
@@ -319,7 +331,10 @@ PluginSettings {
         return Qt.rgba(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, a);
     }
 
-    readonly property var roleColours: Palette.resolvePalette(root.loadValue("colourPreset", "system"), root.themeBasePalette())
+    readonly property var roleColours: {
+        var base = Palette.resolvePalette(root.loadValue("colourPreset", "system"), root.themeBasePalette());
+        return root.loadValue("colourPreset", "system") === "custom" ? Palette.applyOverrides(base, root.customOverrides()) : base;
+    }
 
     Component.onCompleted: {
         root.refreshFeedStatuses();
@@ -455,6 +470,7 @@ PluginSettings {
         }
 
         ToggleSetting {
+            Layout.fillWidth: true
             settingKey: "syncReadOnOpen"
             label: "Mark as read on open"
             description: "Mark entries as read on the server when you open them"
@@ -462,6 +478,7 @@ PluginSettings {
         }
 
         ToggleSetting {
+            Layout.fillWidth: true
             settingKey: "showStarred"
             label: "Show starred entries"
             description: "Show only starred/bookmarked entries instead of unread entries"
@@ -469,6 +486,7 @@ PluginSettings {
         }
 
         Row {
+            Layout.fillWidth: true
             spacing: Theme.spacingM
 
             DankButton {
@@ -620,6 +638,7 @@ PluginSettings {
         }
 
         Row {
+            Layout.fillWidth: true
             spacing: Theme.spacingM
 
             DankButton {
@@ -886,6 +905,7 @@ PluginSettings {
     }
 
     ToggleSetting {
+        Layout.fillWidth: true
         settingKey: "exportFullText"
         label: "Fetch full article text on export"
         description: "Fetches each exported item's own page and extracts the article body instead of using the feed's summary. Off by default -- this makes one outbound request per exported article to whatever site the feed links to, so it must be opt-in. A page that cannot be fetched, or that looks like a section front rather than an article, falls back to the summary automatically."
@@ -897,6 +917,7 @@ PluginSettings {
     // shortcut appears until one is set") -- an attachment folder is
     // meaningless with nowhere to export notes into in the first place.
     ToggleSetting {
+        Layout.fillWidth: true
         id: exportImagesSetting
         visible: exportRootField.text.trim() !== ""
         settingKey: "exportImages"
@@ -948,6 +969,7 @@ PluginSettings {
         expanded: false
 
     SliderSetting {
+        Layout.fillWidth: true
         settingKey: "updateInterval"
         label: "Refresh Interval"
         description: "How often feeds are fetched (in minutes)"
@@ -959,6 +981,7 @@ PluginSettings {
     }
 
     SliderSetting {
+        Layout.fillWidth: true
         settingKey: "maxItems"
         label: "Maximum Items"
         description: "Maximum number of feed items to display"
@@ -969,6 +992,7 @@ PluginSettings {
     }
 
     SelectionSetting {
+        Layout.fillWidth: true
         id: sortModeSetting
         settingKey: "sortMode"
         label: "Sort Order"
@@ -982,6 +1006,7 @@ PluginSettings {
     }
 
     SliderSetting {
+        Layout.fillWidth: true
         visible: sortModeSetting.value === "byFeed"
         settingKey: "maxPerFeed"
         label: "Items per Feed"
@@ -993,6 +1018,7 @@ PluginSettings {
     }
 
     SelectionSetting {
+        Layout.fillWidth: true
         settingKey: "viewMode"
         label: "View Mode"
         description: "Compact shows title-only rows; Expanded shows descriptions and thumbnails"
@@ -1004,6 +1030,7 @@ PluginSettings {
     }
 
     ToggleSetting {
+        Layout.fillWidth: true
         settingKey: "notifyNewItems"
         label: "New Item Notifications"
         description: "Show a toast notification when new items appear after a refresh"
@@ -1011,6 +1038,7 @@ PluginSettings {
     }
 
     ToggleSetting {
+        Layout.fillWidth: true
         settingKey: "showFeedName"
         label: "Show Feed Source"
         description: "Display the feed name next to each item title"
@@ -1018,6 +1046,7 @@ PluginSettings {
     }
 
     ToggleSetting {
+        Layout.fillWidth: true
         settingKey: "showImages"
         label: "Show Thumbnails"
         description: "Display thumbnail images when available in feed items"
@@ -1025,6 +1054,7 @@ PluginSettings {
     }
 
     ToggleSetting {
+        Layout.fillWidth: true
         settingKey: "markReadOnScroll"
         label: "Mark Read on Scroll"
         description: "Mark items as read automatically as they scroll past, instead of only on click or open"
@@ -1032,6 +1062,7 @@ PluginSettings {
     }
 
     ToggleSetting {
+        Layout.fillWidth: true
         settingKey: "openInBrowser"
         label: "Open Links in Browser"
         description: "Click feed items to open them in your browser"
@@ -2069,6 +2100,7 @@ PluginSettings {
         expanded: false
 
     SliderSetting {
+        Layout.fillWidth: true
         settingKey: "fontSize"
         label: "Font Size"
         description: "Text size for feed items"
@@ -2079,6 +2111,7 @@ PluginSettings {
     }
 
     SliderSetting {
+        Layout.fillWidth: true
         settingKey: "backgroundOpacity"
         label: "Background Opacity"
         defaultValue: 60
@@ -2088,6 +2121,7 @@ PluginSettings {
     }
 
     ToggleSetting {
+        Layout.fillWidth: true
         id: borderToggle
         settingKey: "enableBorder"
         label: "Enable Border"
@@ -2095,6 +2129,7 @@ PluginSettings {
     }
 
     SliderSetting {
+        Layout.fillWidth: true
         opacity: borderToggle.value ? 1.0 : 0.2
         enabled: borderToggle.value
         settingKey: "borderThickness"
@@ -2106,6 +2141,7 @@ PluginSettings {
     }
 
     SliderSetting {
+        Layout.fillWidth: true
         opacity: borderToggle.value ? 1.0 : 0.2
         enabled: borderToggle.value
         settingKey: "borderOpacity"
@@ -2117,6 +2153,7 @@ PluginSettings {
     }
 
     SelectionSetting {
+        Layout.fillWidth: true
         opacity: borderToggle.value ? 1.0 : 0.2
         enabled: borderToggle.value
         settingKey: "borderColor"
@@ -2184,6 +2221,7 @@ PluginSettings {
         expanded: false
 
     ToggleSetting {
+        Layout.fillWidth: true
         id: aiEnabledSetting
         settingKey: "aiEnabled"
         label: "AI Summaries"
@@ -2192,6 +2230,7 @@ PluginSettings {
     }
 
     SelectionSetting {
+        Layout.fillWidth: true
         id: aiPresetSetting
         visible: aiEnabledSetting.value
         settingKey: "aiPreset"
@@ -2355,6 +2394,7 @@ PluginSettings {
     }
 
     Row {
+        Layout.fillWidth: true
         visible: aiEnabledSetting.value
         spacing: Theme.spacingM
 
@@ -2441,6 +2481,7 @@ PluginSettings {
         expanded: false
 
     ToggleSetting {
+        Layout.fillWidth: true
         id: rankingEnabledSetting
         settingKey: "rankingEnabled"
         label: "Rank by Interest"
@@ -2449,6 +2490,7 @@ PluginSettings {
     }
 
     SliderSetting {
+        Layout.fillWidth: true
         visible: rankingEnabledSetting.value
         settingKey: "rankingWeight"
         label: "Ranking Weight"
@@ -2473,6 +2515,7 @@ PluginSettings {
         expanded: false
 
     SelectionSetting {
+        Layout.fillWidth: true
         id: colourPresetSetting
         settingKey: "colourPreset"
         label: "Colour Theme"
@@ -2486,7 +2529,8 @@ PluginSettings {
             { label: "Gruvbox", value: "gruvbox" },
             { label: "Catppuccin Mocha", value: "catppuccin" },
             { label: "Dracula", value: "dracula" },
-            { label: "Solarized", value: "solarized" }
+            { label: "Solarized", value: "solarized" },
+            { label: "Custom", value: "custom" }
         ]
         defaultValue: "system"
     }
@@ -2529,6 +2573,35 @@ PluginSettings {
         }
     }
     } // end Colour Theme DankCollapsibleSection
+
+    // Custom colours. Only the three roles that actually carry meaning are
+    // offered -- primary, error and success. Exposing all thirteen would be a
+    // colour-picker wall for roles nobody wants to change, and the surface and
+    // text colours are better left following the system theme so the widget
+    // still sits in its desktop.
+    //
+    // Palette.applyOverrides ignores anything that is not a valid colour, so a
+    // half-finished entry degrades to the base palette rather than to nothing.
+    ColorSetting {
+        visible: colourPresetSetting.value === "custom"
+        settingKey: "customPrimary"
+        label: "Primary"
+        defaultValue: Theme.primary
+    }
+
+    ColorSetting {
+        visible: colourPresetSetting.value === "custom"
+        settingKey: "customError"
+        label: "Error"
+        defaultValue: Theme.error
+    }
+
+    ColorSetting {
+        visible: colourPresetSetting.value === "custom"
+        settingKey: "customSuccess"
+        label: "Success"
+        defaultValue: Theme.success
+    }
 
     // ─── Podcast Audio ───
     //

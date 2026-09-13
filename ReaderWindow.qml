@@ -136,6 +136,26 @@ DankFloatingWindow {
     // "system" resolves to these same values unchanged, so the default path
     // is a pass-through and nothing moves for anyone who has not asked for a
     // preset.
+
+    // Only the three roles the settings panel offers. Anything invalid or
+    // absent is ignored by applyOverrides, so a half-set custom theme falls
+    // back to its base palette rather than to undefined colours.
+    // Passed in by the widget, which owns settings; the reader reads nothing.
+    property var colourOverrides: ({})
+
+    function overrideValue(key, fallback) {
+        var v = root.colourOverrides ? root.colourOverrides[key] : undefined;
+        return (v === undefined || v === null) ? fallback : v;
+    }
+
+    function customOverrides() {
+        return {
+            primary: root.overrideValue("customPrimary", ""),
+            error: root.overrideValue("customError", ""),
+            success: root.overrideValue("customSuccess", "")
+        };
+    }
+
     function themeBasePalette() {
         return {
             primary: String(Theme.primary),
@@ -175,7 +195,10 @@ DankFloatingWindow {
     // Passed in by the widget so both windows agree; defaults to following
     // the system theme when opened standalone.
     property string colourPreset: "system"
-    readonly property var roleColours: Palette.resolvePalette(root.colourPreset, root.themeBasePalette())
+    readonly property var roleColours: {
+        var base = Palette.resolvePalette(root.colourPreset, root.themeBasePalette());
+        return root.colourPreset === "custom" ? Palette.applyOverrides(base, root.customOverrides()) : base;
+    }
 
     readonly property string effectiveFontFamily: root.readerFontFamily !== "" ? root.readerFontFamily : Theme.fontFamily
 

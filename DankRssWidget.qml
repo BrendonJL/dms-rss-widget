@@ -100,6 +100,23 @@ DesktopPluginComponent {
     // "system" resolves to these same values unchanged, so the default path
     // is a pass-through and nothing moves for anyone who has not asked for a
     // preset.
+
+    // Only the three roles the settings panel offers. Anything invalid or
+    // absent is ignored by applyOverrides, so a half-set custom theme falls
+    // back to its base palette rather than to undefined colours.
+    function pluginDataValue(key, fallback) {
+        var v = pluginData[key];
+        return (v === undefined || v === null) ? fallback : v;
+    }
+
+    function customOverrides() {
+        return {
+            primary: root.pluginDataValue("customPrimary", ""),
+            error: root.pluginDataValue("customError", ""),
+            success: root.pluginDataValue("customSuccess", "")
+        };
+    }
+
     function themeBasePalette() {
         return {
             primary: String(Theme.primary),
@@ -137,7 +154,10 @@ DesktopPluginComponent {
     }
 
     property string colourPreset: pluginData.colourPreset ?? "system"
-    readonly property var roleColours: Palette.resolvePalette(root.colourPreset, root.themeBasePalette())
+    readonly property var roleColours: {
+        var base = Palette.resolvePalette(root.colourPreset, root.themeBasePalette());
+        return root.colourPreset === "custom" ? Palette.applyOverrides(base, root.customOverrides()) : base;
+    }
 
     // Ids already announced by a rule. Separate from seenIds: an item can be
     // seen (counted, not new) long before a newly-added rule first matches it,
@@ -2875,6 +2895,11 @@ DesktopPluginComponent {
         onNextRequested: root.readerAdvance(1)
         onPrevRequested: root.readerAdvance(-1)
         colourPreset: root.colourPreset
+        colourOverrides: ({
+                customPrimary: root.pluginDataValue("customPrimary", ""),
+                customError: root.pluginDataValue("customError", ""),
+                customSuccess: root.pluginDataValue("customSuccess", "")
+            })
         summaryAvailable: root.aiReady
         onSummaryRequested: itemId => root.requestSummary(itemId)
         onDigestRequested: root.generateDigest()

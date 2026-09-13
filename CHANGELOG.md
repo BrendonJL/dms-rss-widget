@@ -3,9 +3,13 @@
 Newest first. Versions are the ones in `plugin.json`; CI checks that the
 version in the manifest has a matching `### <version>` heading in this file.
 
-### Unreleased
+### 3.0.0
 
-Work on `develop` since 2.4.0.
+Everything below landed on `develop` after 2.4.0. The short version: the widget
+learned to summarise, rank and digest with a local model; to export notes with
+their pictures; to find feeds, snooze them, schedule them individually and
+filter them by folder; and to be legible to someone who cannot distinguish red
+from green. None of that is on by default.
 
 **New: a digest of the last 24 hours.** `d` opens one AI summary of everything
 published across every feed in the last day, rendered in the reading window.
