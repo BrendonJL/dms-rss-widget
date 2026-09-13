@@ -17,6 +17,8 @@ nothing else.
 | `ExportProvider.js` | Note paths, markdown bodies, editor open-command presets and legacy config migration |
 | `HtmlExtract.js` | Local full-text article extraction from an HTML page |
 | `KeyMap.js` | Keyboard dispatch: takes a key event plus widget state, returns an action name |
+| `Palette.js` | Colour roles resolved from a preset, including colour-vision-deficient palettes and the simulation used to test them |
+| `Ranking.js` | Interest ranking: cosine similarity, the starred-article profile, and the recency blend |
 
 QML files: `DankRssWidget.qml` (the widget), `DankRssWidgetSettings.qml` (the
 settings panel), `ReaderWindow.qml` (the reading window).

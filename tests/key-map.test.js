@@ -613,3 +613,49 @@ describe("digest (d)", () => {
         assert.equal(r.index, -1);
     });
 });
+
+// ─── snooze (z / Shift+Z) ───
+//
+// Asymmetric on purpose, and the asymmetry is the point. Snoozing needs a
+// cursor because it has to know which feed; waking must NOT, because a
+// snoozed feed's items are filtered out of the list entirely, so after a
+// broad snooze there may be no row left to put a cursor on. If Shift+Z were
+// gated on a cursor the user could snooze their way into a state they cannot
+// leave from the keyboard.
+
+describe("snooze (z / Shift+Z)", () => {
+    test("Key_Z is exported with the Qt value for 'z'", () => {
+        assert.equal(KeyMap.Key_Z, 0x5a);
+    });
+
+    test("z snoozes the cursor row's source", () => {
+        var r = resolveKey(evt(KeyMap.Key_Z), baseState({ index: 2 }));
+        assert.equal(r.action, "snoozeSource");
+        assert.equal(r.index, 2);
+    });
+
+    test("z does nothing with no cursor -- it would not know which feed", () => {
+        var r = resolveKey(evt(KeyMap.Key_Z), baseState({ index: -1 }));
+        assert.equal(r.action, null);
+    });
+
+    test("Shift+Z wakes everything, and works with no cursor", () => {
+        var r = resolveKey(evt(KeyMap.Key_Z, KeyMap.ShiftModifier), baseState({ index: -1 }));
+        assert.equal(r.action, "unsnoozeAll");
+    });
+
+    test("Shift+Z works on an empty list -- the escape hatch must never be gated", () => {
+        var r = resolveKey(evt(KeyMap.Key_Z, KeyMap.ShiftModifier), baseState({ index: -1, count: 0 }));
+        assert.equal(r.action, "unsnoozeAll");
+    });
+
+    test("z is a row action even during a selection, never a bulk one", () => {
+        var r = resolveKey(evt(KeyMap.Key_Z), baseState({ index: 1, hasSelection: true }));
+        assert.equal(r.action, "snoozeSource");
+    });
+
+    test("both are swallowed by an active search", () => {
+        assert.notEqual(resolveKey(evt(KeyMap.Key_Z), baseState({ index: 1, searchActive: true })).action, "snoozeSource");
+        assert.notEqual(resolveKey(evt(KeyMap.Key_Z, KeyMap.ShiftModifier), baseState({ index: 1, searchActive: true })).action, "unsnoozeAll");
+    });
+});

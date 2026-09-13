@@ -7,6 +7,128 @@ version in the manifest has a matching `### <version>` heading in this file.
 
 Work on `develop` since 2.4.0.
 
+**New: a digest of the last 24 hours.** `d` opens one AI summary of everything
+published across every feed in the last day, rendered in the reading window.
+Cursor-independent like `r`, because it asks about the whole list rather than
+the row under the cursor, so it has to work at rest. It goes through the same
+block-typesetting path as an article body rather than a second one, so the two
+cannot drift apart, and digest mode turns the article-only keys into no-ops
+rather than letting them act on whatever article was open before.
+
+Items with no usable date are included rather than dropped. A timestamp of zero
+means the feed gave no date, which is far more often sloppy feed metadata than
+a genuinely ancient article, and silently omitting those is the sort of gap
+nobody notices until they have already missed something.
+
+**New: interest ranking**, off by default, and it stays off until it can
+actually work — it needs an embedding model configured and at least five
+starred articles to learn from. Every gate fails closed and says why, because
+an unexplained order is indistinguishable from a broken one, and a ranking
+that feels wrong is worse than no ranking at all.
+
+Ranking reorders what the filter chose and never changes what is shown. That
+separation is what makes it reversible: switch it off and the same rows are
+simply back in their old order. The weight slider's zero is an exact
+reverse-chronological short-circuit rather than a multiplication that happens
+to vanish, so sliding it down really is off rather than nearly off. Articles
+with no embedding keep their place at the end instead of disappearing.
+
+Embeddings are held in memory and deliberately not persisted. One is a few
+hundred floats; a few hundred articles of them is megabytes of JSON written
+into a state file shared with the rest of the shell, to save a single batch
+request that takes about a second.
+
+**New: colour-blindness presets.** Deuteranopia, protanopia and tritanopia,
+over the previous matugen-only setup. Every colour in the widget now resolves
+through a local palette rather than reading the theme directly; "system" is a
+byte-identical pass-through, so nothing moves unless you ask for a preset.
+
+The palettes are Okabe-Ito (deuteranopia, protanopia) and Paul Tol's bright
+scheme (tritanopia) — real published values, cited in the source, not hex
+codes chosen by eye, since choosing colours by eye is the exact failure this
+feature exists to correct. Distinctness is *measured*: the tests run each
+palette through the Machado 2009 dichromacy simulation matrices and assert
+that error and success remain far apart under the condition the preset is for.
+They clear the threshold by six to eight times.
+
+The plugin never writes to the theme. It cannot — that object is shared by the
+whole shell, and assigning to it would repaint the bar, the popups and every
+other plugin too.
+
+**New: OPML export**, the inverse of the import that already existed, with a
+round-trip test because the failure mode is silent: a feed titled "Tom &
+Jerry" that survives export but not re-import is a backup that looks fine
+until the day you need it.
+
+**New: feed autodiscovery.** Paste a site's address and the widget finds its
+feed, so you no longer have to already know the feed URL. Candidates that look
+like comment feeds rank last — being handed `/comments/feed` when you asked
+for the site is the thing that actually goes wrong here, rather than parsing.
+
+**New: images in exported notes**, off by default. Images are downloaded into
+an attachments folder beside the notes and referenced by relative path, which
+is the only form that renders live in Obsidian, Neovim and plain markdown
+viewers alike — Neovim's image plugins render local files and not remote URLs.
+Hotlinking was considered and rejected: source sites reorganise, and a note
+that silently loses its pictures years later is worse than one that took a
+moment longer to save. A failed image keeps its original URL rather than
+pointing at a file that was never written.
+
+**New: per-source snooze**, which hides one feed's items until a deadline
+without disabling the feed. Those are different intentions: a disabled feed
+stops being fetched and leaves history, a snoozed one keeps syncing quietly
+and merely stops shouting.
+
+**New: mark-read-on-scroll**, off by default, and debounced rather than
+per-frame. That is the feature rather than an optimisation — it only marks on
+a settled forward move, so a fast fling to the bottom and back marks nothing.
+
+**New: rule-based notifications**, which replace the plain new-item count
+rather than adding to it. The point of a rule is to hear about interesting
+items instead of merely new ones, and firing both would mean two toasts per
+refresh, which is how a useful notification becomes one you learn to dismiss
+unread. Rules use the same query syntax as the search box, so what you already
+know transfers.
+
+**Sorting moved into a tested module**, and gained a tie-break it was missing.
+Feed items arrive in batches sharing a timestamp to the second, and the old
+comparators broke ties on timestamp alone — so equal-timestamp runs were free
+to come back in a different order on every refresh, and the list quietly
+reshuffled under the cursor.
+
+**The extractor can merge sibling candidates**, for pages where the content is
+not wrapped in a single element. Shipped as measured-neutral: byte-identical
+across all eighteen articles in the Readability corpus, because no page there
+currently needs it. It is present for the pages that will.
+
+The investigation behind it corrected two things this project believed. The
+document root does *not* win by default on Wikipedia — the correct container
+wins outright every time. And suppressing infoboxes and reference lists, which
+sounds obviously right, measures **worse**: mean 92.4% to 90.9%, with one
+article collapsing from 83% to 58%, because Readability's own output keeps
+them too. That experiment was reverted. The remaining gap is substantially a
+measurement artefact of how markdown link syntax fragments word-overlap
+scoring, not an extraction defect.
+
+**Fixed: a destructive bug in the summary cache.** Pruning ran from the filter
+path, which also runs immediately after the item list is emptied — every feed
+disabled, the last feed deleted, a backend switch. Pruning against an empty
+list meant deleting every cached summary, and the result was written to disk.
+Each entry costs a real model run, so that loss was unrecoverable. Pruning is
+a refresh concern and now happens only there; separately, the module now
+treats an empty list as "no information" rather than "delete everything".
+
+**Fixed: summary failures could appear against the wrong article.** The
+success path checked which article was open; the three error paths checked
+only a generation counter, which does not advance when you merely navigate
+away. A completed summary was also thrown away when superseded, so asking
+again re-ran the model for an answer already paid for.
+
+**Fixed: "Test Connection" blamed the network for HTTP errors.** curl exits
+zero on a 4xx, so a runtime that answered but refused — a wrong API key, a
+gated proxy, a missing model — was indistinguishable from a dead socket, and
+you were told the host could not be reached moments after reaching it.
+
 **New: per-article AI summaries**, off by default. A settings section
 (`aiEnabled`, a preset picker for ollama/vLLM/llama.cpp/LM Studio/Custom, plus
 model and API key fields) and a "Test Connection" button that tells apart an

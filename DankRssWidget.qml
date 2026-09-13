@@ -453,6 +453,14 @@ DesktopPluginComponent {
             desc: "Refresh feeds"
         });
         rows.push({
+            keys: ["z"],
+            desc: "Snooze this feed for a day"
+        });
+        rows.push({
+            keys: ["Z"],
+            desc: "Wake every snoozed feed"
+        });
+        rows.push({
             keys: ["A"],
             desc: "Mark all read / unread"
         });
@@ -1004,6 +1012,41 @@ DesktopPluginComponent {
         root.applyFilter();
     }
 
+    // "z" on a row snoozes the feed that row came from, for a day.
+    //
+    // Toasts, unlike the AI paths: this one hides content the user can no
+    // longer see, so silence would be indistinguishable from the key having
+    // done nothing -- and the toast is where "shift+z" gets taught, since a
+    // snoozed feed leaves no row behind to discover it from.
+    function snoozeFromRow(itemId) {
+        var article = root.itemById(itemId);
+        if (!article)
+            return;
+        var url = article.sourceUrl || "";
+        if (!url) {
+            root.toastError("That item's feed has no address to snooze");
+            return;
+        }
+        root.snoozeSource(url, 24);
+        if (typeof ToastService !== "undefined")
+            ToastService.showInfo("Snoozed " + (article.source || "that feed") + " for a day", "Shift+Z wakes every snoozed feed");
+    }
+
+    function unsnoozeAll() {
+        var count = 0;
+        for (var k in root.snoozeMap) {
+            if (Object.prototype.hasOwnProperty.call(root.snoozeMap, k))
+                count++;
+        }
+        if (count === 0)
+            return;
+        root.snoozeMap = {};
+        root.writeState("snoozes", root.snoozeMap);
+        root.applyFilter();
+        if (typeof ToastService !== "undefined")
+            ToastService.showInfo(count === 1 ? "Woke 1 snoozed feed" : "Woke " + count + " snoozed feeds");
+    }
+
     function unsnoozeSource(sourceUrl) {
         if (!sourceUrl)
             return;
@@ -1371,6 +1414,15 @@ DesktopPluginComponent {
             }
         case "digest":
             root.openDigest();
+            break;
+        case "snoozeSource":
+            {
+                var snoozeRow = feedModel.get(result.index);
+                root.snoozeFromRow(snoozeRow.itemId);
+                break;
+            }
+        case "unsnoozeAll":
+            root.unsnoozeAll();
             break;
         case "summarise":
             {
