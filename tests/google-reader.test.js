@@ -273,6 +273,60 @@ describe("GoogleReaderBackend chain: items/contents link", () => {
         assert.equal(result.serverStatus[0].starred, true);
     });
 
+    // ─── Task 1: folder/label categories threaded onto the item ───
+    //
+    // The label tag format ("user/-/label/<name>" / "user/<uid>/label/<name>")
+    // is inferred from the same two-form pattern the state tags already use
+    // in this file, NOT independently re-probed against a live server for
+    // this change -- see the comment on extractGreaderLabels in
+    // GoogleReader.js.
+
+    test("label categories (folder membership) thread onto item.categories, alongside state tags", () => {
+        var req = contentsRequestFor(["46"]);
+        var body = JSON.stringify({
+            items: [{
+                id: "46",
+                title: "T",
+                categories: [
+                    "user/1/state/com.google/reading-list",
+                    "user/1/state/com.google/read",
+                    "user/-/label/Tech",
+                    "user/1/label/Longreads"
+                ]
+            }]
+        });
+        var result = run(req, wire(body, 200));
+
+        assert.deepEqual(result.items[0].categories, ["Tech", "Longreads"]);
+        // State tags themselves must never leak through as labels.
+        assert.ok(result.items[0].categories.indexOf("state") === -1);
+    });
+
+    test("no label categories -> empty array, not absent and not a throw", () => {
+        var req = contentsRequestFor(["46"]);
+        var body = JSON.stringify({
+            items: [{ id: "46", title: "T", categories: ["user/1/state/com.google/reading-list"] }]
+        });
+        var result = run(req, wire(body, 200));
+        assert.deepEqual(result.items[0].categories, []);
+    });
+
+    test("missing/malformed categories array on the raw item degrades to an empty array", () => {
+        var req = contentsRequestFor(["46"]);
+        var body = JSON.stringify({ items: [{ id: "46", title: "No categories field at all" }] });
+        var result = run(req, wire(body, 200));
+        assert.deepEqual(result.items[0].categories, []);
+    });
+
+    test("non-string entries in categories are skipped rather than thrown on", () => {
+        var req = contentsRequestFor(["46"]);
+        var body = JSON.stringify({
+            items: [{ id: "46", title: "T", categories: [null, 42, "user/-/label/OK"] }]
+        });
+        var result = run(req, wire(body, 200));
+        assert.deepEqual(result.items[0].categories, ["OK"]);
+    });
+
     test("malformed items/contents body terminates with an error", () => {
         var req = contentsRequestFor(["46"]);
         var result = run(req, wire("[]garbage", 200));
@@ -445,5 +499,15 @@ describe("GoogleReaderBackend.reconcile", () => {
         var actual = backend.reconcile(localState, serverEntries);
         var expected = ReaderState.reconcileServerStatus(localState.readOrder, localState.bookmarkOrder, serverEntries, localState.cap);
         assert.deepEqual(actual, expected);
+    });
+});
+
+// ─── fullTextRequest: no equivalent in this protocol ───
+
+describe("GoogleReaderBackend.fullTextRequest", () => {
+    test("always returns null -- no fetch-content equivalent, capabilities.fullText is false", () => {
+        var backend = createGoogleReaderBackend(deps);
+        assert.equal(backend.fullTextRequest(config, "46"), null);
+        assert.equal(backend.fullTextRequest(null, null), null);
     });
 });

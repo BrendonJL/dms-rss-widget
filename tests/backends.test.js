@@ -7,7 +7,8 @@ const GoogleReader = require("../GoogleReader.js");
 const {
     createStandardBackend,
     createMinifluxBackend,
-    createBackends
+    createBackends,
+    knownCategories
 } = require("../Backends.js");
 
 var deps = { FeedParser: FeedParser, ReaderState: ReaderState };
@@ -52,8 +53,8 @@ describe("capabilities", () => {
             serverState: true,
             star: true,
             subscribe: false,
-            categories: false,
-            fullText: false
+            categories: true,
+            fullText: true
         });
     });
 });
@@ -258,12 +259,16 @@ describe("MinifluxBackend.fetchRequests", () => {
         assert.deepEqual(backend.fetchRequests(null), []);
     });
 
-    test("parse: valid entries payload maps through FeedParser.parseMinifluxEntries", () => {
+    test("parse: valid entries payload maps through FeedParser.parseMinifluxEntries, plus a categories field Backends.js attaches itself", () => {
         var reqs = backend.fetchRequests(baseConfig());
         var json = JSON.stringify({ entries: [{ id: 42, title: "Hello", url: "https://x.com/1" }] });
         var result = reqs[0].parse(json);
         var expected = FeedParser.parseMinifluxEntries(JSON.parse(json), "https://miniflux.example.com");
-        assert.deepEqual(result.items, expected.items);
+        // FeedParser.js (owned elsewhere, not touched by this change) has no
+        // concept of categories -- Backends.js attaches `categories` onto
+        // its output by id after the fact. No entry.feed.category here, so
+        // it degrades to an empty array rather than being absent.
+        assert.deepEqual(result.items, expected.items.map((item) => Object.assign({}, item, { categories: [] })));
         assert.deepEqual(result.serverStatus, expected.serverStatus);
         assert.equal(result.error, null);
     });
@@ -460,5 +465,179 @@ describe("SECURITY: token isolation in argv", () => {
         var argv = backend.fetchRequests(nastyConfig)[0].argv;
         assert.ok(Array.isArray(argv));
         assert.ok(argv.indexOf("X-Auth-Token: " + nasty) !== -1);
+    });
+});
+
+// ─── MinifluxBackend: category extraction (Task 1) ───
+//
+// entry.feed.category.title per Miniflux's documented API schema -- NOT
+// re-verified against a live server as part of this change (see the
+// comment on attachMinifluxCategories in Backends.js).
+
+describe("MinifluxBackend: category extraction", () => {
+    var backend = createMinifluxBackend(deps);
+    var config = { minifluxUrl: "https://miniflux.example.com", minifluxToken: "tok", showStarred: false, maxItems: 20 };
+
+    test("a realistic entry with feed.category.title attaches a single-element categories array", () => {
+        var req = backend.fetchRequests(config)[0];
+        var json = JSON.stringify({
+            entries: [{
+                id: 7,
+                title: "Article",
+                url: "https://example.com/a",
+                feed: { title: "Example Feed", category: { id: 3, title: "Tech" } }
+            }]
+        });
+        var result = req.parse(json);
+        assert.equal(result.items.length, 1);
+        assert.deepEqual(result.items[0].categories, ["Tech"]);
+    });
+
+    test("an entry with no feed/category at all degrades to an empty array, not a throw", () => {
+        var req = backend.fetchRequests(config)[0];
+        var result = req.parse(JSON.stringify({ entries: [{ id: 1, title: "No feed" }] }));
+        assert.deepEqual(result.items[0].categories, []);
+    });
+
+    test("feed present but category absent (uncategorised Miniflux feed) degrades to an empty array", () => {
+        var req = backend.fetchRequests(config)[0];
+        var result = req.parse(JSON.stringify({ entries: [{ id: 1, title: "T", feed: { title: "F" } }] }));
+        assert.deepEqual(result.items[0].categories, []);
+    });
+
+    test("malformed category shapes (string instead of object, empty title, null feed) never throw", () => {
+        var req = backend.fetchRequests(config)[0];
+        var cases = [
+            { id: 1, feed: { title: "F", category: "Tech" } },
+            { id: 2, feed: { title: "F", category: { title: "" } } },
+            { id: 3, feed: null },
+            { id: 4, feed: { title: "F", category: null } }
+        ];
+        var result = req.parse(JSON.stringify({ entries: cases }));
+        assert.equal(result.items.length, 4);
+        result.items.forEach((item) => assert.deepEqual(item.categories, []));
+    });
+
+    test("multiple entries with different categories each get their own category array", () => {
+        var req = backend.fetchRequests(config)[0];
+        var result = req.parse(JSON.stringify({
+            entries: [
+                { id: 1, feed: { title: "F1", category: { title: "News" } } },
+                { id: 2, feed: { title: "F2", category: { title: "Tech" } } }
+            ]
+        }));
+        assert.deepEqual(result.items[0].categories, ["News"]);
+        assert.deepEqual(result.items[1].categories, ["Tech"]);
+    });
+});
+
+// ─── knownCategories helper ───
+
+describe("knownCategories", () => {
+    test("collects the distinct, sorted set of category strings across items", () => {
+        var items = [
+            { id: "1", categories: ["Tech"] },
+            { id: "2", categories: ["News"] },
+            { id: "3", categories: ["Tech"] }
+        ];
+        assert.deepEqual(knownCategories(items), ["News", "Tech"]);
+    });
+
+    test("empty items array -> empty set", () => {
+        assert.deepEqual(knownCategories([]), []);
+    });
+
+    test("null/undefined items -> empty set, never throws", () => {
+        assert.deepEqual(knownCategories(null), []);
+        assert.deepEqual(knownCategories(undefined), []);
+    });
+
+    test("items with no categories field at all (standard backend items) are skipped, not thrown on", () => {
+        var items = [{ id: "l:1", title: "No categories field" }];
+        assert.deepEqual(knownCategories(items), []);
+    });
+
+    test("malformed categories values (null, non-array, non-string entries) are skipped, not thrown on", () => {
+        var items = [
+            { id: "1", categories: null },
+            { id: "2", categories: "Tech" },
+            { id: "3", categories: [null, 42, "", "Tech"] },
+            null,
+            { id: "4" }
+        ];
+        assert.deepEqual(knownCategories(items), ["Tech"]);
+    });
+});
+
+// ─── MinifluxBackend.fullTextRequest (Task 2: full-text fast path) ───
+
+describe("MinifluxBackend.fullTextRequest", () => {
+    var backend = createMinifluxBackend(deps);
+    var config = { minifluxUrl: "https://miniflux.example.com", minifluxToken: "SECRET_TOKEN_VALUE" };
+
+    test("builds the GET /v1/entries/{id}/fetch-content argv, never a network call here", () => {
+        var req = backend.fullTextRequest(config, "42");
+        assert.deepEqual(req.argv, [
+            "curl", "-sS",
+            "--fail-with-body",
+            "--connect-timeout", "5",
+            "--max-time", "25",
+            "--proto", "=http,https",
+            "--proto-redir", "=http,https",
+            "--max-redirs", "5",
+            "--max-filesize", "5000000",
+            "-X", "GET",
+            "-H", "X-Auth-Token: SECRET_TOKEN_VALUE",
+            "https://miniflux.example.com/v1/entries/42/fetch-content"
+        ]);
+    });
+
+    test("uses the deliberately-longer Miniflux Proc timeout, same as other Miniflux calls", () => {
+        var req = backend.fullTextRequest(config, "42");
+        assert.equal(req.timeoutMs, 30000);
+    });
+
+    test("returns null when id is falsy or config is not ready (never the only route -- caller must fall back)", () => {
+        assert.equal(backend.fullTextRequest(config, ""), null);
+        assert.equal(backend.fullTextRequest(config, null), null);
+        assert.equal(backend.fullTextRequest({ minifluxUrl: "", minifluxToken: "" }, "42"), null);
+    });
+
+    test("parse: a valid {content} payload extracts the string", () => {
+        var req = backend.fullTextRequest(config, "42");
+        var result = req.parse(JSON.stringify({ content: "<p>Full article text</p>" }));
+        assert.deepEqual(result, { content: "<p>Full article text</p>", error: null });
+    });
+
+    test("parse: invalid JSON reports an error rather than throwing", () => {
+        var req = backend.fullTextRequest(config, "42");
+        var result = req.parse("not json");
+        assert.equal(result.content, null);
+        assert.equal(typeof result.error, "string");
+    });
+
+    test("parse: a JSON payload missing/wrong-typed content reports an error", () => {
+        var req = backend.fullTextRequest(config, "42");
+        assert.equal(req.parse(JSON.stringify({})).content, null);
+        assert.equal(req.parse(JSON.stringify({ content: 123 })).content, null);
+        assert.equal(req.parse(JSON.stringify({ error_message: "not found" })).content, null);
+    });
+
+    test("SECURITY: token isolation matches the rest of the Miniflux backend", () => {
+        var TOKEN = "tok_9f3a-DO-NOT-LEAK";
+        var req = createMinifluxBackend(deps).fullTextRequest({ minifluxUrl: "https://miniflux.example.com", minifluxToken: TOKEN }, "1");
+        var withToken = req.argv.filter((el) => el.indexOf(TOKEN) !== -1);
+        assert.equal(withToken.length, 1);
+        assert.equal(withToken[0], "X-Auth-Token: " + TOKEN);
+    });
+});
+
+// ─── Standard/GoogleReader fullTextRequest: always a no-op ───
+
+describe("fullTextRequest no-ops on backends without server-side extraction", () => {
+    test("StandardBackend.fullTextRequest always returns null (capabilities.fullText is false)", () => {
+        var backend = createStandardBackend(deps);
+        assert.equal(backend.fullTextRequest({}, "1"), null);
+        assert.equal(backend.fullTextRequest(null, null), null);
     });
 });

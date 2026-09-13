@@ -24,7 +24,8 @@ const CONTRACT = {
     markUnreadRequest: 3,    // (config, session, ids)
     toggleStarRequest: 4,    // (config, session, id, currentlyStarred)
     configState: 1,          // (config)
-    reconcile: 2             // (localState, serverEntries)
+    reconcile: 2,            // (localState, serverEntries)
+    fullTextRequest: 2       // (config, id)
 };
 
 describe("backend interface uniformity", () => {
