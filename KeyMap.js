@@ -51,6 +51,10 @@ var Key_D = 0x44;
 // snoozed feed, and is the only way back: a snoozed feed's items are filtered
 // out of the list, so there is no row left to toggle.
 var Key_Z = 0x5a;
+// "p" plays the cursor row's audio enclosure, if it has one. A row action:
+// it plays THIS episode. Freed up when the reader's next/previous moved to
+// Shift+J / Shift+K.
+var Key_P = 0x50;
 
 var Key_Space = 0x20;
 var Key_Slash = 0x2f;
@@ -243,6 +247,9 @@ function resolveKey(event, state) {
     if (key === Key_Z)
         return act("snoozeSource", index);
 
+    if (key === Key_P)
+        return act("playAudio", index);
+
     // "i" (summarise) is a row action for the same reason "v" is: it opens
     // the reading window on exactly one article. It is deliberately NOT a
     // whole-selection action like "m"/"s"/"e" -- summarising a selection of
@@ -275,6 +282,7 @@ if (typeof module !== "undefined" && module.exports) {
         Key_I: Key_I,
         Key_D: Key_D,
         Key_Z: Key_Z,
+        Key_P: Key_P,
         Key_Space: Key_Space,
         Key_Slash: Key_Slash,
         Key_Question: Key_Question,

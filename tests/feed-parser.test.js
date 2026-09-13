@@ -1557,3 +1557,99 @@ describe("buildDiscoveryRequest", () => {
         assert.deepEqual(req.parse(html), [{ title: "", url: "https://example.com/blog/feed.xml", type: "rss" }]);
     });
 });
+
+// This file destructures its imports; the audio helpers arrived later, so
+// they are bound here rather than retrofitting the list at the top.
+const FeedParser = require("../FeedParser.js");
+
+// ─── Audio enclosures ───
+//
+// Podcast feeds enclose an audio file; plenty of other feeds enclose a PDF, a
+// torrent or a video. Handing an arbitrary enclosure to a media player turns
+// "play this episode" into "open whatever the feed felt like attaching", so
+// the type gate is the feature, not an optimisation. The same isSafeUrl gate
+// every other URL in this module passes applies here for the usual reason.
+
+describe("extractAudioUrl", () => {
+    test("finds an audio enclosure with url before type", () => {
+        assert.equal(
+            FeedParser.extractAudioUrl('<item><enclosure url="https://ex.com/ep1.mp3" length="1" type="audio/mpeg"/></item>'),
+            "https://ex.com/ep1.mp3");
+    });
+
+    test("finds one with the attributes reversed", () => {
+        assert.equal(
+            FeedParser.extractAudioUrl('<item><enclosure type="audio/mpeg" url="https://ex.com/a.mp3"/></item>'),
+            "https://ex.com/a.mp3");
+    });
+
+    test("accepts single quotes and mixed case", () => {
+        assert.equal(
+            FeedParser.extractAudioUrl("<item><ENCLOSURE URL='https://ex.com/b.ogg' TYPE='AUDIO/OGG'/></item>"),
+            "https://ex.com/b.ogg");
+    });
+
+    test("ignores an image enclosure", () => {
+        assert.equal(FeedParser.extractAudioUrl('<item><enclosure url="https://ex.com/a.jpg" type="image/jpeg"/></item>'), "");
+    });
+
+    test("ignores a video enclosure -- audio only, deliberately", () => {
+        assert.equal(FeedParser.extractAudioUrl('<item><enclosure url="https://ex.com/a.mp4" type="video/mp4"/></item>'), "");
+    });
+
+    test("rejects an unsafe scheme even when the type says audio", () => {
+        assert.equal(FeedParser.extractAudioUrl('<item><enclosure url="file:///etc/passwd" type="audio/mpeg"/></item>'), "");
+        assert.equal(FeedParser.extractAudioUrl('<item><enclosure url="javascript:alert(1)" type="audio/mpeg"/></item>'), "");
+    });
+
+    test("returns empty string, not null, when there is nothing", () => {
+        assert.equal(FeedParser.extractAudioUrl("<item></item>"), "");
+        assert.equal(FeedParser.extractAudioUrl(""), "");
+        assert.equal(FeedParser.extractAudioUrl(null), "");
+    });
+
+    test("picks the audio enclosure when an image one is also present", () => {
+        assert.equal(
+            FeedParser.extractAudioUrl('<item><enclosure url="https://x/a.jpg" type="image/jpeg"/><enclosure url="https://x/a.mp3" type="audio/mpeg"/></item>'),
+            "https://x/a.mp3");
+    });
+});
+
+describe("minifluxEntryAudio", () => {
+    test("picks the audio enclosure from Miniflux's parsed list", () => {
+        assert.equal(FeedParser.minifluxEntryAudio({ enclosures: [
+            { url: "https://x/a.jpg", mime_type: "image/jpeg" },
+            { url: "https://x/a.mp3", mime_type: "audio/mpeg" }
+        ]}), "https://x/a.mp3");
+    });
+
+    test("returns empty for no enclosures, malformed entries, or null", () => {
+        assert.equal(FeedParser.minifluxEntryAudio({ enclosures: [] }), "");
+        assert.equal(FeedParser.minifluxEntryAudio({}), "");
+        assert.equal(FeedParser.minifluxEntryAudio(null), "");
+        assert.equal(FeedParser.minifluxEntryAudio({ enclosures: [null, { mime_type: "audio/mpeg" }] }), "");
+    });
+
+    test("rejects an unsafe url from a server response too", () => {
+        assert.equal(FeedParser.minifluxEntryAudio({ enclosures: [{ url: "file:///x.mp3", mime_type: "audio/mpeg" }] }), "");
+    });
+});
+
+describe("audioUrl on parsed items", () => {
+    test("RSS items carry audioUrl, and it is additive -- every frozen field survives", () => {
+        var items = FeedParser.parseRssFeed(
+            '<rss><channel><item><title>Ep</title><link>https://e.com/1</link><description>d</description>' +
+            '<enclosure url="https://ex.com/ep.mp3" type="audio/mpeg"/></item></channel></rss>', "S", "https://e.com");
+        assert.equal(items.length, 1);
+        assert.equal(items[0].audioUrl, "https://ex.com/ep.mp3");
+        ["id", "title", "link", "description", "timestamp", "dateStr", "source", "sourceUrl", "imageUrl"].forEach(function (f) {
+            assert.ok(f in items[0], "frozen field missing: " + f);
+        });
+    });
+
+    test("an item with no enclosure gets an empty audioUrl rather than undefined", () => {
+        var items = FeedParser.parseRssFeed(
+            '<rss><channel><item><title>T</title><link>https://e.com/2</link></item></channel></rss>', "S", "https://e.com");
+        assert.equal(items[0].audioUrl, "");
+    });
+});

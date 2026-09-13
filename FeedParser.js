@@ -103,6 +103,48 @@ function isSafeUrl(url) {
     return /^https?:\/\//i.test(trimmed);
 }
 
+// The audio enclosure, if a feed carries one -- podcasts almost always do.
+//
+// Deliberately audio only. A feed may enclose a PDF, a torrent or a video, and
+// handing an arbitrary enclosure to a media player is how "play this episode"
+// becomes "open whatever the feed felt like attaching". The same isSafeUrl
+// gate every other URL in this file passes applies here too, for the same
+// reason: a malicious feed must not be able to point this at file: or data:.
+//
+// Returns "" when there is nothing playable, so the caller's check is a plain
+// truthiness test and the field is absent-shaped rather than null-shaped,
+// matching imageUrl beside it.
+function extractAudioUrl(block) {
+    if (!block)
+        return "";
+
+    var patterns = [
+        /<enclosure[^>]*type=["']audio\/[^"']*["'][^>]*url=["']([^"']+)["']/i,
+        /<enclosure[^>]*url=["']([^"']+)["'][^>]*type=["']audio\//i
+    ];
+    for (var i = 0; i < patterns.length; i++) {
+        var m = block.match(patterns[i]);
+        if (m && m[1] && isSafeUrl(m[1]))
+            return cleanText(m[1]);
+    }
+    return "";
+}
+
+// Miniflux hands us entry.enclosures directly rather than raw XML, so the
+// regex path above never sees it -- same split as minifluxEntryImage.
+function minifluxEntryAudio(entry) {
+    var enclosures = (entry && entry.enclosures) || [];
+    for (var k = 0; k < enclosures.length; k++) {
+        var enc = enclosures[k];
+        if (!enc || !enc.url)
+            continue;
+        var mime = enc.mime_type || "";
+        if (mime.indexOf("audio/") === 0 && isSafeUrl(enc.url))
+            return enc.url;
+    }
+    return "";
+}
+
 function extractImageUrl(block, content) {
     var url = "";
 
@@ -198,7 +240,8 @@ function parseRssFeed(xml, sourceName, sourceUrl) {
             timestamp: pubDate ? new Date(pubDate).getTime() || 0 : 0,
             source: sourceName,
             sourceUrl: sourceUrl || "",
-            imageUrl: extractImageUrl(block, description || "")
+            imageUrl: extractImageUrl(block, description || ""),
+            audioUrl: extractAudioUrl(block)
         });
     }
     return items;
@@ -280,7 +323,8 @@ function parseAtomFeed(xml, sourceName, sourceUrl) {
             timestamp: updated ? new Date(updated).getTime() || 0 : 0,
             source: sourceName,
             sourceUrl: sourceUrl || "",
-            imageUrl: extractImageUrl(block, summary || "")
+            imageUrl: extractImageUrl(block, summary || ""),
+            audioUrl: extractAudioUrl(block)
         });
     }
     return items;
@@ -442,7 +486,8 @@ function parseMinifluxEntries(json, defaultSourceUrl) {
             timestamp: timestamp,
             source: source,
             sourceUrl: defaultSourceUrl || "",
-            imageUrl: minifluxEntryImage(entry)
+            imageUrl: minifluxEntryImage(entry),
+            audioUrl: minifluxEntryAudio(entry)
         });
 
         serverStatus.push({
@@ -808,6 +853,8 @@ if (typeof module !== "undefined" && module.exports) {
         getRelativeTime: getRelativeTime,
         extractImageUrl: extractImageUrl,
         isSafeUrl: isSafeUrl,
+        extractAudioUrl: extractAudioUrl,
+        minifluxEntryAudio: minifluxEntryAudio,
         makeItemId: makeItemId,
         parseRssFeed: parseRssFeed,
         parseAtomFeed: parseAtomFeed,

@@ -457,6 +457,10 @@ DesktopPluginComponent {
             desc: "Snooze this feed for a day"
         });
         rows.push({
+            keys: ["p"],
+            desc: "Play this item's audio, if it has any"
+        });
+        rows.push({
             keys: ["Z"],
             desc: "Wake every snoozed feed"
         });
@@ -1032,6 +1036,45 @@ DesktopPluginComponent {
             ToastService.showInfo("Snoozed " + (article.source || "that feed") + " for a day", "Shift+Z wakes every snoozed feed");
     }
 
+    property string audioPlayerCommand: pluginData.audioPlayerCommand ?? "mpv"
+
+    // Hands a podcast episode to an external player.
+    //
+    // execDetached, not Proc.runCommand: a player is long-lived and
+    // runCommand kills what it spawned when its timeout expires -- the same
+    // reasoning the editor-open path already records.
+    //
+    // HONEST LIMITATION, worth stating because the backlog's goal was
+    // specifically "so podcast feeds play through the DMS media widget":
+    // that widget lists MPRIS players, and whether this episode appears there
+    // depends entirely on whether the configured player publishes MPRIS. mpv
+    // does NOT on its own -- it needs the separate mpv-mpris plugin, which is
+    // not installed on this machine (checked). VLC publishes it natively.
+    // So this plays the episode reliably; it appears in the media widget only
+    // if the player was set up for that. The alternative -- the widget
+    // registering itself as an MPRIS player -- would mean owning playback,
+    // which is a different and much larger feature.
+    function playEnclosure(itemId) {
+        var article = root.itemById(itemId);
+        if (!article)
+            return;
+        var url = article.audioUrl || "";
+        if (!url) {
+            root.toastError("That item has no audio to play");
+            return;
+        }
+        var cmd = (root.audioPlayerCommand || "mpv").trim();
+        if (!cmd)
+            return;
+        // Split on whitespace so a command with flags works, and never build
+        // a shell string -- argv only, exactly as the editor-open path does.
+        var argv = cmd.split(/\s+/);
+        argv.push(url);
+        Quickshell.execDetached(argv);
+        if (typeof ToastService !== "undefined")
+            ToastService.showInfo("Playing " + (article.title || "episode"));
+    }
+
     function unsnoozeAll() {
         var count = 0;
         for (var k in root.snoozeMap) {
@@ -1424,6 +1467,12 @@ DesktopPluginComponent {
         case "unsnoozeAll":
             root.unsnoozeAll();
             break;
+        case "playAudio":
+            {
+                var audioRow = feedModel.get(result.index);
+                root.playEnclosure(audioRow.itemId);
+                break;
+            }
         case "summarise":
             {
                 var sumRow = feedModel.get(result.index);
