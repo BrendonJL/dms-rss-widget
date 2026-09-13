@@ -181,3 +181,71 @@ Each of these is something users of other readers are actively missing:
 - **Local, opt-in AI rather than a cloud upsell** -- the exact axis on which
   Feedly Leo and Inoreader Intelligence are criticised.
 - **Podcast enclosures without a second tool** -- Newsboat users need podboat.
+
+## Two larger ideas, post-v3
+
+### SQLite for widget state — viable, and it changes an architectural constraint
+
+**Verified:** `QtQuick.LocalStorage` (Qt's SQLite binding) is present in both
+the system Qt and the Nix one, and a create/insert/select round-trip works
+under the headless engine. So this is a real option, not a hope.
+
+The case for it is stronger than "JSON is untidy". Every cap in this widget
+exists *because* persistence is a whole-file rewrite:
+
+- `idHistoryCap` = 1000 on read/seen/bookmark ids.
+- `summaryCap` = 100, and the comment says why plainly — those entries are
+  paragraphs, not ids, so the map is tens of KB rewritten on every change.
+- Ranking embeddings are **not persisted at all**, because a few hundred items
+  of 768 floats is megabytes of JSON in a file shared with the rest of the
+  shell.
+
+With a database, all three of those constraints go away. Read history could
+span years. Summaries would never be evicted. Embeddings could persist, which
+would make interest ranking instant on startup instead of re-embedding every
+session. That last one is the biggest single win available.
+
+**The cost is real and worth stating before starting.** This project's
+discipline is that logic lives in pure modules testable under Node, and QML
+does I/O. `LocalStorage` is QML-only, so anything expressed as SQL leaves the
+tested half of the codebase — `boundIdList`, `addSummary`, `pruneSummaries`
+and friends become `DELETE ... WHERE` and stop being covered by the 1098 tests.
+That is the same structural blind spot that has produced most of this project's
+shipped bugs.
+
+Mitigation if it goes ahead: keep the modules as the source of truth for
+*decisions* (what to evict, what counts as due) and let SQL do only storage and
+retrieval, rather than moving the reasoning into queries. And migrate from the
+existing JSON on first run rather than asking anyone to start over.
+
+Effort: large. Worth doing mainly for the embeddings.
+
+### AI fact-checking — not in its obvious form
+
+Worth writing down why, because it sounds good and is the one AI feature here
+that could actively harm the user.
+
+A local 3B model asked "is this claim true" will answer confidently and be
+wrong a meaningful fraction of the time. It has no retrieval, its knowledge is
+frozen at training time, and news is precisely the domain where that is worst.
+Presenting that output next to an article implies a verification that did not
+happen, and a wrong "verified" is worse than no check at all — the user would
+be *less* well informed than before. Every other AI feature here fails safely:
+a bad summary is obviously a bad summary. A bad fact-check is invisible.
+
+There are two adjacent features that are genuinely good, use infrastructure
+that already exists, and make no truth claims:
+
+1. **Related coverage.** "Three other feeds are carrying this story" —
+   cross-referencing the user's own subscriptions using the embeddings already
+   computed for interest ranking. It surfaces corroboration without asserting
+   it, which is what a reader actually wants: several independent outlets
+   beats one model's opinion. It also shares almost all its machinery with
+   cross-feed deduplication above, so the two should be built together.
+2. **Claim extraction without adjudication.** Pull out the checkable assertions
+   and who is quoted making them, leaving the judgement to the reader. Useful,
+   honest, and within what a small local model can actually do.
+
+If real fact-checking is ever wanted, it needs retrieval against sources —
+which means either a hosted service or a local index, both of which are larger
+than this widget. The version worth building is (1).
