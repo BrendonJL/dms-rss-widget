@@ -37,24 +37,49 @@ the best place to start.
 
 ## Planned
 
-| Phase | Work | Depends on | Notes |
-|---|---|---|---|
-| 3c | Digest — one summary across the unread set | 3b | Design only |
-| 3d | Interest ranking | 3b | Design only |
-| 6 | Independent smaller items, below | — | |
+Almost nothing, which is the point: Phase 3 and Phase 6 both cleared on
+2026-09-12/13. What is listed here is what genuinely remains, with the reason
+it remains — "not done" and "not done for a reason" are different states and
+only one of them tells you whether to just pick it up.
 
-## Phase 6 / good first issues
+| Phase | Work | Notes |
+|---|---|---|
+| 6 | Per-feed refresh intervals | Needs item retention in the fetch path — see below |
+| 6 | MPRIS ownership for podcasts | Half done; the remaining half is large — see below |
 
-Each is self-contained:
+**Per-feed refresh intervals.** One interval governs every feed today, and a
+news feed does not deserve the same poll rate as a weekly blog. Deliberately
+not attempted blind: it means skipping descriptors in `fetchAllFeeds`, but
+`finalizeFetch` rebuilds `allItems` from whatever came back that cycle, so a
+skipped feed's articles would vanish from the list. Doing it safely means
+retaining and merging items for skipped feeds — a real change to the most
+important code path in the widget, and the failure mode of getting it subtly
+wrong is articles quietly disappearing.
 
-- Feed autodiscovery — paste a site URL, find its feed
-- OPML **export** (import already exists)
-- Categories / folders
-- Per-feed refresh intervals
-- Audio enclosures → MPRIS, so podcasts play through the DMS media widget
-- Rule-based notifications
-- Mark-read-on-scroll
-- Per-source snooze
+**Audio enclosures → MPRIS.** Parsing and playback exist: feeds expose
+`audioUrl` and `p` hands it to a configurable player. The stated goal was for
+podcasts to appear in the DMS media widget, and that widget lists MPRIS
+players — so whether an episode shows up depends entirely on the player. mpv
+does not publish MPRIS without the separate mpv-mpris plugin; VLC does
+natively. Making it true regardless of player means the widget registering
+*itself* as an MPRIS player: owning playback, transport controls, position and
+metadata. That is a much larger feature than "play this enclosure" and is
+worth deciding on rather than drifting into.
+
+## Shipped on `develop`, unreleased
+
+- **Phase 3b** — per-article summaries, on demand, cached and generation-guarded.
+- **Phase 3c** — digest of the last 24 hours (`d`), rendered in the reader.
+- **Phase 3d** — interest ranking, off by default, with a visible reason when
+  it declines to rank.
+- **Accessibility** — an accessible name on every icon-only control, and
+  colour-vision-deficient palettes over a local palette indirection.
+- **Phase 6** — feed autodiscovery, OPML export, categories/folders, images in
+  exported notes, per-source snooze (`z`/`Shift+Z`), mark-read-on-scroll,
+  rule-based notifications, and the Miniflux full-text fast path.
+
+None of it has been through a release, and most of it has had one round of
+real use. Treat it as shipped-but-young.
 
 ## Design principle
 
