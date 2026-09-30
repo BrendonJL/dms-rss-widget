@@ -60,6 +60,7 @@ Reload DMS (Ctrl+Shift+R) or restart your compositor.
 
 - DankMaterialShell >= 1.2.0
 - `curl`
+- `wl-clipboard` — for the reader's copy action (`wl-copy`)
 - A Miniflux or Google Reader API server and credentials — only for sync modes
 - An OpenAI-compatible runtime (e.g. ollama) — only for AI summaries, digest
   and ranking, all opt-in and off by default
