@@ -1,5 +1,4 @@
-// A window that shows one article properly -- see
-// docs/plans/2026-09-11-phase5-reader-app-design.md. There is no annotation
+// A window that shows one article properly. There is no annotation
 // here on purpose: highlighting happens in a real text editor, after "e"
 // exports the note. This window only reads.
 //
@@ -77,7 +76,7 @@ DankFloatingWindow {
     // True once we know `body` is the summary rather than the extracted
     // article -- either extraction fell back/failed, or there was no link
     // to fetch in the first place. Drives the quiet notice, never a toast:
-    // the design calls for saying so quietly, not interrupting.
+    // the user is told quietly, not interrupted.
     property bool usedFallback: false
     property string fallbackReason: ""
 
@@ -85,8 +84,8 @@ DankFloatingWindow {
     //
     // summaryAvailable gates the affordance entirely: with no runtime
     // configured, or the feature switched off, there is no button, no key
-    // and no error row -- the design's hardest requirement is that an
-    // unconfigured widget stays completely silent rather than advertising a
+    // and no error row -- an
+    // unconfigured widget must stay completely silent rather than advertising a
     // feature the user cannot use.
     // True when the window was opened by "i" from the list rather than by
     // "v": show the summary, and do NOT fetch the article's page. The body is
@@ -250,13 +249,13 @@ DankFloatingWindow {
         // Invalidate any in-flight full-text fetch FIRST, before any early
         // return below can skip it.
         //
-        // This counter used to be bumped only by loadFullText(), which
-        // openArticle() does not reach when the article opens summary-only or
-        // has no link at all. Leaving article A's fetch in flight while B is
-        // on screen meant A's extracted text landed in B's body -- under B's
-        // title, B's star and B's export action -- with nothing to indicate
-        // it. Bumping here makes every open invalidate the last one,
-        // regardless of which path this function takes afterwards.
+        // loadFullText() is not reached when the article opens summary-only or
+        // has no link at all, so bumping the counter only there would leave
+        // article A's fetch in flight while B is on screen, and A's extracted
+        // text would land in B's body -- under B's title, star and export
+        // action -- with nothing to indicate it. Bumping here makes every open
+        // invalidate the last one, regardless of which path this function
+        // takes afterwards.
         root._fetchGeneration++;
 
         root.summaryOnly = summaryOnly === true;
@@ -464,8 +463,7 @@ DankFloatingWindow {
     // Text.MarkdownText is still the right tool for INLINE formatting inside
     // a block -- bold, italic, links, inline code -- but its own per-level
     // heading metrics don't follow lineHeight and don't move with
-    // bodyFontSize, which is exactly what stage 5b's screenshot showed
-    // (an h1 that scaled hard and wrapped over five lines). So every block
+    // bodyFontSize (an h1 scales hard and can wrap over five lines). So every block
     // is classified here and given explicit size/weight/line-height instead
     // of letting Qt's markdown defaults choose.
     function _classifyBlock(block) {
@@ -968,11 +966,10 @@ DankFloatingWindow {
                     // recording: TextEdit would give mouse selection, but it
                     // has no lineHeight/lineHeightMode at all, and explicit
                     // line height is the core of this window's typography
-                    // (see the phase 5b design doc). Swapping to TextEdit for
-                    // selection cost the whole measure -- and in fact failed
-                    // outright, since assigning lineHeightMode to a TextEdit
-                    // makes the type unavailable and takes the entire widget
-                    // down with it.
+                    // Swapping to TextEdit for selection would lose the whole
+                    // measure -- and fails outright, since assigning
+                    // lineHeightMode to a TextEdit makes the type unavailable
+                    // and takes the entire widget down with it.
                     //
                     // Copying is served by "c" / the copy button instead,
                     // which takes the whole article. Losing per-paragraph

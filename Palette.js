@@ -6,25 +6,25 @@
 // there is no `.pragma library` line -- that is not valid JavaScript and
 // breaks require() outright.
 //
-// WHY THIS EXISTS: the widget currently takes every colour from DMS's
-// matugen-generated `Theme` singleton (docs/plans/BACKLOG.md, "Colour theme
-// presets"). `Theme` is a `pragma Singleton` shared process-wide -- a plugin
-// must never write to `Theme.*`, since that would leak into the whole shell
-// (bar, popups, other plugins). This module therefore never touches Theme at
+// WHY THIS EXISTS: the widget takes its default colours from DMS's
+// matugen-generated `Theme` singleton. `Theme` is a `pragma Singleton`
+// shared process-wide -- a plugin must never write to `Theme.*`, since that
+// would leak into the whole shell (bar, popups, other plugins). This module therefore never touches Theme at
 // all: it takes a base palette as an ARGUMENT (the QML side reads Theme and
 // passes its values in) and returns a resolved one.
 //
-// The widget's owner has deuteranopia. A matugen theme has no reason to
-// preserve contrast between hues a given person cannot distinguish, and the
-// widget signals state (error/success, read/unread) with colour. The three
-// colour-vision-deficiency presets below exist to fix exactly that.
+// Colour-vision deficiency (e.g. deuteranopia) is common. A matugen theme has
+// no reason to preserve contrast between hues such a viewer cannot
+// distinguish, and the widget signals state (error/success, read/unread)
+// with colour. The three colour-vision-deficiency presets below exist to fix
+// exactly that.
 //
 //   var resolved = Palette.resolvePalette(settings.colourPreset, themeColours);
 //   var withOverrides = Palette.applyOverrides(resolved, settings.customColours);
 
 // The semantic roles the widget actually uses, named to match DMS's own
-// matugen/Theme token names so the QML rename (docs/plans/BACKLOG.md) is
-// mechanical: role name in Palette.js == property name on Theme.
+// matugen/Theme token names so mapping roles onto Theme is mechanical: role
+// name in Palette.js == property name on Theme.
 var ROLE_NAMES = [
     "primary",
     "secondary",
@@ -193,7 +193,7 @@ function linearToSrgbChannel(c) {
 // Approximates how `colour` appears to someone with `condition`
 // (deuteranopia/protanopia/tritanopia). Unknown condition or unparsable
 // colour returns the input colour unchanged (never throws) -- "no
-// simulation" is a safe, honest fallback.
+// simulation" is a safe fallback.
 function simulate(colour, condition) {
     var rgb = parseColour(colour);
     var matrix = CVD_MATRICES[condition];

@@ -4,8 +4,7 @@
 // randomness. QML's Keys.onPressed handler calls resolveKey() with the raw
 // event and the widget's current state; this module only ever returns a
 // NAME for the caller to act on -- it never opens an article, never toggles
-// anything itself. Full context: docs/plans/2026-09-10-phase2-keyboard-
-// design.md ("Testable vs not").
+// anything itself.
 //
 //   var result = KeyMap.resolveKey(event, state);
 //   if (result.action) { /* perform result.action, use result.index */ }
@@ -38,8 +37,9 @@ var Key_E = 0x45;
 //
 // "i" rather than the mnemonic "s": "s" is toggleStar everywhere else, and a
 // key that stars in the list but summarises in the reader would be the same
-// finger meaning two different things. "u" was the other free candidate; "i"
-// won on reach -- a middle-finger key rather than an index-finger stretch.
+// finger meaning two different things. "i" was chosen over the other free
+// candidate "u" for reach (a middle-finger key rather than an index-finger
+// stretch).
 var Key_I = 0x49;
 // "d" opens the digest: one summary of the last 24 hours across every feed.
 // Cursor-independent, like "r" -- it is a question about the whole list, not

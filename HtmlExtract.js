@@ -11,8 +11,7 @@
 // containing ">", an unclosed <p> and a comment containing "</div>" all
 // defeat pattern matching, and they do it silently on exactly the pages
 // that matter), a tree builder, a scorer, and a markdown emitter. See
-// docs/plans/2026-09-11-phase4c-fulltext-design.md for the design this
-// implements (stage 4c-a only -- wiring into export is a separate stage).
+// Extraction only; fetching and export wiring live elsewhere.
 
 // ─── bounds ───
 // A 5MB page must terminate quickly, not hang. Cap the input before it ever
@@ -22,17 +21,16 @@ var DEFAULT_MAX_INPUT_LENGTH = 4 * 1024 * 1024; // ~4MB of characters
 var DEFAULT_MAX_TOKENS = 80000;
 
 // Fall back to the summary when extraction yields less than this fraction
-// of the summary's own length. A worse result than we started with is a
-// failure, not an improvement.
+// of the summary's own length. A result worse than the summary is a failure,
+// not an improvement.
 var FALLBACK_RATIO = 0.4;
 
 // ─── index-page guard ───
 //
-// Measured 2026-09-11 against real section fronts (bbc.com/news,
-// arstechnica.com/): where Mozilla Readability correctly returns almost
-// nothing for an index page, this extractor returned 13k characters of
-// headline soup -- a real container won the scoring pass, it just wasn't an
-// article. The scoring's link-density penalty alone doesn't catch it,
+// On real section fronts (bbc.com/news, arstechnica.com/), Mozilla
+// Readability correctly returns almost nothing for an index page, whereas
+// scoring alone returns ~13k characters of headline soup -- a real container
+// wins the scoring pass, it just isn't an article. The scoring's link-density penalty alone doesn't catch it,
 // because a headline list interleaved with timestamps/bylines outside the
 // <a> rarely reaches 100% link density, only "dominated by links".
 //
@@ -49,8 +47,7 @@ var INDEX_LINK_DENSITY_THRESHOLD = 0.5;
 //    slot. A real paragraph almost always ends in ./!/?; a page that is
 //    mostly bare fragments is a listing, not an article.
 //
-//    Measured against real pages while tuning this: a plain per-LINE
-//    fraction false-positived on legitimate long articles, because a
+//    A plain per-LINE fraction false-positives on legitimate long articles, because a
 //    Wikipedia page's trailing navbox ("See also" template links) or an
 //    infobox contributes hundreds of short link lines below a handful of
 //    long prose paragraphs -- lots of lines, almost no text. Weighting by
@@ -438,24 +435,19 @@ function pickBest(candidates) {
 // module's existing scoreNode(), reused so there is exactly one notion of
 // "looks like an article" in the file.
 //
-// Measured 2026-09-12 against the 18-page oracle corpus (see
-// docs/plans/2026-09-11-phase4c-fulltext-design.md): none of the 18 pages
-// currently have a fragmented top candidate with qualifying siblings, so this
-// is a defensive addition -- mean overlap is unchanged (92.4% before and
-// after) rather than improved. It stays because it is the correct general
-// behaviour (it is the direct fix for the failure mode the design doc names)
-// and is covered by synthetic unit tests below; it costs nothing measured and
-// guards a page shape the corpus does not happen to contain.
+// This is a defensive step: in the 18-page oracle corpus no page has a
+// fragmented top candidate with qualifying siblings, so mean overlap is
+// unchanged (92.4%). It guards a page shape the corpus does not contain and
+// is covered by synthetic unit tests.
 //
 // Root is exempt on both ends: it has no parent to merge into (best._parent
 // is undefined for it), and when root itself wins -- a page with no wrapping
 // element at all, e.g. a plain-text Gutenberg file, or a blog whose body is
 // loose paragraphs straight in <body> -- all of its content is already in
-// its own subtree, so there is nothing left outside it to fold in. (Verified
-// this matters: an earlier version of this change excluded root from ever
-// winning outright and it cost the Gutenberg fixture ~100% of its score --
-// root beats the next candidate there by two orders of magnitude precisely
-// because nothing else wraps the book's text.)
+// its own subtree, so there is nothing left outside it to fold in. Root must
+// stay eligible to win outright: excluding it drops the Gutenberg fixture to
+// ~0% of its score, because root beats the next candidate there by two orders
+// of magnitude when nothing else wraps the book's text.
 var SIBLING_SCORE_FACTOR = 0.25;
 
 // A bare <p> sibling never accumulates the comma/paragraph-count bonus a
@@ -945,8 +937,8 @@ function fallbackResult(summary, reason) {
 //   summary          - the feed's existing summary text/markdown. When
 //                       given, extraction that yields less than ~40% of the
 //                       summary's plain-text length is rejected in favour of
-//                       the summary itself (a worse result than we started
-//                       with is a failure, not an improvement).
+//                       the summary itself (a result worse than the summary
+//                       is a failure, not an improvement).
 //   maxInputLength   - override the input-size cap (chars). Default 4MB.
 //   maxTokens        - override the token-count cap. Default 80000.
 //

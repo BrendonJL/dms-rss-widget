@@ -1,4 +1,4 @@
-// Pure interest-ranking helpers for the Dank RSS Widget (backlog 3d).
+// Pure interest-ranking helpers for the Dank RSS Widget.
 //
 // Shared with QML/Node like FeedParser.js and ReaderState.js — see
 // docs/wiki/Architecture.md for the dual-load mechanism and the two rules
@@ -7,10 +7,10 @@
 // Everything here stays PURE: no Qt APIs, no I/O, no Date.now() reads
 // (callers inject "now"), no randomness, no mutation of arguments.
 //
-// Design note (owner's words, docs/plans/BACKLOG.md 3d): "ranking that feels
-// wrong is worse than no ranking, so it ships default-off with a visible
-// reason and an obvious way back to reverse-chronological." Every threshold
-// below exists to serve that sentence, not to squeeze out a better score.
+// Design principle: a ranking that feels wrong is worse than no ranking, so
+// it ships default-off with a visible reason and an obvious way back to
+// reverse-chronological. Every threshold below exists to serve that
+// principle, not to squeeze out a better score.
 
 // Minimum number of starred items before a profile is considered meaningful.
 // Below this, cosine similarity to a 1-2 item centroid is mostly noise: a
@@ -19,7 +19,7 @@
 // star cannot dominate the mean, small enough that an engaged-but-new reader
 // reaches it in day one. Rejected alternative: scaling a "confidence" score
 // continuously with star count instead of a hard cutoff — rejected because
-// the backlog explicitly wants ranking OFF, not merely "ranking, but with an
+// the requirement is ranking OFF, not merely "ranking, but with an
 // unreadable low-confidence label"; a hard gate is what "must not be offered
 // at all" means as code.
 var MIN_STARRED_FOR_PROFILE = 5;
@@ -28,7 +28,7 @@ var MIN_STARRED_FOR_PROFILE = 5;
 // who has starred 2,000 items would give recent taste shifts near-zero
 // influence, since the centroid barely moves once averaged over that many
 // items. 200 was chosen because it comfortably covers "a dedicated reader's
-// starred backlog" while keeping the centroid responsive to the last few
+// starred collection" while keeping the centroid responsive to the last few
 // months of taste rather than years of it. Rejected alternative: no cap
 // (simplest, but taste-drift-blind) and a tiny cap like 20 (too reactive to a
 // short binge on one topic).
@@ -139,8 +139,8 @@ function numericOr0(v) {
 // continuously (e.g. exponential decay by star age) as the *default*.
 // Recency-weighting is offered as an opt-in (`options.recencyWeighted` with
 // `starredAt` timestamps) rather than the default, because it adds a second
-// silent judgement call (the half-life) on top of the cap, and the backlog
-// explicitly asks for the simplest thing that is not obviously wrong first.
+// silent judgement call (the half-life) on top of the cap, and the simplest
+// thing that is not obviously wrong is the better starting point.
 // The cap above already bounds staleness; full decay is left for a future
 // iteration if the plain centroid proves to drift too slowly in practice.
 //
@@ -156,8 +156,7 @@ function numericOr0(v) {
 //
 // Returns { profile: number[] | null, reason: string, count: number }.
 // `profile` is null below the cold-start floor so callers can detect it
-// and must not offer ranking at all (per the backlog's "must not be offered
-// at all" requirement) — the reason string says why.
+// and must not offer ranking at all — the reason string says why.
 function buildInterestProfile(starredVectors, options) {
     var opts = options || {};
     var minItems = (typeof opts.minItems === "number") ? opts.minItems : MIN_STARRED_FOR_PROFILE;
@@ -314,7 +313,7 @@ function rankItems(items, vectorsById, profile, options) {
 // --- explainRank ---------------------------------------------------------
 
 // Facts behind why an item ranked where it did, for the UI to word however
-// it likes (per the backlog's "visible reason" requirement). This module
+// it likes (ranking must show a visible reason). This module
 // deals only in structured facts, never in pre-baked English, so wording
 // changes never touch this file.
 //
@@ -332,12 +331,11 @@ function rankItems(items, vectorsById, profile, options) {
 // sorted by similarity desc, deterministic tie-break on id ascending so a
 // constructed unambiguous case always returns the same order.
 // When itemVector or starredVectors is missing/empty, nearest is [].
-// NOT YET WIRED. This is an API surface for a "why is this ranked here?"
-// affordance that does not exist in the UI: the reason string the widget shows
-// today is hand-authored English about why ranking is *unavailable*, which is a
-// different question. Kept because the backlog's requirement is a visible
-// reason and this is the honest way to build one -- structured facts, wording
-// left to the UI. Flagged so nobody reads it as load-bearing.
+// Not currently called from the UI. This is an API surface for a "why is this
+// ranked here?" affordance: the reason string the widget shows is
+// hand-authored English about why ranking is *unavailable*, which is a
+// different question. It provides structured facts, with wording left to the
+// UI. Not load-bearing.
 function explainRank(rankedItem, options) {
     var opts = options || {};
     var topN = (typeof opts.topN === "number") ? opts.topN : 3;
@@ -392,7 +390,7 @@ function explainRank(rankedItem, options) {
 //     rather than baking in an unverified preference here.
 //
 // **weight: 0 MUST exactly reproduce reverse-chronological order** — this is
-// the backlog's "obvious way back" requirement made mechanical. Rather than
+// the "obvious way back" requirement made mechanical. Rather than
 // relying on a 0-times-similarity term to vanish (fragile if similarity is
 // ever NaN or unbounded), weight 0 short-circuits to sort purely by
 // timestamp desc, id asc — bypassing the similarity/recency blend maths

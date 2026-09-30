@@ -3,8 +3,7 @@
 // See README.md's "Architecture" section for the QML/Node dual-load
 // mechanism and the `.pragma library` rule (kept once, in FeedParser.js).
 // Everything here stays PURE: no Qt APIs, no I/O, no Date.now(), no
-// randomness. Full context: docs/plans/2026-09-09-phase1-google-reader-
-// design.md, "Stage 1b addendum -- the QML runner".
+// randomness.
 //
 // GoogleReader.js's fetchRequests() returns only the HEAD of a chain; each
 // link's parse() may hand back a `nextRequest` instead of finishing. This

@@ -5,9 +5,8 @@
 // the dependency-injection pattern:
 //   GoogleReader.createGoogleReaderBackend({ FeedParser: FeedParser, ReaderState: ReaderState })
 //
-// Full protocol write-up, probed against a live Miniflux 2.x instance:
-// docs/plans/2026-09-09-phase1-google-reader-design.md. The facts that
-// matter while reading this file sit next to the code that depends on them.
+// The protocol facts below were probed against a live Miniflux 2.x instance;
+// each sits next to the code that depends on it.
 //
 // This backend is a CHAIN, unlike Standard/Miniflux's one-shot
 // fetchRequests(config) -> [descriptor]: parse() may return a `nextRequest`
@@ -47,8 +46,7 @@ function chainLinkAllowed(linkIndex) {
 }
 
 // Splits curl's stdout (body + our injected "-w" trailer) back into
-// { body, status }. Discovered independently of the design doc: a plain
-// `curl -sS` body carries no HTTP status line at all, and 401 responses on
+// { body, status }. A plain `curl -sS` body carries no HTTP status line at all, and 401 responses on
 // /reader/api/0/* are the bare text "Unauthorized" with no distinguishing
 // JSON -- there is nothing in the body alone to detect failure reliably.
 // `-w '\nHTTPSTATUS:%{http_code}'` appended to every argv sidesteps that:
@@ -132,7 +130,7 @@ function pickGreaderLink(raw) {
 // Miniflux's own enclosures carry a real "image/*" mime_type; Google
 // Reader's `enclosure` entries here come back typed "application/
 // octet-stream" regardless of content -- a protocol detail this file had to
-// discover by probing, since the design doc doesn't mention it. mime-type
+// discover by probing; it is undocumented. mime-type
 // filtering (as minifluxEntryImage does) is useless here, so this just takes
 // the first enclosure url that passes isSafeUrl, then falls back to
 // scanning the content HTML.
@@ -181,7 +179,7 @@ function buildGreaderItem(raw, config, FeedParser) {
     };
 }
 
-// Discovered by probing, not documented in the design: edit-tag's a=/r=
+// Found by probing (undocumented): edit-tag's a=/r=
 // values use the literal "user/-/state/com.google/<name>" form (confirmed
 // live), but the `categories` array items/contents hands back for the SAME
 // state uses the resolved numeric user id instead of "-"
@@ -202,12 +200,9 @@ function categoriesHaveState(categories, name) {
 // state (categoriesHaveState above) also carries folder/label membership,
 // as "user/-/label/<name>" or "user/<uid>/label/<name>" -- the label
 // equivalent of the state tag's two id forms. This mirrors the *pattern*
-// probing already confirmed for the state tags in this file, but the label
-// form itself was NOT independently re-probed against a live server for
-// this change (the design doc only probed subscription/list for
-// categories, not the per-item label tag inside items/contents) -- treat
-// this as inferred from the documented Google Reader API shape, not
-// measured, until it is checked against a live response.
+// probing confirmed for the state tags in this file, but the label form in
+// items/contents has not been checked against a live server -- treat it as
+// inferred from the documented Google Reader API shape.
 function extractGreaderLabels(categories) {
     var marker = "/label/";
     var labels = [];
@@ -342,7 +337,7 @@ function buildItemsIdsRequest(config, authToken, postToken, chainState, FeedPars
     var stream = config.showStarred ? STARRED_STREAM : READING_LIST_STREAM;
     var n = (config.maxItems && config.maxItems > 0) ? config.maxItems : 20;
     var endpoint = "/reader/api/0/stream/items/ids?s=" + encodeURIComponent(stream) + "&n=" + n + "&output=json";
-    // Discovered by probing, not documented in the design: the reading-list
+    // Found by probing (undocumented): the reading-list
     // stream returns EVERY item regardless of read state (a read item stays
     // in it forever). "xt=" (exclude tag) with the read state string filters
     // it back down to unread, mirroring Miniflux's status=unread. Starred
@@ -479,12 +474,9 @@ function createGoogleReaderBackend(deps) {
         id: "greader",
 
         // subscribe: true because /accounts/ClientLogin + quickadd exist.
-        // categories: true -- originally set when this flag was purely
-        // aspirational ("subscription/list returns them", no UI needed
-        // yet); buildGreaderItem now actually threads label/folder tags
+        // categories: true because buildGreaderItem threads label/folder tags
         // from the items/contents `categories` array into each item's
-        // `categories` field (see extractGreaderLabels), so the flag is
-        // genuinely earned. fullText: false -- the Google Reader API this
+        // `categories` field (see extractGreaderLabels). fullText: false -- the Google Reader API this
         // backend speaks has no fetch-content-style extraction endpoint;
         // local HtmlExtract is this backend's only route to full text.
         capabilities: {
@@ -498,7 +490,7 @@ function createGoogleReaderBackend(deps) {
         // config: { greaderUrl, greaderUsername, greaderPassword, maxItems,
         // showStarred }. session: { authToken, postToken } | null/undefined.
         // Always a single-element array (the head of the chain) or []
-        // when the config isn't usable yet, matching the Phase 0 contract;
+        // when the config isn't usable yet, matching the other backends;
         // the REST of the chain travels via parse()'s nextRequest.
         fetchRequests: function (config, session) {
             if (!greaderConfigReady(config))

@@ -2,7 +2,6 @@
 //
 // See README.md's "Architecture" section for the QML/Node dual-load
 // mechanism and the `.pragma library` rule (kept once, in FeedParser.js).
-// See docs/plans/2026-09-08-phase3-ai-provider-design.md for the full design.
 //
 // This is the OpenAI-compatible chat API, not "an ollama integration": a
 // provider is { label, baseUrl, model, apiKey, timeoutMs } and nothing more.
@@ -17,8 +16,7 @@
 // configured, or nothing to send). QML alone spawns `argv` and hands stdout
 // to `parse`.
 //
-// MEASURED ON THIS MACHINE (RTX 2070 Super, qwen3:8b, 2026-09-08 -- see the
-// design doc's Measurements section, which is load-bearing, not illustrative):
+// Observed behaviour of ollama's OpenAI-compatible endpoint (qwen3:8b):
 //   - GET  {baseUrl}/models           -> 200, OpenAI-shaped {object,data:[...]}
 //   - POST {baseUrl}/chat/completions -> 200, standard
 //     {choices:[{message:{role,content},finish_reason}],usage:{...}}
@@ -28,15 +26,14 @@
 //     nothing to strip, so this file does NOT write a <think>-stripping
 //     regex.
 //   - Neither `/no_think` nor `chat_template_kwargs.enable_thinking` changes
-//     anything through ollama's OpenAI shim (both were tried against the
-//     live endpoint). Shipping a knob that silently does nothing is worse
-//     than not shipping it, so neither is emitted here. The real fix for
+//     anything through ollama's OpenAI shim, so neither is emitted here (a
+//     knob that silently does nothing is worse than none). The fix for
 //     "too much thinking" is model choice (a non-reasoning instruct model),
 //     which is a UI/config concern, not this file's.
 
 // Sane fallback when a provider config doesn't set its own timeoutMs.
 // Chat completions are a generation workload, not a status API call --
-// ~5s was measured for a ~120-word article on this machine, and a digest
+// ~5s for a ~120-word article on a small local model, and a digest
 // call fans that out over many items, so this is deliberately generous
 // compared to Backends.js's fetch/Miniflux timeouts.
 var DEFAULT_TIMEOUT_MS = 60000;
@@ -62,17 +59,15 @@ var DIGEST_SYSTEM_PROMPT =
 // "/v1" prefix each runtime serves it under, so callers append plain
 // "/models" and "/chat/completions".
 //
-// Provenance, stated honestly: **only ollama is measured** -- verified live
-// against this machine (GET /v1/models -> 200, OpenAI-shaped). vLLM,
-// llama.cpp and LM Studio are each that project's own documented default
-// port, taken on faith and not exercised against a running instance. Treat
-// a bug report about any of those three as plausibly a wrong default here.
+// Only ollama's default has been verified against a running server
+// (GET /v1/models -> 200, OpenAI-shaped). vLLM, llama.cpp and LM Studio use
+// each project's documented default port and have not been exercised; a bug
+// report about any of those three may simply be a wrong default here.
 
 // embedModel is a SUGGESTED default only -- settings UI may offer it as a
 // starting point, nothing here reads it automatically. nomic-embed-text is
-// the ollama default that was actually pulled and tried on this machine
-// alongside qwen3:8b; the others are the same "documented default, not
-// measured" honesty as the baseUrls above.
+// the ollama embedding model that has been tried; the others are left empty
+// because no default has been verified for them.
 var PRESETS = {
     ollama: { label: "Ollama", baseUrl: "http://localhost:11434/v1", embedModel: "nomic-embed-text" },
     vllm: { label: "vLLM", baseUrl: "http://localhost:8000/v1", embedModel: "" },
@@ -133,8 +128,7 @@ function isConfigured(config) {
 // ─── response parsing ───
 //
 // parse for /models. Reports reachability separately from "does it have the
-// configured model" so callers (per the design doc's Degradation section)
-// can distinguish "nothing is listening" from "listening, wrong model".
+// configured model" so callers can distinguish "nothing is listening" from "listening, wrong model".
 function parseModelsResponse(stdout, modelId) {
     var parsed;
     try {
@@ -220,8 +214,8 @@ function parseEmbeddingsResponse(stdout) {
 // server-side, which would embed a partial (and misleadingly-weighted)
 // article without any signal that it happened. 2000 characters (~500 tokens
 // at the usual ~4 chars/token rule of thumb) comfortably clears every
-// embedding model's limit encountered in the design doc's research while
-// keeping title + lede, which is what similarity ranking actually needs --
+// embedding model's limit we know of while keeping title + lede, which is
+// what similarity ranking actually needs --
 // callers with a runtime known to allow more can override via maxChars.
 var DEFAULT_EMBED_TEXT_MAX_CHARS = 2000;
 
@@ -243,14 +237,13 @@ function summarisePrompt(article) {
 
 // The prompt has a HARD character budget, and that is the whole design.
 //
-// Measured on this machine 2026-09-13: llama3.2:3b advertises a 131072-token
-// context, but ollama allocates 4096 at RUNTIME (`/api/ps` reports
-// context_length: 4096). Anything beyond that is silently truncated -- no
-// error, no warning, just a digest that quietly ignores most of its input.
-// Thirty articles with full descriptions already came to roughly 5000 tokens,
-// so the digest was being cut off before it ever reached the model's answer.
-// The symptom was a digest that looked like it was cherry-picking a handful
-// of feeds. It was not choosing; it never saw the rest.
+// llama3.2:3b advertises a 131072-token context, but ollama allocates 4096 at
+// runtime (`/api/ps` reports context_length: 4096). Anything beyond that is
+// silently truncated -- no error, no warning, just a digest that ignores most
+// of its input. Thirty articles with full descriptions come to roughly 5000
+// tokens, so the prompt would be cut off before the model saw all of it; the
+// digest then looks like it cherry-picks a handful of feeds when it simply
+// never saw the rest.
 //
 // So: titles are the load-bearing part of a digest and are always kept.
 // Descriptions are truncated hard, and dropped entirely once the budget runs
@@ -265,9 +258,8 @@ function digestPrompt(items) {
     //
     // A greedy single pass gives the first few articles their descriptions and
     // then runs out of budget, so a 300-item day becomes a detailed digest of
-    // the first forty and silence about the rest -- precisely the "it is
-    // missing most of my feeds" complaint this budget exists to fix. Titles
-    // for everything first; descriptions only with what is left over.
+    // the first forty and silence about the rest. Titles for everything
+    // first; descriptions only with what is left over.
     var titles = [];
     var used = 0;
     var i;
@@ -402,7 +394,7 @@ function createAiProvider(config) {
             };
         },
 
-        // POST {baseUrl}/embeddings for phase 3d's interest ranking:
+        // POST {baseUrl}/embeddings for interest ranking:
         // similarity between unread items and starred ones. texts: array of
         // already-prepared strings (see prepareEmbedText above) -- one
         // vector comes back per input, order-preserved by parse() below.
@@ -430,16 +422,15 @@ function createAiProvider(config) {
 // Resolves the base URL actually to be used, given a chosen preset and
 // whatever the user typed.
 //
-// This exists because of a real bug: the settings panel populated the base
-// URL field from a preset dropdown's change handler, and on a fresh install
-// that handler never fired -- the stored value was absent, so the dropdown
-// loaded its default ("ollama"), which EQUALS the default it already held,
-// so no change was emitted and nothing was written. The field then showed
-// only its placeholder, which looks identical to a filled field, while
-// isConfigured() correctly saw an empty string.
+// Populating the base URL field from a preset dropdown's change handler does
+// not work on a fresh install: the stored value is absent, so the dropdown
+// loads its default ("ollama"), which EQUALS the default it already holds,
+// so no change is emitted and nothing is written. The field then shows only
+// its placeholder, which looks identical to a filled field, while
+// isConfigured() correctly sees an empty string.
 //
-// The lesson is that a default must be resolvable without an event having
-// fired. So: an explicit URL always wins, otherwise the preset supplies one,
+// A default must therefore be resolvable without an event having fired.
+// So: an explicit URL always wins, otherwise the preset supplies one,
 // and "custom" supplies nothing because there is nothing sensible to guess.
 // Mirrors the reader's effectiveFontFamily ("empty follows the theme").
 function resolveBaseUrl(preset, explicitUrl) {

@@ -4,7 +4,6 @@
 // mechanism, the `.pragma library` rule (kept once, in FeedParser.js), and
 // the dependency-injection pattern this file uses:
 //   Backends.createBackends({ FeedParser: FeedParser, ReaderState: ReaderState })
-// See also docs/plans/2026-09-08-phase0-backend-interface-design.md.
 //
 // Request-descriptor contract: everything here stays PURE (no Qt APIs, no
 // I/O, no Date.now(), no randomness) and returns { argv, parse, meta,
@@ -39,8 +38,8 @@ function minifluxCurlArgv(method, minifluxUrl, endpoint, token, body) {
         // --fail-with-body: curl exits 0 on an HTTP 400, so every Miniflux API
         // error was silently discarded -- the caller only reacts to a nonzero
         // exit. This makes a 4xx/5xx exit 22 while still returning the body,
-        // so the existing error path fires. Without it, mark-as-read failed
-        // server-side through 2.3.3 with no toast, no log, nothing.
+        // so the error path fires. Without it a failed mark-as-read produces
+        // no toast and no log.
         "--fail-with-body",
         "--connect-timeout", "5",
         "--max-time", "25",
@@ -108,14 +107,9 @@ function knownCategories(items) {
 // by id after the fact keeps this additive without touching it.
 //
 // Field used: `entry.feed.category.title`, per Miniflux's documented API
-// schema (a feed's category is an object with `id`/`title`). UNLIKE the rest
-// of this file's Miniflux facts (which were verified against
-// --fail-with-body's real behaviour, curl argv, etc), this specific field
-// has NOT been confirmed against a live Miniflux response as part of this
-// change -- v2.4-miniflux-port.md explicitly scoped categories out ("no
-// category support") when the entry mapping was last verified live. Treat
-// it as documented-but-unmeasured until someone checks it against a real
-// server.
+// schema (a feed's category is an object with `id`/`title`). Unlike the rest
+// of this file's Miniflux facts, this field has not been confirmed against a
+// live Miniflux response; treat it as documented-but-unverified.
 function attachMinifluxCategories(items, entries) {
     var byId = {};
     var list = Array.isArray(entries) ? entries : [];
@@ -287,7 +281,7 @@ function createMinifluxBackend(deps) {
         // Mirrors fetchMinifluxEntries's endpoint choice
         // (DankRssWidget.qml:828-830) and minifluxApiCall's GET argv. Always
         // a single-element array (one server, one request) or [] when the
-        // config isn't usable yet -- see the Stage 0b addendum.
+        // config isn't usable yet.
         fetchRequests: function (config, session) {
             if (!minifluxConfigReady(config))
                 return [];
@@ -342,9 +336,8 @@ function createMinifluxBackend(deps) {
 
         // Batched PUT /v1/entries, mirroring minifluxMarkRead/
         // minifluxMarkUnread (DankRssWidget.qml:927-941). The "only call
-        // when there's something to send" guard previously lived in each
-        // caller (bulkMarkReadSelected, setAllRead); it is now the
-        // no-op decision this function itself makes.
+        // when there's something to send" decision is made here, returning
+        // null for an empty batch, rather than in each caller.
         // `session` is unused by Miniflux (a static API token, no handshake)
         // but is positionally required: see the note on StandardBackend.
         markReadRequest: function (config, session, ids) {
@@ -371,8 +364,7 @@ function createMinifluxBackend(deps) {
         },
 
         // GET /v1/entries/{id}/fetch-content -- server-side full-text
-        // extraction (BACKLOG.md: "Miniflux full-text as a fast path",
-        // measured 936 -> 8412 chars on a real article). This is an
+        // extraction (936 -> 8412 chars on one real article). This is an
         // OPTIMISATION on top of the route fetchRequests already uses, never
         // the only way to get an entry's body: a caller must fall back to
         // local HtmlExtract when capabilities.fullText is false (every other
@@ -397,9 +389,7 @@ function createMinifluxBackend(deps) {
 
                     // { "content": "<p>...</p>" } per Miniflux's documented
                     // response shape for this endpoint -- like the category
-                    // field above, this has not been re-verified live as
-                    // part of this change; the BACKLOG measurement only
-                    // recorded a character-count delta, not the exact JSON.
+                    // field above, not verified against a live server.
                     if (!parsed || typeof parsed.content !== "string")
                         return { content: null, error: "Miniflux: malformed fetch-content response" };
 
@@ -408,8 +398,8 @@ function createMinifluxBackend(deps) {
             };
         },
 
-        // Server wins on fetch reconciliation (v2.4 §2.2/§2.3) — delegates
-        // straight to the existing, already-tested ReaderState function.
+        // Server wins on fetch reconciliation; delegates straight to the
+        // ReaderState function.
         reconcile: function (localState, serverEntries) {
             var ls = localState || {};
             return ReaderState.reconcileServerStatus(ls.readOrder, ls.bookmarkOrder, serverEntries, ls.cap);
@@ -424,9 +414,9 @@ function minifluxMarkRequest(config, ids, status) {
     // Miniflux types entry_ids as int64 and rejects the whole request with
     // HTTP 400 if any element is a string. The widget's ids arrive as strings
     // (minifluxNumericId returns itemId.slice(2)), so coerce here rather than
-    // at every call site. This shipped broken through 2.3.3: mark-as-read
-    // never reached the server, and curl exits 0 on a 400, so nothing ever
-    // surfaced it. Verified against a live Miniflux 2.x instance.
+    // at every call site. With strings, mark-as-read never reaches the server,
+    // and curl exits 0 on a 400 unless --fail-with-body is set. Verified
+    // against a live Miniflux 2.x instance.
     var numeric = [];
     for (var i = 0; i < (ids || []).length; i++) {
         var n = parseInt(ids[i], 10);

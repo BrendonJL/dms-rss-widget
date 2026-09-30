@@ -143,7 +143,7 @@ PluginSettings {
     // The base URL actually in force: what was typed, else whatever the
     // chosen preset supplies. Resolved rather than stored, so a fresh install
     // that has never touched the dropdown still has a working endpoint --
-    // see AiProvider.resolveBaseUrl for the bug that made this necessary.
+    // see AiProvider.resolveBaseUrl for why.
     function effectiveAiBaseUrl() {
         return AiProvider.resolveBaseUrl(root.loadValue("aiPreset", "ollama"), root.loadValue("aiBaseUrl", ""));
     }
@@ -276,8 +276,8 @@ PluginSettings {
     // the chosen preset's suggested embedModel is offered, and "custom" (no
     // PRESETS entry) offers nothing because there is nothing to suggest.
     // Deliberately NOT wired through an onValueChanged handler on the preset
-    // dropdown -- that is exactly the bug AiProvider.resolveBaseUrl's own
-    // comment documents (it does not fire on a fresh install).
+    // dropdown -- it does not fire on a fresh install (see
+    // AiProvider.resolveBaseUrl's comment).
     function effectiveAiEmbedModel() {
         var typed = (root.loadValue("aiEmbedModel", "") || "").trim();
         if (typed)
@@ -698,10 +698,9 @@ PluginSettings {
             wrapMode: Text.WordWrap
         }
 
-        // Stage 4d: editors used to each need their own hardcoded branch (see
-        // ExportProvider.js's design doc). Now there's one open-command template
-        // with `{path}` substituted, and "one more editor" is one more row in
-        // EXPORT_OPEN_PRESETS rather than a new code path. Picking a preset below
+        // One open-command template with `{path}` substituted, and "one more
+        // editor" is one more row in EXPORT_OPEN_PRESETS rather than a new
+        // code path (see ExportProvider.js). Picking a preset below
         // fills the Command field; it stays editable afterward, and editing it
         // does not change which preset is shown selected here -- so tweaking a
         // preset's flags does not silently look like "Custom" was chosen instead.
@@ -836,7 +835,7 @@ PluginSettings {
 
             StyledText {
                 width: parent.width
-                text: "{path} is substituted as its own argument, never pasted into a shell string, so a note's path is safe even if its title contained spaces, quotes or semicolons. The terminal-based presets assume kitty, because that is what this machine runs -- edit this if you use a different terminal. Leave empty to just write the file."
+                text: "{path} is substituted as its own argument, never pasted into a shell string, so a note's path is safe even if its title contained spaces, quotes or semicolons. The terminal-based presets use kitty -- edit this if you use a different terminal. Leave empty to just write the file."
                 font.pixelSize: Theme.fontSizeSmall - 2
                 color: root.roleColours.surfaceVariantText
                 wrapMode: Text.WordWrap
@@ -1947,10 +1946,10 @@ PluginSettings {
                             ToastService.showError("Enter a destination path or folder first");
                         return;
                     }
-                    // A folder is the obvious thing to type here, and typing
-                    // one used to fail with "could not access" -- which reads
-                    // as a permissions problem rather than "you gave me a
-                    // directory". Anything with no file extension in its last
+                    // A folder is the obvious thing to type here, and passing
+                    // it through unchanged fails with "could not access" --
+                    // which reads as a permissions problem rather than "you
+                    // gave me a directory". Anything with no file extension in its last
                     // segment is treated as a folder and gets a filename.
                     var last = path.replace(/\/+$/, "").split("/").pop();
                     if (path.charAt(path.length - 1) === "/" || last.indexOf(".") < 0)
@@ -2004,9 +2003,8 @@ PluginSettings {
     // repeating it on every child below -- there are a lot of them. Adding a
     // preset writes straight into local `feeds`, so it only makes sense for
     // a backend with no server-side subscription list of its own. The
-    // divider that used to separate this from the OPML card above is
-    // dropped -- redundant now that this whole group lives inside one
-    // collapsible section.
+    // No divider separates this from the OPML card above; the whole group
+    // lives inside one collapsible section.
     Column {
         width: parent.width
         spacing: Theme.spacingM
@@ -2383,8 +2381,8 @@ PluginSettings {
                 width: parent.width
                 // Seeded with the RESOLVED url, not a placeholder that merely
                 // looks like one. A greyed-out placeholder is indistinguishable
-                // from a real value at a glance, which is precisely how the
-                // original bug hid: the form looked complete and was not.
+                // from a real value at a glance, so the form would look
+                // complete when it was not.
                 placeholderText: "Set by the runtime preset above"
                 text: root.effectiveAiBaseUrl()
                 onTextChanged: root.saveValue("aiBaseUrl", text)
@@ -2547,11 +2545,11 @@ PluginSettings {
                         }
                         var result = req.parse(out || "");
                         if (!result || !result.reachable) {
-                            // AiProvider now sends --fail-with-body, so a
+                            // AiProvider sends --fail-with-body, so a
                             // 401/403 or a proxy's HTML error page comes back
                             // as a populated result.error instead of an empty
                             // .data array -- surface THAT instead of a blanket
-                            // "could not reach", which used to make a wrong
+                            // "could not reach", which would make a wrong
                             // API key look identical to a dead host.
                             var reason = (result && result.error) || ("could not reach " + root.effectiveAiBaseUrl());
                             if (typeof ToastService !== "undefined")
@@ -2578,12 +2576,10 @@ PluginSettings {
     } // end AI Summaries DankCollapsibleSection
 
     // ─── Interest Ranking ───
-    // Off by default, deliberately: this is the riskiest feature in the
-    // project (see docs/plans/BACKLOG.md) -- it silently reorders the widget
-    // away from a plain, predictable reverse-chronological feed. The backlog
-    // asks for "a visible reason and an obvious way back" for exactly that
-    // reason; the description text below IS that way back -- read it before
-    // trimming it.
+    // Off by default, deliberately: it silently reorders the widget away from
+    // a plain, predictable reverse-chronological feed. It therefore needs "a
+    // visible reason and an obvious way back"; the description text below IS
+    // that way back, so keep it.
     DankCollapsibleSection {
         width: parent.width
         title: "Interest Ranking"
@@ -2612,11 +2608,10 @@ PluginSettings {
     } // end Interest Ranking DankCollapsibleSection
 
     // ─── Colour Theme ───
-    // See Palette.js's header: the widget's owner has deuteranopia, and a
-    // matugen-generated theme has no reason to preserve contrast on the
-    // colours this widget uses to signal state (error/success). These
-    // presets fix that. Deliberately does NOT restyle anything else in this
-    // panel -- that is a separate, serialised pass (see the plan doc) and
+    // See Palette.js's header: a matugen-generated theme has no reason to
+    // preserve contrast on the colours this widget uses to signal state
+    // (error/success) for users with colour-vision deficiency. These presets
+    // fix that. Deliberately does NOT restyle anything else in this panel;
     // this file only owns the one setting plus its own preview swatches.
     DankCollapsibleSection {
         width: parent.width
@@ -2753,8 +2748,8 @@ PluginSettings {
 
     // ─── Podcast Audio ───
     //
-    // This section exists mostly to be honest about a limitation. The backlog
-    // wanted podcast episodes to appear in the DMS media widget; that widget
+    // This section mostly documents a limitation. Podcast episodes cannot be
+    // made to appear in the DMS media widget by this plugin; that widget
     // lists MPRIS players, and Quickshell's MPRIS module is consumption-only
     // (every type in Quickshell.Services.Mpris is isCreatable: false), so this
     // plugin cannot register itself as one. Whether an episode shows up there
