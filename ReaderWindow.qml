@@ -23,6 +23,10 @@ import "Palette.js" as Palette
 DankFloatingWindow {
     id: root
 
+    // Theme.iconSize* are fixed pixels; inline icons follow the font scale
+    // instead. 14 at the default scale.
+    readonly property real smallIconSize: Theme.fontSizeSmall + Theme.spacingXXS
+
     // Fired for the two actions that touch state owned by the widget
     // (export queueing, bookmark persistence) rather than this window --
     // this window only ever displays and scrolls. The caller (the widget)
@@ -850,7 +854,7 @@ DankFloatingWindow {
 
                             DankIcon {
                                 name: root.digestError !== "" ? "error" : "auto_awesome"
-                                size: 14
+                                size: root.smallIconSize
                                 color: root.digestError !== "" ? root.roleColours.error : root.roleColours.surfaceVariantText
                             }
 
@@ -906,7 +910,7 @@ DankFloatingWindow {
 
                             DankIcon {
                                 name: root.summaryError !== "" ? "error" : "auto_awesome"
-                                size: 14
+                                size: root.smallIconSize
                                 color: root.summaryError !== "" ? root.roleColours.error : root.roleColours.surfaceVariantText
                             }
 

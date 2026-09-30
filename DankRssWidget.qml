@@ -38,6 +38,12 @@ DesktopPluginComponent {
     property int maxPerFeed: pluginData.maxPerFeed ?? 5  // per-feed cap when grouping by feed
     property string viewMode: pluginData.viewMode ?? "expanded"  // "compact" or "expanded"
     property int fontSize: pluginData.fontSize ?? Theme.fontSizeSmall
+    // DMS's Theme.iconSize* tokens are fixed pixels; only its font tokens
+    // follow the font scale. Inline icons and the rows that hold them derive
+    // from the font instead, so they grow with the text beside them rather
+    // than clipping it. At the default scale these are 14 and 22.
+    readonly property real smallIconSize: root.fontSize + Theme.spacingXXS
+    readonly property real controlHeight: root.smallIconSize + Theme.spacingS
     property bool notifyNewItems: pluginData.notifyNewItems ?? true
 
     // --- Miniflux settings ---
@@ -2984,7 +2990,7 @@ DesktopPluginComponent {
                     Rectangle {
                         visible: root.failedFeedCount > 0
                         implicitWidth: failedRow.implicitWidth + Theme.spacingXS * 2
-                        implicitHeight: 20
+                        implicitHeight: root.controlHeight - Theme.spacingXXS
                         radius: Theme.cornerRadius
                         color: failedArea.containsMouse ? root.tint(root.roleColours.error, 0.18) : "transparent"
 
@@ -2999,7 +3005,7 @@ DesktopPluginComponent {
 
                             DankIcon {
                                 name: "error_outline"
-                                size: 14
+                                size: root.smallIconSize
                                 color: root.roleColours.error
                             }
 
@@ -3022,7 +3028,7 @@ DesktopPluginComponent {
                     DankSpinner {
                         visible: root.isLoading
                         running: root.isLoading
-                        size: 14
+                        size: root.smallIconSize
                         color: root.roleColours.primary
                     }
 
@@ -3037,8 +3043,8 @@ DesktopPluginComponent {
                         activeFocusOnTab: false
                         visible: !root.isLoading
                         iconName: "refresh"
-                        iconSize: 14
-                        buttonSize: 22
+                        iconSize: root.smallIconSize
+                        buttonSize: root.controlHeight
                         enabled: !root.isLoading && root.activeFeedCount > 0
                         onClicked: root.refreshNow()
 
@@ -3082,7 +3088,7 @@ DesktopPluginComponent {
                 DankActionButton {
                     activeFocusOnTab: false
                     iconName: root.searchActive ? "search_off" : "search"
-                    iconSize: 14
+                    iconSize: root.smallIconSize
                     buttonSize: root.searchToggleSize
                     iconColor: (root.searchActive || root.searching) ? root.roleColours.primary : root.roleColours.surfaceVariantText
                     onClicked: root.toggleSearch()
@@ -3136,7 +3142,7 @@ DesktopPluginComponent {
                         readonly property bool active: root.filterMode === modelData.key
 
                         Layout.preferredWidth: filterLabel.implicitWidth + Theme.spacingS
-                        height: 22
+                        height: root.controlHeight
                         radius: Theme.cornerRadius
                         color: active ? root.tint(root.roleColours.primary, 0.18) : (filterArea.containsMouse ? root.tint(root.roleColours.primary, 0.08) : "transparent")
 
@@ -3182,7 +3188,7 @@ DesktopPluginComponent {
                     visible: root.availableCategories.length > 0
 
                     Layout.preferredWidth: categoryLabel.implicitWidth + Theme.spacingS
-                    height: 22
+                    height: root.controlHeight
                     radius: Theme.cornerRadius
                     color: active ? root.tint(root.roleColours.primary, 0.18) : (categoryArea.containsMouse ? root.tint(root.roleColours.primary, 0.08) : "transparent")
 
@@ -3230,7 +3236,7 @@ DesktopPluginComponent {
                     Layout.preferredWidth: allReadRow.implicitWidth + Theme.spacingS * 2
                     Layout.minimumWidth: 22 + Theme.spacingS * 2
                     visible: root.widgetWidth >= 160
-                    height: 22
+                    height: root.controlHeight
                     radius: Theme.cornerRadius
                     color: markAllArea.containsMouse ? root.tint(root.roleColours.primary, 0.15) : "transparent"
 
@@ -3241,7 +3247,7 @@ DesktopPluginComponent {
 
                         DankIcon {
                             name: markAllRect.allRead ? "remove_done" : "done_all"
-                            size: 14
+                            size: root.smallIconSize
                             color: markAllArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
 
@@ -3298,7 +3304,7 @@ DesktopPluginComponent {
                 Rectangle {
                     Layout.preferredWidth: saveRow.implicitWidth + Theme.spacingS * 2
                     Layout.minimumWidth: 22 + Theme.spacingS * 2
-                    height: 22
+                    height: root.controlHeight
                     radius: Theme.cornerRadius
                     color: saveArea.containsMouse ? root.tint(root.roleColours.primary, 0.15) : "transparent"
 
@@ -3309,7 +3315,7 @@ DesktopPluginComponent {
 
                         DankIcon {
                             name: "star"
-                            size: 14
+                            size: root.smallIconSize
                             color: saveArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
 
@@ -3341,7 +3347,7 @@ DesktopPluginComponent {
                     visible: root.exportRoot !== ""
                     Layout.preferredWidth: exportRow.implicitWidth + Theme.spacingS * 2
                     Layout.minimumWidth: 22 + Theme.spacingS * 2
-                    height: 22
+                    height: root.controlHeight
                     radius: Theme.cornerRadius
                     color: exportArea.containsMouse ? root.tint(root.roleColours.primary, 0.15) : "transparent"
 
@@ -3352,7 +3358,7 @@ DesktopPluginComponent {
 
                         DankIcon {
                             name: "note_add"
-                            size: 14
+                            size: root.smallIconSize
                             color: exportArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
 
@@ -3385,7 +3391,7 @@ DesktopPluginComponent {
 
                     Layout.preferredWidth: markReadRow.implicitWidth + Theme.spacingS * 2
                     Layout.minimumWidth: 22 + Theme.spacingS * 2
-                    height: 22
+                    height: root.controlHeight
                     radius: Theme.cornerRadius
                     color: markReadArea.containsMouse ? root.tint(root.roleColours.primary, 0.15) : "transparent"
 
@@ -3396,7 +3402,7 @@ DesktopPluginComponent {
 
                         DankIcon {
                             name: root.selectedAllRead ? "mark_email_unread" : "mark_email_read"
-                            size: 14
+                            size: root.smallIconSize
                             color: markReadArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
 
@@ -3436,10 +3442,10 @@ DesktopPluginComponent {
                 DankActionButton {
                     activeFocusOnTab: false
                     iconName: "close"
-                    iconSize: 14
-                    buttonSize: 22
-                    Layout.preferredWidth: 22
-                    Layout.preferredHeight: 22
+                    iconSize: root.smallIconSize
+                    buttonSize: root.controlHeight
+                    Layout.preferredWidth: root.controlHeight
+                    Layout.preferredHeight: root.controlHeight
                     onClicked: root.clearSelection()
 
                     Accessible.role: Accessible.Button
@@ -3453,11 +3459,11 @@ DesktopPluginComponent {
                     activeFocusOnTab: false
                 id: searchField
                 Layout.fillWidth: true
-                Layout.preferredHeight: 30
+                Layout.preferredHeight: root.controlHeight + Theme.spacingS
                 visible: root.searchActive && root.allItems.length > 0
                 placeholderText: "Search title, text, source"
                 leftIconName: "search"
-                leftIconSize: 14
+                leftIconSize: root.smallIconSize
                 showClearButton: true
                 font.pixelSize: root.fontSize
 
@@ -3655,7 +3661,7 @@ DesktopPluginComponent {
                             // never touches read state.
                             DankActionButton {
                                 iconName: itemDelegate.isSelected ? "check_box" : "check_box_outline_blank"
-                                iconSize: 14
+                                iconSize: root.smallIconSize
                                 buttonSize: itemDelegate.controlSize
                                 iconColor: itemDelegate.isSelected ? root.roleColours.primary : root.roleColours.surfaceVariantText
                                 Layout.alignment: Qt.AlignVCenter
@@ -3781,7 +3787,7 @@ DesktopPluginComponent {
                             // bookmark button before.
                             DankActionButton {
                                 iconName: itemDelegate.isRead ? "mark_email_read" : "mark_email_unread"
-                                iconSize: 14
+                                iconSize: root.smallIconSize
                                 buttonSize: itemDelegate.controlSize
                                 iconColor: itemDelegate.isRead ? root.roleColours.primary : root.roleColours.surfaceVariantText
                                 Layout.alignment: Qt.AlignVCenter
@@ -3832,7 +3838,7 @@ DesktopPluginComponent {
                             // button unclickable until hovered.
                             DankActionButton {
                                 iconName: itemDelegate.isBookmarked ? "star" : "star_border"
-                                iconSize: 14
+                                iconSize: root.smallIconSize
                                 buttonSize: itemDelegate.controlSize
                                 iconColor: itemDelegate.isBookmarked ? root.roleColours.primary : root.roleColours.surfaceVariantText
                                 Layout.alignment: Qt.AlignVCenter
@@ -3858,7 +3864,7 @@ DesktopPluginComponent {
                             // does the read-marking, same as the "v" key.
                             DankActionButton {
                                 iconName: "menu_book"
-                                iconSize: 14
+                                iconSize: root.smallIconSize
                                 buttonSize: itemDelegate.controlSize
                                 iconColor: root.roleColours.surfaceVariantText
                                 Layout.alignment: Qt.AlignVCenter
@@ -3988,7 +3994,7 @@ DesktopPluginComponent {
 
                 DankSpinner {
                     running: root.isLoading
-                    size: 24
+                    size: Theme.iconSize
                     color: root.roleColours.primary
                     Layout.alignment: Qt.AlignHCenter
                 }
@@ -4050,10 +4056,10 @@ DesktopPluginComponent {
                     DankActionButton {
                         activeFocusOnTab: false
                         iconName: "close"
-                        iconSize: 14
-                        buttonSize: 22
-                        Layout.preferredWidth: 22
-                        Layout.preferredHeight: 22
+                        iconSize: root.smallIconSize
+                        buttonSize: root.controlHeight
+                        Layout.preferredWidth: root.controlHeight
+                        Layout.preferredHeight: root.controlHeight
                         onClicked: root.helpVisible = false
 
                         Accessible.role: Accessible.Button

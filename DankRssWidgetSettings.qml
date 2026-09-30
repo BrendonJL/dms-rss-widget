@@ -17,6 +17,12 @@ PluginSettings {
     id: root
     pluginId: "dankRssWidget"
 
+    // Theme.iconSize* are fixed pixels; inline icons follow the font scale
+    // instead so they stay in proportion to the text beside them.
+    // At the default scale these are 12 and 14.
+    readonly property real tinyIconSize: Theme.fontSizeSmall
+    readonly property real smallIconSize: Theme.fontSizeSmall + Theme.spacingXXS
+
     property int editingIndex: -1
     property string urlError: ""
     property var feedStatuses: []
@@ -1180,7 +1186,7 @@ PluginSettings {
 
                     DankIcon {
                         name: "rss_feed"
-                        size: 14
+                        size: root.smallIconSize
                         color: root.roleColours.primary
                     }
 
@@ -1457,7 +1463,7 @@ PluginSettings {
 
                         DankIcon {
                             name: "rss_feed"
-                            size: 14
+                            size: root.smallIconSize
                             color: root.roleColours.primary
                         }
 
@@ -1547,7 +1553,7 @@ PluginSettings {
 
                         DankIcon {
                             name: "rss_feed"
-                            size: 16
+                            size: Theme.iconSizeSmall
                             color: root.roleColours.primary
                         }
 
@@ -1581,14 +1587,14 @@ PluginSettings {
                                 DankIcon {
                                     visible: parent.feedStatus !== null && parent.feedStatus.state === "ok"
                                     name: "check_circle"
-                                    size: 12
+                                    size: root.tinyIconSize
                                     color: root.roleColours.success
                                 }
 
                                 DankIcon {
                                     visible: parent.feedStatus !== null && (parent.feedStatus.state === "error" || parent.feedStatus.state === "timeout")
                                     name: "error"
-                                    size: 12
+                                    size: root.tinyIconSize
                                     color: root.roleColours.error
                                 }
 
@@ -1644,9 +1650,9 @@ PluginSettings {
 
                         Rectangle {
                             id: moveUpButton
-                            width: 32
-                            height: 32
-                            radius: 16
+                            width: Theme.iconSizeLarge
+                            height: Theme.iconSizeLarge
+                            radius: width / 2
                             enabled: index > 0
                             Accessible.role: Accessible.Button
                             Accessible.name: "Move " + (modelData.name || "feed") + " up"
@@ -1657,7 +1663,7 @@ PluginSettings {
                             DankIcon {
                                 anchors.centerIn: parent
                                 name: "arrow_upward"
-                                size: 16
+                                size: Theme.iconSizeSmall
                                 color: moveUpButton.enabled && moveUpArea.containsMouse ? root.roleColours.onPrimary : root.roleColours.surfaceVariantText
                             }
 
@@ -1684,9 +1690,9 @@ PluginSettings {
 
                         Rectangle {
                             id: moveDownButton
-                            width: 32
-                            height: 32
-                            radius: 16
+                            width: Theme.iconSizeLarge
+                            height: Theme.iconSizeLarge
+                            radius: width / 2
                             enabled: index < feedsListView.count - 1
                             Accessible.role: Accessible.Button
                             Accessible.name: "Move " + (modelData.name || "feed") + " down"
@@ -1697,7 +1703,7 @@ PluginSettings {
                             DankIcon {
                                 anchors.centerIn: parent
                                 name: "arrow_downward"
-                                size: 16
+                                size: Theme.iconSizeSmall
                                 color: moveDownButton.enabled && moveDownArea.containsMouse ? root.roleColours.onPrimary : root.roleColours.surfaceVariantText
                             }
 
@@ -1723,9 +1729,9 @@ PluginSettings {
                         }
 
                         Rectangle {
-                            width: 32
-                            height: 32
-                            radius: 16
+                            width: Theme.iconSizeLarge
+                            height: Theme.iconSizeLarge
+                            radius: width / 2
                             color: editArea.containsMouse ? root.roleColours.primary : "transparent"
                             Accessible.role: Accessible.Button
                             Accessible.name: "Edit " + (modelData.name || "feed")
@@ -1734,7 +1740,7 @@ PluginSettings {
                             DankIcon {
                                 anchors.centerIn: parent
                                 name: "edit"
-                                size: 16
+                                size: Theme.iconSizeSmall
                                 color: editArea.containsMouse ? root.roleColours.onPrimary : root.roleColours.surfaceVariantText
                             }
 
@@ -1756,9 +1762,9 @@ PluginSettings {
                         }
 
                         Rectangle {
-                            width: 32
-                            height: 32
-                            radius: 16
+                            width: Theme.iconSizeLarge
+                            height: Theme.iconSizeLarge
+                            radius: width / 2
                             color: deleteArea.containsMouse ? root.roleColours.error : "transparent"
                             Accessible.role: Accessible.Button
                             Accessible.name: "Delete " + (modelData.name || "feed")
@@ -1767,7 +1773,7 @@ PluginSettings {
                             DankIcon {
                                 anchors.centerIn: parent
                                 name: "delete"
-                                size: 16
+                                size: Theme.iconSizeSmall
                                 color: deleteArea.containsMouse ? root.roleColours.onError : root.roleColours.surfaceVariantText
                             }
 
@@ -2862,7 +2868,7 @@ PluginSettings {
 
                     DankIcon {
                         name: "notifications"
-                        size: 14
+                        size: root.smallIconSize
                         color: root.roleColours.primary
                     }
 
@@ -2875,9 +2881,9 @@ PluginSettings {
                     }
 
                     Rectangle {
-                        width: 28
-                        height: 28
-                        radius: 14
+                        width: root.smallIconSize * 2
+                        height: root.smallIconSize * 2
+                        radius: width / 2
                         color: deleteRuleArea.containsMouse ? root.roleColours.error : "transparent"
                         Accessible.role: Accessible.Button
                         Accessible.name: "Delete notification rule " + (modelData.query || "")
@@ -2886,7 +2892,7 @@ PluginSettings {
                         DankIcon {
                             anchors.centerIn: parent
                             name: "delete"
-                            size: 14
+                            size: root.smallIconSize
                             color: deleteRuleArea.containsMouse ? root.roleColours.onError : root.roleColours.surfaceVariantText
                         }
 
