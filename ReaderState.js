@@ -2,7 +2,7 @@
 //
 // Shared with QML/Node like FeedParser.js — see README.md's "Architecture"
 // section for the dual-load mechanism and the `.pragma library` rule (kept
-// once, in FeedParser.js). See also docs/plans/v2-contract.md.
+// once, in FeedParser.js).
 //
 // Everything here stays PURE: no Qt APIs, no I/O, no Date.now(), no
 // randomness — what makes the read/seen/notification rules testable without
@@ -154,8 +154,8 @@ function countUnread(items, readMap) {
 // INSTANCE receives `instanceScopedPluginService` from DesktopPluginWrapper.qml,
 // a reduced shim exposing only loadPluginData/savePluginData/getPluginVariants/
 // isPluginLoaded. It has no loadPluginState/savePluginState, so calling those
-// on an instance throws — which previously aborted startup and stopped the
-// widget from fetching at all. Always feature-detect before use.
+// on an instance throws, which aborts startup and stops the widget from
+// fetching at all. Always feature-detect before use.
 
 function hasStateApi(service) {
     return !!service
@@ -457,8 +457,8 @@ function addAllBookmarked(bookmarkOrder, ids, cap) {
 
 // --- AI summary cache -------------------------------------------------------
 //
-// Summaries cost ~5s of GPU time each (measured: qwen3:8b on an RTX 2070
-// Super, two sentences from a ~120-word article), so asking twice for the same
+// Summaries cost ~5s of GPU time each (two sentences from a ~120-word article
+// on a small local model), so asking twice for the same
 // article must never cost twice. The cache survives restarts: an article does
 // not change, so a summary of it does not go stale.
 //
@@ -693,9 +693,8 @@ function reconcileServerStatus(readOrder, bookmarkOrder, serverEntries, cap) {
 
 // --- Sorting -----------------------------------------------------------------
 //
-// DankRssWidget.finalizeFetch() used to do this sort inline; it is pulled in
-// here so it is testable and so the three sort modes share one deterministic
-// tie-break. Equal timestamps are common (a feed publishing a batch at the
+// Kept here rather than inline in DankRssWidget.finalizeFetch() so it is
+// testable and so the three sort modes share one deterministic tie-break. Equal timestamps are common (a feed publishing a batch at the
 // same second, or a feed with second-granularity dates), and without a
 // tie-break Array.prototype.sort's behaviour on "equal" elements is whatever
 // the two most recent fetches happened to collect them in -- which reshuffles

@@ -333,11 +333,11 @@ function parseAtomFeed(xml, sourceName, sourceUrl) {
 // Returns the tag name of the document's ROOT element, lowercased and with any
 // namespace prefix stripped ("rdf:RDF" -> "rdf"), or "" if none can be found.
 //
-// Reported by @Xn4m3d (#7): routing used to be `xml.indexOf("<feed") !== -1`,
-// a substring test over the WHOLE document. Any RSS 2.0 feed carrying an
-// element whose name merely starts with "feed" was handed to the Atom parser,
-// which then found no <entry> and returned zero items with nothing logged --
-// the feed just silently vanished. Real feeds do this: CNBC ships
+// Routing on `xml.indexOf("<feed") !== -1` is wrong: it is a substring test
+// over the WHOLE document, so any RSS 2.0 feed carrying an element whose
+// name merely starts with "feed" is handed to the Atom parser, which then
+// finds no <entry> and returns zero items with nothing logged --
+// the feed silently vanishes. Real feeds do this: CNBC ships
 // <feed_asset>, FeedBurner ships <feedburner:*>. A tighter test like
 // /<feed[\s>]/ is still wrong, because a <feed> element can legitimately
 // appear inside an RSS <description> or a CDATA block. The format is a
@@ -436,7 +436,7 @@ function dedupeItems(items) {
     return out;
 }
 
-// CONTRACT (v2.4 §4.1): Miniflux entries flow through this function into the
+// CONTRACT: Miniflux entries flow through this function into the
 // SAME Item shape RSS/Atom items use, with a distinct id prefix ("m:") so a
 // Miniflux id can never collide with makeItemId's "g:"/"l:"/"h:" outputs.
 //

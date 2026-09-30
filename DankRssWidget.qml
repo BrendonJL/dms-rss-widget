@@ -38,6 +38,12 @@ DesktopPluginComponent {
     property int maxPerFeed: pluginData.maxPerFeed ?? 5  // per-feed cap when grouping by feed
     property string viewMode: pluginData.viewMode ?? "expanded"  // "compact" or "expanded"
     property int fontSize: pluginData.fontSize ?? Theme.fontSizeSmall
+    // DMS's Theme.iconSize* tokens are fixed pixels; only its font tokens
+    // follow the font scale. Inline icons and the rows that hold them derive
+    // from the font instead, so they grow with the text beside them rather
+    // than clipping it. At the default scale these are 14 and 22.
+    readonly property real smallIconSize: root.fontSize + Theme.spacingXXS
+    readonly property real controlHeight: root.smallIconSize + Theme.spacingS
     property bool notifyNewItems: pluginData.notifyNewItems ?? true
 
     // --- Miniflux settings ---
@@ -64,14 +70,14 @@ DesktopPluginComponent {
     // writes to the instance config only. So these are per-instance for an
     // instanced widget and global otherwise -- the same as every other
     // setting in this file.
-    // Stage 4d replaced the fixed markdown/obsidian/neovim provider dropdown
-    // with an editable open-command template (exportOpenCommand); exportKind
-    // is now the id of whichever preset is active rather than a closed set
-    // of three values. resolveExportConfig() reads BOTH of those the same
-    // way regardless of whether pluginData is in the old or new shape, so a
-    // config saved before this stage (e.g. exportKind: "obsidian" with no
-    // exportOpenCommand at all) lands on the equivalent preset instead of
-    // silently losing its open-after-export behaviour.
+    // The open-after-export action is an editable command template
+    // (exportOpenCommand); exportKind is the id of whichever preset is active.
+    // resolveExportConfig() reads BOTH of those the same way regardless of
+    // whether pluginData is in the legacy shape (exportKind: "obsidian" with
+    // no exportOpenCommand at all, from when exportKind was a closed set of
+    // three values) or the current one, so a legacy config lands on the
+    // equivalent preset instead of silently losing its open-after-export
+    // behaviour.
     readonly property var _exportResolved: ExportProvider.resolveExportConfig(pluginData)
     property string exportKind: root._exportResolved.exportKind
     property string exportOpenCommand: root._exportResolved.exportOpenCommand
@@ -175,12 +181,12 @@ DesktopPluginComponent {
     // as before, so the default behaviour is untouched.
     property var feedLastFetch: ({})
 
-    // --- Interest ranking (stage 3d) ---
+    // --- Interest ranking ---
     //
     // Ships OFF, and stays off until it can actually work: it needs an
     // embedding model configured AND enough starred articles to learn from.
-    // The backlog is explicit that a ranking which feels wrong is worse than
-    // no ranking, so every gate below fails closed and says why rather than
+    // A ranking that feels wrong is worse than no ranking, so every gate
+    // below fails closed and says why rather than
     // quietly producing an arbitrary order.
     property bool rankingEnabled: pluginData.rankingEnabled ?? false
     property int rankingWeight: pluginData.rankingWeight ?? 50
@@ -229,15 +235,12 @@ DesktopPluginComponent {
     }
     property string attachmentDir: pluginData.attachmentDir ?? "attachments"
 
-    // --- AI summaries (stage 3b) ---
+    // --- AI summaries ---
     //
-    // All four are global rather than per-instance. The design doc asked for
-    // the toggle to be per-instance so a small ticker could stay dumb while a
-    // large widget summarises, but every setting in this plugin goes through
-    // savePluginData(pluginId, ...), which is keyed by plugin and not by
-    // instance. Per-instance would mean adopting the DMS plugin-variant
-    // system, which this widget has never used, for one boolean. Recorded as
-    // a deviation rather than done quietly.
+    // All four are global rather than per-instance: every setting in this
+    // plugin goes through savePluginData(pluginId, ...), which is keyed by
+    // plugin and not by instance. Per-instance would mean adopting the DMS
+    // plugin-variant system for one boolean.
     property bool aiEnabled: pluginData.aiEnabled ?? false
     // Resolved exactly as the settings panel resolves it, through the same
     // pure function -- a second copy of "what does empty mean" is how the two
@@ -256,8 +259,8 @@ DesktopPluginComponent {
 
     // The single gate on every summary affordance. "Enabled but unconfigured"
     // must look exactly like "disabled": no button, no key, no error. An AI
-    // feature that advertises itself while unusable is the failure mode the
-    // design doc calls the most important behavioural requirement in the phase.
+    // feature that advertises itself while unusable is the failure mode this
+    // gate exists to prevent.
     readonly property bool aiReady: root.aiEnabled && root.aiProvider.isConfigured()
 
     readonly property var exportProvider: ExportProvider.createExportProvider({
@@ -343,11 +346,9 @@ DesktopPluginComponent {
     // Row actions, each defined once and invoked from BOTH onClicked and
     // Accessible.onPressAction.
     //
-    // These used to be duplicated: the accessibility handler carried a
-    // verbatim copy of the pointer handler's body. That is the shape that
-    // rots, and it already had -- the mark-all pair had drifted to reading
-    // its state through two different names. Assistive tech activates via the
-    // press action rather than a synthesised click, so the two paths must
+    // The accessibility handler and the pointer handler share one body: a
+    // verbatim copy in each would drift apart. Assistive tech activates via
+    // the press action rather than a synthesised click, so the two paths must
     // stay identical by construction, not by discipline.
     //
     // Every one of them keeps the overview guard: under Niri a click landing
@@ -737,7 +738,7 @@ DesktopPluginComponent {
         onTriggered: root.handleVisibilityChange()
     }
 
-    // Keeps "5m ago" honest between fetches without re-parsing anything.
+    // Keeps "5m ago" current between fetches without re-parsing anything.
     Timer {
         id: relativeTimeTimer
         interval: 60000
@@ -752,9 +753,8 @@ DesktopPluginComponent {
     // PluginService. A desktop-widget INSTANCE receives
     // instanceScopedPluginService from DesktopPluginWrapper.qml, which
     // implements only load/savePluginData -- it has NO load/savePluginState.
-    // Calling those on it throws, and that exception used to abort
-    // fetchAllFeeds() before a single feed was requested (stuck on "No items
-    // loaded"). So: prefer the real singleton, feature-detect it, and never
+    // Calling those on it throws, which aborts fetchAllFeeds() before a single
+    // feed is requested (stuck on "No items loaded"). So: prefer the real singleton, feature-detect it, and never
     // let a persistence failure take the fetch path down with it.
     readonly property var stateService: ReaderState.resolveStateService(typeof PluginService !== "undefined" ? PluginService : null, root.pluginService)
 
@@ -825,17 +825,17 @@ DesktopPluginComponent {
 
     // Drops cached summaries for items that have aged out of the feed.
     //
-    // This lives on the refresh-completion path and NOWHERE else. It used to
-    // sit in applyFilter() next to pruneSelected(), which was wrong twice
-    // over. applyFilter() runs on every search keystroke and filter-chip
-    // click, so the prune re-walked the whole dataset for a question that can
-    // only change on a refresh. Worse, applyFilter() also runs immediately
-    // after `allItems` is emptied -- when every feed is disabled or deleted
-    // (see finalizeFetch's descriptors.length === 0 path) and on a
-    // sourceMode switch -- and "prune against an empty dataset" means "delete
-    // every summary", which was then persisted and unrecoverable. A summary
-    // costs a GPU job; losing the lot because a feed was toggled off is not a
-    // recoverable mistake.
+    // This belongs on the refresh-completion path and NOWHERE else, not in
+    // applyFilter() next to pruneSelected(), for two reasons.
+    // applyFilter() runs on every search keystroke and filter-chip click, so
+    // pruning there re-walks the whole dataset for a question that can only
+    // change on a refresh. Worse, applyFilter() also runs immediately after
+    // `allItems` is emptied -- when every feed is disabled or deleted (see
+    // finalizeFetch's descriptors.length === 0 path) and on a sourceMode
+    // switch -- and "prune against an empty dataset" means "delete every
+    // summary", which would then be persisted and unrecoverable. A summary
+    // costs a GPU job; losing the lot because a feed was toggled off is not
+    // acceptable.
     //
     // Hence both guards below. The empty check is the important one; the
     // length check merely avoids rewriting a map of paragraphs when nothing
@@ -998,7 +998,7 @@ DesktopPluginComponent {
         root.applyFilter();
     }
 
-    // --- Digest (stage 3c) ---
+    // --- Digest ---
     //
     // One call over the last 24 hours of titles and descriptions, rendered in
     // the reading window. Cheaper per item than summarising each article, and
@@ -1161,16 +1161,14 @@ DesktopPluginComponent {
     // runCommand kills what it spawned when its timeout expires -- the same
     // reasoning the editor-open path already records.
     //
-    // HONEST LIMITATION, worth stating because the backlog's goal was
-    // specifically "so podcast feeds play through the DMS media widget":
-    // that widget lists MPRIS players, and whether this episode appears there
-    // depends entirely on whether the configured player publishes MPRIS. mpv
-    // does NOT on its own -- it needs the separate mpv-mpris plugin, which is
-    // not installed on this machine (checked). VLC publishes it natively.
-    // So this plays the episode reliably; it appears in the media widget only
-    // if the player was set up for that. The alternative -- the widget
-    // registering itself as an MPRIS player -- would mean owning playback,
-    // which is a different and much larger feature.
+    // The DMS media widget lists MPRIS players, and whether this episode
+    // appears there depends entirely on whether the configured player
+    // publishes MPRIS. mpv does not on its own -- it needs the separate
+    // mpv-mpris plugin. VLC publishes it natively. So this plays the episode
+    // reliably; it appears in the media widget only if the player is set up
+    // for that. The widget cannot register itself as an MPRIS player
+    // (Quickshell's MPRIS types are consumption-only, and it would mean
+    // owning playback, which is out of scope).
     function playEnclosure(itemId) {
         var article = root.itemById(itemId);
         if (!article)
@@ -1219,7 +1217,7 @@ DesktopPluginComponent {
 
     // Quickshell exposes no clipboard type and DMS's ClipboardService only
     // re-copies entries that are already in its history, so neither can take
-    // arbitrary text. wl-copy can, it is present on this system, and "--"
+    // arbitrary text. wl-copy (wl-clipboard) can, and "--"
     // plus argv (never a shell string) keeps an article body that happens to
     // contain quotes or a leading dash from being read as options.
     //
@@ -1300,8 +1298,8 @@ DesktopPluginComponent {
             // Article identity, not generation, decides whether ANY of this
             // may be shown. summaryGeneration only advances when a new
             // summary is asked for, so navigating away without asking again
-            // leaves it satisfied -- which used to let a failure from the
-            // previous article render against the one now on screen.
+            // leaves it satisfied -- so a failure from the previous article
+            // would render against the one now on screen.
             var stillOnThisArticle = readerWindow.itemId === itemId;
             var superseded = generation !== root.summaryGeneration;
 
@@ -1344,8 +1342,8 @@ DesktopPluginComponent {
             // Cached unconditionally, BEFORE any supersede check. The summary
             // is keyed by item id, so a result that arrived too late to show
             // is still a correct answer for the article that asked -- and it
-            // cost a real GPU job. Throwing it away meant asking again later
-            // re-ran the model for an answer we had already paid for.
+            // cost a real GPU job. Discarding it would make a later request
+            // re-run the model for an answer already computed.
             var next = ReaderState.addSummary(root.summaryOrder, root.summaryMap, itemId, result.text, root.summaryCap);
             root.summaryOrder = next.order;
             root.summaryMap = next.map;
@@ -1554,7 +1552,7 @@ DesktopPluginComponent {
     // --- Keyboard navigation ---
     // KeyMap.resolveKey is pure; this is the only place its named actions
     // turn into side effects. Every action below reuses a function the mouse
-    // path already calls -- see docs/plans/2026-09-10-phase2-keyboard-design.md.
+    // path already calls.
     function buildKeyState() {
         return {
             index: root.keyboardIndex,
@@ -1892,7 +1890,7 @@ DesktopPluginComponent {
             var article = articles[i];
             var probe = root.exportProvider.buildNote(article, []);
             if (probe.error) {
-                // Rule 1 of the design doc: buildNote refuses a path that
+                // Rule 1: buildNote refuses a path that
                 // would escape the export root. Unreachable in practice --
                 // if a user ever sees this, it is a bug report worth having.
                 if (!firstBuildError)
@@ -1932,13 +1930,13 @@ DesktopPluginComponent {
         // has already fetched and parsed the page, so asking it costs one
         // local API call instead of a round trip to the article's own site.
         //
-        // Strictly an optimisation, never the only route -- the backlog is
-        // explicit that a feature working on one backend and silently doing
-        // nothing on another is the fragmentation the backend interface
-        // exists to prevent. So every failure here falls through to the
-        // local extractor rather than failing the note: no capability, no
-        // id, a refusal, a malformed body, a timeout. The user cannot tell
-        // which path produced their note, which is the point.
+        // Strictly an optimisation, never the only route -- a feature that
+        // works on one backend and silently does nothing on another is the
+        // fragmentation the backend interface exists to prevent. So every
+        // failure here falls through to the local extractor rather than
+        // failing the note: no capability, no id, a refusal, a malformed body,
+        // a timeout. The user cannot tell which path produced their note,
+        // which is the point.
         if (root.backend.capabilities.fullText) {
             var backendId = root.backendItemId(article.id);
             var fastReq = backendId ? root.backend.fullTextRequest(root.backendConfig, backendId) : null;
@@ -1978,7 +1976,7 @@ DesktopPluginComponent {
         root._prepareExportJobLocal(article, title, index);
     }
 
-    // The original local route: fetch the article's own page and extract it.
+    // The local route: fetch the article's own page and extract it.
     function _prepareExportJobLocal(article, title, index) {
         if (!root.exportFullText || !(article && article.link)) {
             root._fetchImagesForJob(article, title, index, null);
@@ -1991,7 +1989,7 @@ DesktopPluginComponent {
             // connection) must not abort the batch -- fall back to the
             // summary for THIS note alone and keep going. `extracted` stays
             // null here exactly like the toggle-off path above, so buildNote
-            // renders the honest "extracted: false" note either way.
+            // renders the "extracted: false" note either way.
             var extracted = null;
             if (code === 0 && out) {
                 // baseUrl resolves the article's site-relative links. Without
@@ -2019,9 +2017,9 @@ DesktopPluginComponent {
     //
     // A failed image is NOT a failed note. Each fetch reports into the same
     // tally and whatever succeeded gets rewritten to local paths; anything
-    // that did not keeps its original remote URL, so the note degrades to
-    // today's behaviour for that image alone rather than pointing at a file
-    // that was never written.
+    // that did not keeps its original remote URL, so the note degrades to a
+    // remote link for that image alone rather than pointing at a file that
+    // was never written.
     function _fetchImagesForJob(article, title, index, extracted) {
         if (!root.exportImages) {
             root._writeExportJob(article, title, index, extracted, null);
@@ -2237,9 +2235,9 @@ DesktopPluginComponent {
     // failure.
     // --- Bounded process queue, for the export fan-out only ---
     //
-    // Exporting a selection used to spawn everything at once: one curl per
-    // article for full text, then one per image per article, all in the same
-    // tick. "Select all" with thirty articles and a couple of pictures each is
+    // Spawning everything at once would mean one curl per article for full
+    // text, then one per image per article, all in the same tick. "Select all"
+    // with thirty articles and a couple of pictures each is
     // over a hundred concurrent processes -- inside the shell's own process,
     // where a stall takes the bar and popups with it.
     //
@@ -2439,7 +2437,7 @@ DesktopPluginComponent {
             //
             // If nothing was skipped, there genuinely are no eligible feeds
             // (all disabled, or the last one deleted) and an empty list is the
-            // honest answer.
+            // correct answer.
             if (skippedUrls.length === 0)
                 root.allItems = [];
             root.isLoading = false;
@@ -2650,18 +2648,16 @@ DesktopPluginComponent {
 
         var items = FeedParser.dedupeItems(collected);
 
-        // Sorting lives in ReaderState so it can be tested: this used to be
-        // three inline comparators here, and the "newest"/"oldest" ones broke
-        // ties by timestamp alone. Feed items arrive in batches that share a
-        // timestamp to the second, so equal-timestamp runs were free to come
-        // back in a different order on every refresh -- the list quietly
-        // reshuffled under the cursor. sortItems breaks ties on id.
+        // Sorting lives in ReaderState so it can be tested. Feed items arrive
+        // in batches that share a timestamp to the second, so ties broken by
+        // timestamp alone may come back in a different order on every
+        // refresh -- the list would reshuffle under the cursor. sortItems
+        // breaks ties on id.
         items = ReaderState.sortItems(items, root.sortMode, root.maxPerFeed, ReaderState.feedOrderMap(root.feeds));
 
-        // Captured BEFORE the display cap below, which is the whole point and
-        // was got wrong the first time: taking the slice afterwards made this
-        // identical to allItems, so the digest still only ever saw maxItems
-        // articles and the fix that was supposed to widen it did nothing.
+        // Captured BEFORE the display cap below. Take the slice before the cap,
+        // otherwise the pool is identical to allItems and the digest only ever
+        // sees maxItems articles.
         //
         // Also the retention pool for per-feed intervals: a feed that was not
         // due this cycle contributed nothing to the collector, and its
@@ -2701,7 +2697,7 @@ DesktopPluginComponent {
 
     // Notifies only for ids never seen before. On the very first run the id
     // history is empty, so everything is recorded silently instead of
-    // announcing the entire backlog.
+    // announcing every existing article.
     function notifyForNewItems(items) {
         var currentIds = [];
         for (var i = 0; i < items.length; i++) {
@@ -2818,9 +2814,8 @@ DesktopPluginComponent {
         // Ranking reorders what the filter chose; it never changes WHAT is
         // shown. Keeping the two separate matters: a ranking that also hid
         // things would be impossible to tell apart from a broken filter, and
-        // the backlog's requirement is an obvious way back, which this gives
-        // for free -- switch ranking off and the same rows are simply in
-        // their old order. Items the ranking never scored keep their relative
+        // switching ranking off is an obvious way back, and it comes for
+        // free -- the same rows are simply in their old order. Items the ranking never scored keep their relative
         // position at the end rather than disappearing.
         if (root.rankingConfigured && root.rankedOrder.length > 0) {
             var rank = {};
@@ -2909,11 +2904,10 @@ DesktopPluginComponent {
         // widget. forceActiveFocus() only sets Qt's own internal focus item,
         // not compositor keyboard focus -- under layer-shell OnDemand, focus
         // arrives on a click, and when a floating window closes niri hands
-        // focus to a regular window, not a layer surface. There used to be a
-        // forceActiveFocus() call here; it did not do anything useful, so it
-        // is gone. The actual fix is "n"/"p" (readerAdvance above): moving to
-        // the next/previous article without ever closing the window means
-        // this focus boundary is never crossed. Closing via Esc still needs
+        // focus to a regular window, not a layer surface. So no
+        // forceActiveFocus() call is made here. Instead "n"/"p"
+        // (readerAdvance above) move to the next/previous article without
+        // ever closing the window, so this focus boundary is never crossed. Closing via Esc still needs
         // a click before j/k work again, same as any other floating window
         // regaining focus.
     }
@@ -2939,8 +2933,8 @@ DesktopPluginComponent {
         }
 
         // Grants keyboard focus on ANY click inside the widget -- clicking
-        // the header, a filter chip, or empty space used to leave
-        // keyboardScope unfocused, so "?" and "/" did nothing until a row
+        // the header, a filter chip, or empty space would otherwise leave
+        // keyboardScope unfocused, so "?" and "/" would do nothing until a row
         // was clicked. A TapHandler (not a MouseArea) is used because it
         // observes clicks passing through child Items/MouseAreas rather than
         // competing with them for the event -- it fires for chip clicks, the
@@ -2990,15 +2984,13 @@ DesktopPluginComponent {
                         Layout.fillWidth: true
                     }
 
-                    // Failed-feed indicator. It used to be inert: it told you
-                    // something was wrong and offered no way to find out what,
-                    // which for anyone who does not already know the detail
-                    // lives in settings is just an anxiety light. It now names
-                    // the feeds and their errors on click.
+                    // Failed-feed indicator. On click it names the failing feeds
+                    // and their errors, so the user can find out what is wrong
+                    // without knowing the detail lives in settings.
                     Rectangle {
                         visible: root.failedFeedCount > 0
                         implicitWidth: failedRow.implicitWidth + Theme.spacingXS * 2
-                        implicitHeight: 20
+                        implicitHeight: root.controlHeight - Theme.spacingXXS
                         radius: Theme.cornerRadius
                         color: failedArea.containsMouse ? root.tint(root.roleColours.error, 0.18) : "transparent"
 
@@ -3013,7 +3005,7 @@ DesktopPluginComponent {
 
                             DankIcon {
                                 name: "error_outline"
-                                size: 14
+                                size: root.smallIconSize
                                 color: root.roleColours.error
                             }
 
@@ -3036,7 +3028,7 @@ DesktopPluginComponent {
                     DankSpinner {
                         visible: root.isLoading
                         running: root.isLoading
-                        size: 14
+                        size: root.smallIconSize
                         color: root.roleColours.primary
                     }
 
@@ -3051,8 +3043,8 @@ DesktopPluginComponent {
                         activeFocusOnTab: false
                         visible: !root.isLoading
                         iconName: "refresh"
-                        iconSize: 14
-                        buttonSize: 22
+                        iconSize: root.smallIconSize
+                        buttonSize: root.controlHeight
                         enabled: !root.isLoading && root.activeFeedCount > 0
                         onClicked: root.refreshNow()
 
@@ -3096,7 +3088,7 @@ DesktopPluginComponent {
                 DankActionButton {
                     activeFocusOnTab: false
                     iconName: root.searchActive ? "search_off" : "search"
-                    iconSize: 14
+                    iconSize: root.smallIconSize
                     buttonSize: root.searchToggleSize
                     iconColor: (root.searchActive || root.searching) ? root.roleColours.primary : root.roleColours.surfaceVariantText
                     onClicked: root.toggleSearch()
@@ -3110,12 +3102,9 @@ DesktopPluginComponent {
             // Why ranking is not doing anything, when it is switched on and
             // is not doing anything.
             //
-            // This existed as a property with six distinct messages and was
-            // rendered nowhere, which is the worst of both: the code knew
-            // exactly why it had declined to rank and told nobody. The
-            // backlog's requirement was "a visible reason"; a reason that is
-            // not visible does not meet it, and the symptom -- switching
-            // ranking on and observing no change whatsoever -- is
+            // The reason (one of six distinct messages) must be rendered: a
+            // reason that is not visible does not help, and the symptom --
+            // switching ranking on and observing no change whatsoever -- is
             // indistinguishable from the feature being broken.
             StyledText {
                 Layout.fillWidth: true
@@ -3153,7 +3142,7 @@ DesktopPluginComponent {
                         readonly property bool active: root.filterMode === modelData.key
 
                         Layout.preferredWidth: filterLabel.implicitWidth + Theme.spacingS
-                        height: 22
+                        height: root.controlHeight
                         radius: Theme.cornerRadius
                         color: active ? root.tint(root.roleColours.primary, 0.18) : (filterArea.containsMouse ? root.tint(root.roleColours.primary, 0.08) : "transparent")
 
@@ -3199,7 +3188,7 @@ DesktopPluginComponent {
                     visible: root.availableCategories.length > 0
 
                     Layout.preferredWidth: categoryLabel.implicitWidth + Theme.spacingS
-                    height: 22
+                    height: root.controlHeight
                     radius: Theme.cornerRadius
                     color: active ? root.tint(root.roleColours.primary, 0.18) : (categoryArea.containsMouse ? root.tint(root.roleColours.primary, 0.08) : "transparent")
 
@@ -3247,7 +3236,7 @@ DesktopPluginComponent {
                     Layout.preferredWidth: allReadRow.implicitWidth + Theme.spacingS * 2
                     Layout.minimumWidth: 22 + Theme.spacingS * 2
                     visible: root.widgetWidth >= 160
-                    height: 22
+                    height: root.controlHeight
                     radius: Theme.cornerRadius
                     color: markAllArea.containsMouse ? root.tint(root.roleColours.primary, 0.15) : "transparent"
 
@@ -3258,7 +3247,7 @@ DesktopPluginComponent {
 
                         DankIcon {
                             name: markAllRect.allRead ? "remove_done" : "done_all"
-                            size: 14
+                            size: root.smallIconSize
                             color: markAllArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
 
@@ -3315,7 +3304,7 @@ DesktopPluginComponent {
                 Rectangle {
                     Layout.preferredWidth: saveRow.implicitWidth + Theme.spacingS * 2
                     Layout.minimumWidth: 22 + Theme.spacingS * 2
-                    height: 22
+                    height: root.controlHeight
                     radius: Theme.cornerRadius
                     color: saveArea.containsMouse ? root.tint(root.roleColours.primary, 0.15) : "transparent"
 
@@ -3326,7 +3315,7 @@ DesktopPluginComponent {
 
                         DankIcon {
                             name: "star"
-                            size: 14
+                            size: root.smallIconSize
                             color: saveArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
 
@@ -3358,7 +3347,7 @@ DesktopPluginComponent {
                     visible: root.exportRoot !== ""
                     Layout.preferredWidth: exportRow.implicitWidth + Theme.spacingS * 2
                     Layout.minimumWidth: 22 + Theme.spacingS * 2
-                    height: 22
+                    height: root.controlHeight
                     radius: Theme.cornerRadius
                     color: exportArea.containsMouse ? root.tint(root.roleColours.primary, 0.15) : "transparent"
 
@@ -3369,7 +3358,7 @@ DesktopPluginComponent {
 
                         DankIcon {
                             name: "note_add"
-                            size: 14
+                            size: root.smallIconSize
                             color: exportArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
 
@@ -3402,7 +3391,7 @@ DesktopPluginComponent {
 
                     Layout.preferredWidth: markReadRow.implicitWidth + Theme.spacingS * 2
                     Layout.minimumWidth: 22 + Theme.spacingS * 2
-                    height: 22
+                    height: root.controlHeight
                     radius: Theme.cornerRadius
                     color: markReadArea.containsMouse ? root.tint(root.roleColours.primary, 0.15) : "transparent"
 
@@ -3413,7 +3402,7 @@ DesktopPluginComponent {
 
                         DankIcon {
                             name: root.selectedAllRead ? "mark_email_unread" : "mark_email_read"
-                            size: 14
+                            size: root.smallIconSize
                             color: markReadArea.containsMouse ? root.roleColours.primary : root.roleColours.surfaceVariantText
                         }
 
@@ -3453,10 +3442,10 @@ DesktopPluginComponent {
                 DankActionButton {
                     activeFocusOnTab: false
                     iconName: "close"
-                    iconSize: 14
-                    buttonSize: 22
-                    Layout.preferredWidth: 22
-                    Layout.preferredHeight: 22
+                    iconSize: root.smallIconSize
+                    buttonSize: root.controlHeight
+                    Layout.preferredWidth: root.controlHeight
+                    Layout.preferredHeight: root.controlHeight
                     onClicked: root.clearSelection()
 
                     Accessible.role: Accessible.Button
@@ -3470,11 +3459,11 @@ DesktopPluginComponent {
                     activeFocusOnTab: false
                 id: searchField
                 Layout.fillWidth: true
-                Layout.preferredHeight: 30
+                Layout.preferredHeight: root.controlHeight + Theme.spacingS
                 visible: root.searchActive && root.allItems.length > 0
                 placeholderText: "Search title, text, source"
                 leftIconName: "search"
-                leftIconSize: 14
+                leftIconSize: root.smallIconSize
                 showClearButton: true
                 font.pixelSize: root.fontSize
 
@@ -3651,8 +3640,8 @@ DesktopPluginComponent {
                                 root.keyboardIndex = index;
 
                                 // Row click ALWAYS opens + marks read. Never
-                                // un-reads -- that regressed link-opening once an
-                                // item had been read before. None of the three
+                                // un-reads, or opening a link on an item that was
+                                // already read would toggle it back to unread. None of the three
                                 // controls (selection, mark-read, bookmark) ever
                                 // open a link.
                                 root.openItem(model.itemId, model.link);
@@ -3672,7 +3661,7 @@ DesktopPluginComponent {
                             // never touches read state.
                             DankActionButton {
                                 iconName: itemDelegate.isSelected ? "check_box" : "check_box_outline_blank"
-                                iconSize: 14
+                                iconSize: root.smallIconSize
                                 buttonSize: itemDelegate.controlSize
                                 iconColor: itemDelegate.isSelected ? root.roleColours.primary : root.roleColours.surfaceVariantText
                                 Layout.alignment: Qt.AlignVCenter
@@ -3790,17 +3779,15 @@ DesktopPluginComponent {
                                 }
                             }
 
-                            // Trailing #1: mark-read toggle. Takes over the
-                            // read-toggle behavior the checkbox used to have
-                            // before selection was added, moved here with a
-                            // distinct icon so it isn't confused with the
-                            // leading selection checkbox. Always enabled, always
+                            // Trailing #1: mark-read toggle, with an icon distinct
+                            // from the leading selection checkbox so the two are
+                            // not confused. Always enabled, always
                             // hittable -- never disable the subtree via
                             // `enabled: <opacity expr>`, that's what broke the
                             // bookmark button before.
                             DankActionButton {
                                 iconName: itemDelegate.isRead ? "mark_email_read" : "mark_email_unread"
-                                iconSize: 14
+                                iconSize: root.smallIconSize
                                 buttonSize: itemDelegate.controlSize
                                 iconColor: itemDelegate.isRead ? root.roleColours.primary : root.roleColours.surfaceVariantText
                                 Layout.alignment: Qt.AlignVCenter
@@ -3846,13 +3833,12 @@ DesktopPluginComponent {
                             }
 
                             // Bookmark toggle. `enabled` stays true always --
-                            // binding it to the opacity expression disabled the
-                            // whole subtree for input whenever idle, which is
-                            // why it used to be unclickable without hovering
-                            // first.
+                            // binding it to the opacity expression disables the
+                            // whole subtree for input whenever idle, leaving the
+                            // button unclickable until hovered.
                             DankActionButton {
                                 iconName: itemDelegate.isBookmarked ? "star" : "star_border"
-                                iconSize: 14
+                                iconSize: root.smallIconSize
                                 buttonSize: itemDelegate.controlSize
                                 iconColor: itemDelegate.isBookmarked ? root.roleColours.primary : root.roleColours.surfaceVariantText
                                 Layout.alignment: Qt.AlignVCenter
@@ -3878,7 +3864,7 @@ DesktopPluginComponent {
                             // does the read-marking, same as the "v" key.
                             DankActionButton {
                                 iconName: "menu_book"
-                                iconSize: 14
+                                iconSize: root.smallIconSize
                                 buttonSize: itemDelegate.controlSize
                                 iconColor: root.roleColours.surfaceVariantText
                                 Layout.alignment: Qt.AlignVCenter
@@ -4008,7 +3994,7 @@ DesktopPluginComponent {
 
                 DankSpinner {
                     running: root.isLoading
-                    size: 24
+                    size: Theme.iconSize
                     color: root.roleColours.primary
                     Layout.alignment: Qt.AlignHCenter
                 }
@@ -4070,10 +4056,10 @@ DesktopPluginComponent {
                     DankActionButton {
                         activeFocusOnTab: false
                         iconName: "close"
-                        iconSize: 14
-                        buttonSize: 22
-                        Layout.preferredWidth: 22
-                        Layout.preferredHeight: 22
+                        iconSize: root.smallIconSize
+                        buttonSize: root.controlHeight
+                        Layout.preferredWidth: root.controlHeight
+                        Layout.preferredHeight: root.controlHeight
                         onClicked: root.helpVisible = false
 
                         Accessible.role: Accessible.Button

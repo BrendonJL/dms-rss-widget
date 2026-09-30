@@ -2,8 +2,7 @@
 //
 // See README.md's "Architecture" section for the QML/Node dual-load
 // mechanism and the `.pragma library` rule (kept once, in FeedParser.js).
-// See docs/plans/2026-09-08-phase4-export-provider-design.md for the full
-// design and its numbered security rules, cited below where each applies.
+// The numbered security rules ("Rule N") are cited below where each applies.
 //
 // Everything here stays PURE: no Qt APIs, no I/O, no Date.now(), no
 // randomness, and -- unlike the Node test file that exercises it -- no
@@ -135,8 +134,7 @@ function interpolateTemplate(template, article) {
 //
 // Every templated value is emitted as a double-quoted YAML scalar, never
 // concatenated raw. Double-quoted style is immune to the whole class of
-// "starts with -/[/{/&/*/!/|/>/#/%" and "contains : " problems the design
-// doc calls out, because the quotes make the parser treat the content as
+// "starts with -/[/{/&/*/!/|/>/#/%" and "contains : " problems, because the quotes make the parser treat the content as
 // an opaque string no matter what's inside -- the only characters that
 // need escaping inside a double-quoted YAML scalar are backslash, the
 // closing quote, and control characters (newlines included, since a raw
@@ -259,19 +257,18 @@ function buildBody(article, annotations, caps, config, extracted, imageMap) {
     return parts.join("\n\n") + "\n";
 }
 
-// ─── open-command presets (stage 4d) ───
+// ─── open-command presets ───
 //
-// Adding an editor used to mean adding a branch to buildOpenRequest for
-// each one. The file being opened is identical in every case -- the only
-// editor-specific thing is the command that opens it afterward -- so that
-// becomes a single command TEMPLATE with `{path}` substituted, and "one more
-// editor" becomes "one more row in this table", not a new code path.
+// The file being opened is identical for every editor -- the only
+// editor-specific thing is the command that opens it afterward -- so that is
+// a single command TEMPLATE with `{path}` substituted, and "one more editor"
+// is one more row in this table, not a new code path.
 //
 // GUI editors (VS Code, Zed, Emacs) ship a launcher that takes a bare path.
 // Terminal ones (Neovim, Helix, Vim) need a terminal emulator wrapped around
-// them, and which terminal is the user's business -- these presets assume
-// `kitty` because that is what this machine runs. They are a starting point
-// to edit, not a claim about anyone's setup; the settings panel says so.
+// them, and which terminal is the user's business -- these presets use
+// `kitty` as an example terminal. They are a starting point to edit, not a
+// claim about anyone's setup; the settings panel says so.
 var EXPORT_OPEN_PRESETS = [
     { id: "none", label: "None", template: "" },
     { id: "obsidian", label: "Obsidian", template: "obsidian://open?vault={vault}&file={file}" },
@@ -292,16 +289,15 @@ function presetById(id) {
     return null;
 }
 
-// ─── legacy config migration (stage 4d) ───
+// ─── legacy config migration ───
 //
-// Before this stage "exportKind" was one of exactly three values and fully
-// determined behaviour by itself. It is now the id of whichever preset is
-// active, and the actual open command lives in `exportOpenCommand`. A saved
-// config from before this stage has no `exportOpenCommand` key at all --
+// "exportKind" is the id of whichever preset is active, and the actual open
+// command lives in `exportOpenCommand`. A legacy config, where exportKind was
+// one of exactly three values and fully determined behaviour by itself, has
+// no `exportOpenCommand` key at all --
 // that absence is what marks it as legacy, not the value of exportKind
-// (which stays a normal, possibly-empty string forever after). A config
-// that already HAS the key, even set to "", has already been through this
-// (or was created after it existed) and is returned unchanged.
+// (which stays a normal, possibly-empty string). A config that already HAS
+// the key, even set to "", is not legacy and is returned unchanged.
 function resolveExportConfig(saved) {
     saved = saved || {};
     if (Object.prototype.hasOwnProperty.call(saved, "exportOpenCommand")) {
@@ -419,9 +415,8 @@ function buildNote(config, article, annotations, extracted, imageMap) {
     var relPath = buildRelPath(config, article);
 
     // Rule 1: re-check containment on the assembled path. This should be
-    // unreachable given sanitizeSegment()'s guarantees -- it exists
-    // because sanitising alone is exactly the assumption the design doc
-    // says not to make.
+    // unreachable given sanitizeSegment()'s guarantees -- it exists because
+    // sanitising alone must not be trusted to keep the path inside the root.
     if (!isRelPathContained(relPath))
         return { error: "Generated path escapes the export root" };
 
@@ -495,7 +490,7 @@ function buildOpenRequest(config, relPath) {
     return { kind: "custom", argv: argv };
 }
 
-// ─── article fetch (stage 4c-b) ───
+// ─── article fetch ───
 //
 // Full-text export needs the article page itself, not just the feed's
 // summary. Same curl discipline as every other outbound request in this
@@ -540,9 +535,9 @@ function buildArticleFetchRequest(url) {
     };
 }
 
-// ─── images in exported notes (backlog: hotlink vs. download) ───
+// ─── images in exported notes (hotlink vs. download) ───
 //
-// DECISION (do not re-litigate): images are DOWNLOADED into an attachments
+// Decision: images are DOWNLOADED into an attachments
 // folder beside the note and the markdown is rewritten to a RELATIVE path,
 // never left as a remote URL. Obsidian renders both local and remote images
 // fine, but Neovim's image plugins (image.nvim, snacks.nvim, etc.) render
@@ -747,7 +742,7 @@ function buildImageFetchRequest(imageUrl, destPath) {
 // pointing at its original remote address rather than a local path that
 // doesn't exist -- a broken relative link renders as nothing everywhere,
 // whereas the untouched remote URL still has a chance of loading (or at
-// worst behaves exactly as it did before this feature existed).
+// worst behaves as it would without image downloading).
 // Puts the feed's own lead image into the note when it was downloaded and the
 // body does not already show it.
 //

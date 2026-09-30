@@ -1,10 +1,30 @@
 # v3 finish line — working log
 
-> **Status:** in progress, 2026-09-13. This file exists because the work below
-> spans more than one session. It is a handover note first and a plan second:
-> if a session ends mid-flight, start here.
+> **Status:** v3.0.0 SHIPPED, 2026-09-13. Tagged, merged to `main`, both
+> branches level, registry listing updates itself. This file stays as the
+> orientation point for the next session: what landed, what is least proven,
+> and what was deliberately left.
 
 ## Where things stand
+
+**Shipped.** 1098 tests (from 749 at the start of the work), QML lint clean
+locally, six headless smoke tests passing, docs and cheatsheet current.
+
+**Least proven, in order** — if issues arrive, start here:
+
+1. **Interest ranking.** The shape bug is fixed and the pipeline verified
+   end-to-end against a live runtime, but whether the ordering *feels* right
+   can only be judged by living with it. The backlog's own warning applies: a
+   ranking that feels wrong is worse than no ranking.
+2. **Accessible names.** Present on every icon-only control, never driven with
+   a real screen reader. Known to exist; not known to be good.
+3. **Per-feed intervals.** The retention logic is tested, but the all-skipped
+   path only triggers once several feeds actually carry intervals.
+4. **Collapsible settings.** Ten sections collapse; Feed Management was pulled
+   back out after it rendered badly. If other sections misbehave, reverting the
+   rest is cheap and loses nothing important.
+
+
 
 `develop` carries everything from Phase 3 (3b/3c/3d), the accessibility work,
 the colour palettes, and all of Phase 6 except the two items below. None of it
