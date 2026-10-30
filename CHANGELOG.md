@@ -3,6 +3,25 @@
 Newest first. Versions are the ones in `plugin.json`; CI checks that the
 version in the manifest has a matching `### <version>` heading in this file.
 
+### 3.1.0
+
+**New: credentials file.** DMS stores widget settings in plaintext in
+`settings.json`, which often sits in a dotfiles repo. A new **Credentials File**
+setting points at a systemd-style env file. Its `MINIFLUX_TOKEN`,
+`GREADER_USERNAME`, `GREADER_PASSWORD` and `AI_API_KEY` override the matching
+fields per key, so settings.json stores only the path. Missing keys fall back
+to the fields, so existing setups are unchanged. The setting sits under Source
+Mode and shows in every mode. The settings panel names the keys it found, never
+their values, and marks each field the file overrides. Edits to the file take
+effect without a restart. See the wiki's *Sources and Sync* page.
+
+**Fixed: a TypeError on every startup.** While the widget was being built, the
+first read of the source mode or the feed list fired their change handlers
+re-entrantly. Those handlers then started a fetch before the backend binding
+existed, which logged `Cannot call method 'fetchRequests' of undefined` once per
+instance. Fetches now wait until the widget is fully constructed, and the first
+fetch still runs on schedule.
+
 ### 3.0.0
 
 Everything below landed on `develop` after 2.4.0. The short version: the widget

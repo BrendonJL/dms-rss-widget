@@ -74,8 +74,14 @@ Miniflux or Google Reader mode, enter your server URL and credentials and hit
 **Test Connection** — on Miniflux and FreshRSS the Google Reader credentials
 are the API ones from the server's integration settings, not your web login.
 The rest is refresh interval (default 30 minutes), max items (default 20),
-appearance, and an optional Notes Export folder. Credentials are stored in
-plaintext alongside every other setting.
+appearance, and an optional Notes Export folder.
+
+Settings, credentials included, are stored in plaintext in DMS's
+`settings.json`. To keep secrets out of it (say, if it's in a dotfiles repo),
+set **Credentials File** to an env file holding any of `MINIFLUX_TOKEN`,
+`GREADER_USERNAME`, `GREADER_PASSWORD` and `AI_API_KEY`. Each key found
+overrides its field, and settings.json stores only the path. See
+[Sources and Sync](docs/wiki/Sources-and-Sync.md#credentials-file).
 
 ## Known limitations
 

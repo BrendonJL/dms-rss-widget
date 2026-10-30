@@ -12,6 +12,7 @@ Miniflux fast path.
 
 | Doc | Covers | Status |
 |---|---|---|
+| `2026-10-30-credentials-file-design.md` | Reading server and AI secrets from an env file instead of settings.json | implemented — 3.1.0 |
 | `2026-09-12-accessibility-names-design.md` | Accessible names for icon-only controls (`Accessible.role`/`name`/`onPressAction`) | designed, not built |
 | `2026-09-11-phase5b-reader-typography-design.md` | Reader typography (block classification, explicit metrics, colour theming) | implemented — unreleased |
 | `2026-09-11-phase5-reader-app-design.md` | The reading window (measure, markdown rendering, focus return) | implemented — unreleased; supersedes the annotation-app design of the same date |

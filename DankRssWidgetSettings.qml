@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import Quickshell
 import Quickshell.Io
 import qs.Common
 import qs.Services
@@ -12,6 +13,7 @@ import "GoogleReader.js" as GoogleReader
 import "ExportProvider.js" as ExportProvider
 import "AiProvider.js" as AiProvider
 import "Palette.js" as Palette
+import "EnvFile.js" as EnvFile
 
 PluginSettings {
     id: root
@@ -39,13 +41,38 @@ PluginSettings {
     // only (see the contract: a full rule builder is explicitly out of scope).
     property string newRuleQuery: ""
 
+    // Same resolution as the widget, so the panel can mark overridden fields
+    // and Test Connection uses what the widget will use.
+    readonly property string credentialsFilePath: credentialsFileField.text.trim()
+    property bool credentialsFileFailed: false
+    readonly property var credentialsEnv: credentialsFilePath ? EnvFile.parse(credentialsFileView.text()) : ({})
+
+    FileView {
+        id: credentialsFileView
+        path: EnvFile.expandHome(root.credentialsFilePath, Quickshell.env("HOME") ?? "")
+        blockLoading: true
+        printErrors: false
+        onPathChanged: root.credentialsFileFailed = false
+        onLoaded: root.credentialsFileFailed = false
+        onLoadFailed: error => root.credentialsFileFailed = true
+    }
+
+    function fileSupplies(name) {
+        return !!root.credentialsEnv[EnvFile.CREDENTIAL_KEYS[name]];
+    }
+
+    // The file value when it has one, otherwise the field's.
+    function resolvedCredential(name, fieldText) {
+        return root.fileSupplies(name) ? root.credentialsEnv[EnvFile.CREDENTIAL_KEYS[name]] : fieldText;
+    }
+
     // null Proc id + curl hardening flags on every Miniflux call made from
     // settings, matching the widget's own request pattern -- a fixed id here
     // would clobber a callback if the user mashes the button twice before
     // the first call returns.
     function fetchMinifluxFeeds() {
         var url = root.loadValue("minifluxUrl", "").replace(/\/$/, "");
-        var token = root.loadValue("minifluxToken", "");
+        var token = root.resolvedCredential("minifluxToken", root.loadValue("minifluxToken", ""));
         if (!url || !token)
             return;
         Proc.runCommand(null, ["curl", "-sS", "--fail", "--connect-timeout", "5", "--max-time", "25", "--proto", "=http,https", "--proto-redir", "=http,https", "--max-redirs", "5", "--max-filesize", "5000000", "-H", "X-Auth-Token: " + token, url + "/v1/feeds"], function (output, exitCode) {
@@ -445,6 +472,52 @@ PluginSettings {
         defaultValue: "standard"
     }
 
+    // ─── Credentials file ───
+    // Shown in every mode: the AI key applies to Standard too. One field, so
+    // two text fields never share the credentialsFile key.
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+
+        StyledText {
+            text: "Credentials File"
+            font.pixelSize: Theme.fontSizeSmall
+            color: root.roleColours.surfaceVariantText
+        }
+
+        DankTextField {
+            id: credentialsFileField
+            width: parent.width
+            placeholderText: "~/secrets/miniflux.env"
+            text: root.loadValue("credentialsFile", "")
+            onTextChanged: root.saveValue("credentialsFile", text.trim())
+            onFocusStateChanged: hasFocus => {
+                if (hasFocus)
+                    root.ensureItemVisible(credentialsFileField);
+            }
+        }
+
+        // Names the keys found, never their values.
+        StyledText {
+            width: parent.width
+            text: {
+                if (!root.credentialsFilePath)
+                    return "Optional. An env file with MINIFLUX_TOKEN, GREADER_USERNAME, GREADER_PASSWORD or AI_API_KEY; its values replace the matching fields, so they stay out of settings.json.";
+                if (root.credentialsFileFailed)
+                    return "Could not read file. Using the fields.";
+                var found = [];
+                for (var name in EnvFile.CREDENTIAL_KEYS) {
+                    if (root.fileSupplies(name))
+                        found.push(EnvFile.CREDENTIAL_KEYS[name]);
+                }
+                return found.length ? "Read from file: " + found.join(", ") : "No credential keys in file. Using the fields.";
+            }
+            font.pixelSize: Theme.fontSizeSmall
+            color: root.roleColours.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+    }
+
     // ─── Miniflux Connection (miniflux mode only) ───
     // Whole section is gated on sourceMode, so the `visible:` that used to
     // sit on every single child here now sits once, on the section itself --
@@ -503,6 +576,13 @@ PluginSettings {
                         root.ensureItemVisible(minifluxTokenField);
                 }
             }
+
+            StyledText {
+                visible: root.fileSupplies("minifluxToken")
+                text: "Supplied by credentials file — this field is ignored."
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
         }
 
         ToggleSetting {
@@ -530,7 +610,7 @@ PluginSettings {
                 iconName: "wifi_tethering"
                 onClicked: {
                     var url = minifluxUrlField.text.trim().replace(/\/$/, "");
-                    var token = minifluxTokenField.text.trim();
+                    var token = root.resolvedCredential("minifluxToken", minifluxTokenField.text.trim());
                     if (!url || !token) {
                         if (typeof ToastService !== "undefined")
                             ToastService.showError("Enter URL and token first");
@@ -630,6 +710,13 @@ PluginSettings {
                         root.ensureItemVisible(greaderUsernameField);
                 }
             }
+
+            StyledText {
+                visible: root.fileSupplies("greaderUsername")
+                text: "Supplied by credentials file — this field is ignored."
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
         }
 
         Column {
@@ -664,6 +751,13 @@ PluginSettings {
                         root.ensureItemVisible(greaderPasswordField);
                 }
             }
+
+            StyledText {
+                visible: root.fileSupplies("greaderPassword")
+                text: "Supplied by credentials file — this field is ignored."
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
         }
 
         Row {
@@ -673,7 +767,7 @@ PluginSettings {
             DankButton {
                 text: "Test Connection"
                 iconName: "wifi_tethering"
-                onClicked: root.testGreaderConnection(greaderUrlField.text.trim().replace(/\/$/, ""), greaderUsernameField.text.trim(), greaderPasswordField.text.trim())
+                onClicked: root.testGreaderConnection(greaderUrlField.text.trim().replace(/\/$/, ""), root.resolvedCredential("greaderUsername", greaderUsernameField.text.trim()), root.resolvedCredential("greaderPassword", greaderPasswordField.text.trim()))
             }
         }
     }
@@ -2463,6 +2557,13 @@ PluginSettings {
                         root.ensureItemVisible(aiApiKeyField);
                 }
             }
+
+            StyledText {
+                visible: root.fileSupplies("aiApiKey")
+                text: "Supplied by credentials file — this field is ignored."
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.roleColours.surfaceVariantText
+            }
         }
 
         Column {
@@ -2521,7 +2622,7 @@ PluginSettings {
                     var provider = AiProvider.createAiProvider({
                         baseUrl: root.effectiveAiBaseUrl(),
                         model: root.loadValue("aiModel", ""),
-                        apiKey: root.loadValue("aiApiKey", "")
+                        apiKey: root.resolvedCredential("aiApiKey", root.loadValue("aiApiKey", ""))
                     });
                     if (!provider.isConfigured()) {
                         if (typeof ToastService !== "undefined")
