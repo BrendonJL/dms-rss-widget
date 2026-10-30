@@ -651,7 +651,14 @@ DesktopPluginComponent {
     }
 
     // --- Lifecycle ---
+    // False until Component.onCompleted. During construction, the first read
+    // of sourceMode or feeds happens inside the backend/backendConfig
+    // bindings and fires their change handlers re-entrantly, where
+    // root.backend is still undefined. initialRunTimer does the first fetch.
+    property bool constructed: false
+
     Component.onCompleted: {
+        root.constructed = true;
         root.windowRef = Window.window ?? null;
         // Arm the fetch FIRST. Reader state is a nice-to-have; fetching is the
         // whole point of the widget, and an exception in the state layer must
@@ -674,6 +681,8 @@ DesktopPluginComponent {
     }
 
     function isRunnable() {
+        if (!root.constructed)
+            return false;
         const win = root.windowRef;
         const winVisible = win === null ? true : !!win.visible;
         return root.visible && winVisible && root.widgetWidth > 0 && root.widgetHeight > 0;
