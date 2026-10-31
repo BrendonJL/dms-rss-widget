@@ -19,6 +19,7 @@ nothing else.
 | `KeyMap.js` | Keyboard dispatch: takes a key event plus widget state, returns an action name |
 | `Palette.js` | Colour roles resolved from a preset, including colour-vision-deficient palettes and the simulation used to test them |
 | `Ranking.js` | Interest ranking: cosine similarity, the starred-article profile, and the recency blend |
+| `EnvFile.js` | Credentials file: env-file parsing, `~` expansion, and per-key resolution of secrets over settings |
 
 QML files: `DankRssWidget.qml` (the widget), `DankRssWidgetSettings.qml` (the
 settings panel), `ReaderWindow.qml` (the reading window).
@@ -60,7 +61,7 @@ holds no counter arithmetic.
 
 ## Pure-module discipline
 
-`KeyMap.js` and `ChainRunner.js` are strictly pure: no Qt APIs, no I/O, no
+`KeyMap.js`, `ChainRunner.js` and `EnvFile.js` are strictly pure: no Qt APIs, no I/O, no
 `Date.now()`, no randomness. `KeyMap.resolveKey()` is handed the raw key event
 and the widget's current state, and returns only a *name* for the caller to act
 on — it never opens an article or toggles anything itself. Timestamps for the

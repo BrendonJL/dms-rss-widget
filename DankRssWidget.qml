@@ -18,6 +18,7 @@ import "HtmlExtract.js" as HtmlExtract
 import "AiProvider.js" as AiProvider
 import "Ranking.js" as Ranking
 import "Palette.js" as Palette
+import "EnvFile.js" as EnvFile
 
 DesktopPluginComponent {
     id: root
@@ -53,16 +54,39 @@ DesktopPluginComponent {
     // existing behavior intact, not silently switch modes on upgrade.
     property string sourceMode: pluginData.sourceMode ?? "standard"
     property string minifluxUrl: (pluginData.minifluxUrl ?? "").replace(/\/$/, "")
-    property string minifluxToken: pluginData.minifluxToken ?? ""
+    property string minifluxToken: credentials.minifluxToken
     property bool syncReadOnOpen: pluginData.syncReadOnOpen ?? true
     property bool showStarred: pluginData.showStarred ?? false
 
     // --- Google Reader settings ---
-    // No settings UI yet; only reachable by hand-editing settings.json. That
-    // is enough to exercise the backend runner while the UI is still pending.
     property string greaderUrl: (pluginData.greaderUrl ?? "").replace(/\/$/, "")
-    property string greaderUsername: pluginData.greaderUsername ?? ""
-    property string greaderPassword: pluginData.greaderPassword ?? ""
+    property string greaderUsername: credentials.greaderUsername
+    property string greaderPassword: credentials.greaderPassword
+
+    // --- Credentials file ---
+    // Optional env file whose keys (EnvFile.CREDENTIAL_KEYS) override the
+    // matching secret settings per key, so secrets need not live in
+    // settings.json. text() does a blocking read, so the first fetch already
+    // sees the file.
+    property string credentialsFile: pluginData.credentialsFile ?? ""
+    readonly property var credentialsEnv: credentialsFile ? EnvFile.parse(credentialsFileView.text()) : ({})
+    readonly property var credentials: EnvFile.resolveCredentials({
+        minifluxToken: pluginData.minifluxToken ?? "",
+        greaderUsername: pluginData.greaderUsername ?? "",
+        greaderPassword: pluginData.greaderPassword ?? "",
+        aiApiKey: pluginData.aiApiKey ?? ""
+    }, credentialsEnv)
+
+    FileView {
+        id: credentialsFileView
+        path: EnvFile.expandHome(root.credentialsFile, Quickshell.env("HOME") ?? "")
+        blockLoading: true
+        watchChanges: true
+        printErrors: false
+        onFileChanged: reload()
+        // Logs the path only; the contents are secrets.
+        onLoadFailed: error => console.warn("DankRssWidget: cannot read credentials file", path)
+    }
 
     // --- Notes export settings ---
     // DesktopPluginWrapper.qml's loadPluginData reads the instance config
@@ -248,7 +272,7 @@ DesktopPluginComponent {
     property string aiPreset: pluginData.aiPreset ?? "ollama"
     property string aiBaseUrl: AiProvider.resolveBaseUrl(root.aiPreset, pluginData.aiBaseUrl ?? "")
     property string aiModel: pluginData.aiModel ?? ""
-    property string aiApiKey: pluginData.aiApiKey ?? ""
+    property string aiApiKey: credentials.aiApiKey
 
     readonly property var aiProvider: AiProvider.createAiProvider({
         baseUrl: root.aiBaseUrl,
@@ -651,7 +675,14 @@ DesktopPluginComponent {
     }
 
     // --- Lifecycle ---
+    // False until Component.onCompleted. During construction, the first read
+    // of sourceMode or feeds happens inside the backend/backendConfig
+    // bindings and fires their change handlers re-entrantly, where
+    // root.backend is still undefined. initialRunTimer does the first fetch.
+    property bool constructed: false
+
     Component.onCompleted: {
+        root.constructed = true;
         root.windowRef = Window.window ?? null;
         // Arm the fetch FIRST. Reader state is a nice-to-have; fetching is the
         // whole point of the widget, and an exception in the state layer must
@@ -674,6 +705,8 @@ DesktopPluginComponent {
     }
 
     function isRunnable() {
+        if (!root.constructed)
+            return false;
         const win = root.windowRef;
         const winVisible = win === null ? true : !!win.visible;
         return root.visible && winVisible && root.widgetWidth > 0 && root.widgetHeight > 0;

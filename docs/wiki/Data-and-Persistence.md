@@ -17,7 +17,10 @@ embed model). All of it is plugin data, not state — grep `pluginData.` in
 read via `getData`.
 
 **API tokens and passwords are stored in plaintext here**, like every other
-setting. Keep that in mind if your DMS settings are backed up or synced.
+setting. Keep that in mind if your DMS settings are backed up or synced. To
+keep the Miniflux and Google Reader secrets and the AI API key out, use a
+[credentials file](Sources-and-Sync.md#credentials-file); settings.json then
+stores only its path.
 
 ## State
 

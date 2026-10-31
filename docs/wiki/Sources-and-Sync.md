@@ -13,7 +13,7 @@ are prefixed per source (`m:`, `r:`, `g:`/`l:`/`h:`), so the two sets cannot
 collide. See [Data and Persistence](Data-and-Persistence.md).
 
 **Credentials are stored in plaintext** in the plugin's settings, like every
-other setting.
+other setting, unless you use a [credentials file](#credentials-file).
 
 ## Categories and folders
 
@@ -116,6 +116,31 @@ Authentication is a two-step chain: ClientLogin for an auth token, then a
 request that uses it. `ChainRunner.js` steps the sequence. The Test Connection
 button runs the real chain rather than a fake one, so a bad credential fails
 there instead of surfacing later as a silently empty feed list.
+
+## Credentials file
+
+DMS saves widget settings in plaintext in
+`~/.config/DankMaterialShell/settings.json`. If that file is in a dotfiles
+repo, set **Credentials File** (under Source Mode, shown in every mode) to an
+env file instead:
+
+```sh
+# ~/secrets/rss.env  (chmod 600)
+MINIFLUX_TOKEN=...
+GREADER_USERNAME=...
+GREADER_PASSWORD=...
+AI_API_KEY=...       # the AI settings' API Key, if your runtime needs one
+```
+
+- The syntax is systemd `EnvironmentFile` syntax, so the same file can feed a
+  Miniflux or FreshRSS container. Comments and an `export ` prefix are allowed,
+  and surrounding quotes are stripped. Escapes and `$VAR` expansion are not
+  supported.
+- A key with a value overrides its settings field. Missing or empty keys fall
+  back to the field, and the panel marks each field the file overrides. Once
+  the file works, clear those fields so the secrets leave settings.json.
+- Only these four keys are read. Server and AI URLs stay in settings.
+- A leading `~/` is expanded. Edits to the file take effect without a restart.
 
 ## Not planned
 
