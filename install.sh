@@ -2,7 +2,14 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLUGINS_DIR="$HOME/.config/DankMaterialShell/plugins"
+# Dux Shell 2.0 moved the config dir from DankMaterialShell to dms and keeps the
+# old path only as a compatibility symlink, which may be absent. Use the legacy
+# dir only when it is the one that exists (DMS < 2.0).
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+PLUGINS_DIR="$CONFIG_HOME/dms/plugins"
+if [ ! -d "$CONFIG_HOME/dms" ] && [ -d "$CONFIG_HOME/DankMaterialShell" ]; then
+    PLUGINS_DIR="$CONFIG_HOME/DankMaterialShell/plugins"
+fi
 PLUGIN_ID="dankRssWidget"
 
 mkdir -p "$PLUGINS_DIR"

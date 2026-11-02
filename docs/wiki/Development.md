@@ -1,6 +1,7 @@
 # Development
 
-`install.sh` symlinks the repo into `~/.config/DankMaterialShell/plugins/`, so
+`install.sh` symlinks the repo into `~/.config/dms/plugins/` (`~/.config/DankMaterialShell/plugins/`
+before DMS 2.0), so
 **the branch you have checked out is the widget DMS loads**. There is no plugin
 hot-reload; `dms restart` picks up changes.
 

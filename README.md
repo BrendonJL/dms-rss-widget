@@ -51,7 +51,8 @@ Click the widget once to give it focus, then drive it from the keyboard.
 
 ```bash
 git clone https://github.com/BrendonJL/dms-rss-widget.git
-ln -s /path/to/dms-rss-widget ~/.config/DankMaterialShell/plugins/dankRssWidget
+ln -s /path/to/dms-rss-widget ~/.config/dms/plugins/dankRssWidget
+# DMS < 2.0: ~/.config/DankMaterialShell/plugins/dankRssWidget
 ```
 
 Reload DMS (Ctrl+Shift+R) or restart your compositor.
